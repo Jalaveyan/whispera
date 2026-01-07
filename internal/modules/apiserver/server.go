@@ -804,7 +804,8 @@ func (s *Server) handleAddUser(w http.ResponseWriter, r *http.Request) {
 	nextUserID++
 	userStoreMu.Unlock()
 
-	s.jsonOK(w, map[string]interface{}{
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
 		"success":    true,
 		"user":       user,
 		"privateKey": keys.PrivateKey,
@@ -901,7 +902,8 @@ func (s *Server) handleGenerateKeys(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.jsonOK(w, map[string]interface{}{
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
 		"success":    true,
 		"privateKey": keys.PrivateKey,
 		"publicKey":  keys.PublicKey,
