@@ -255,6 +255,9 @@ func (s *Server) buildHandler() http.Handler {
 	// Logging middleware
 	handler = s.loggingMiddleware(handler)
 
+	// Recovery middleware (Outermost)
+	handler = s.recoveryMiddleware(handler)
+
 	return handler
 }
 
@@ -320,6 +323,26 @@ func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 
 		// Could log here
 		_ = start
+	})
+}
+
+// recoveryMiddleware recovers from panics
+func (s *Server) recoveryMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			if err := recover(); err != nil {
+				// Stack trace
+				stack := make([]byte, 4096)
+				n := runtime.Stack(stack, false)
+				fmt.Printf("[PANIC] API Server: %v\n%s\n", err, stack[:n])
+
+				w.WriteHeader(http.StatusInternalServerError)
+				json.NewEncoder(w).Encode(map[string]string{
+					"error": "Internal Server Error",
+				})
+			}
+		}()
+		next.ServeHTTP(w, r)
 	})
 }
 
