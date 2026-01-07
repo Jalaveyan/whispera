@@ -443,7 +443,9 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 			// Generate a default token if not configured
 			token = "whispera_default_token"
 		}
-		s.jsonOK(w, map[string]interface{}{
+		// Return token at root level for frontend compatibility
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
 			"success": true,
 			"token":   token,
 			"user": map[string]string{
