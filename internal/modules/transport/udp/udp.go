@@ -267,6 +267,7 @@ func (t *Transport) readLoop() {
 			}
 			// Log and continue for other errors
 			t.metrics.Increment("read_errors")
+			time.Sleep(100 * time.Millisecond) // Prevent busy loop
 			continue
 		}
 

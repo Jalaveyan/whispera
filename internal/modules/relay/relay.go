@@ -455,6 +455,8 @@ func (s *Server) healthLoop() {
 
 	for {
 		select {
+		case <-s.Context().Done():
+			return
 		case <-ticker.C:
 			// Collect stats
 			activeStreams := atomic.LoadUint64(&s.activeStreams)
