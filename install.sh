@@ -20,6 +20,14 @@ PLAIN='\033[0m'
 
 # --- Helpers ---
 
+get_public_ip() {
+    local IP=$(curl -s https://api.ipify.org -m 5)
+    if [[ -z "$IP" ]]; then
+        IP=$(ip addr show | grep 'inet ' | grep -v '127.0.0.1' | awk '{print $2}' | cut -d/ -f1 | head -n1)
+    fi
+    echo "${IP:-localhost}"
+}
+
 print_logo() {
     echo -e "${BLUE}"
     echo "█   █ █ █ █ ▀▀█ █▀▀ █▀▀ █▀▀ █▀█"
@@ -312,7 +320,8 @@ main() {
     log_success "Whispera installed successfully!"
     echo -e "  Manage command: ${GREEN}whispera-mgmt${PLAIN}"
     echo -e "  Config file:    ${GREEN}$CONF_PATH/config.yaml${PLAIN}"
-    echo -e "  Web Interface:  ${GREEN}http://<YOUR_IP>:8080${PLAIN}"
+    local SERVER_IP=$(get_public_ip)
+    echo -e "  Web Interface:  ${GREEN}http://${SERVER_IP}:8080${PLAIN}"
     echo ""
 }
 

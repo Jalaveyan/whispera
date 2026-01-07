@@ -9,12 +9,12 @@ class WhisperaAPI {
         if (window.location.protocol === 'file:') {
             // For file:// protocol, enable demo mode immediately
             this.fallbackToDemo = true;
-            this.baseURL = 'http://localhost:8081';
+            this.baseURL = 'http://localhost:8080';
             console.log('[Whispera] File protocol detected, Demo Mode enabled immediately');
-        } else if (window.location.origin.includes('8081')) {
-            this.baseURL = window.location.origin;
         } else {
-            this.baseURL = `${window.location.protocol}//${window.location.hostname}:8081`;
+            // Use current origin (protocol + hostname + port)
+            // This works automatically for any IP/port combination
+            this.baseURL = window.location.origin;
         }
 
         this.token = localStorage.getItem('whispera_token') || null;
