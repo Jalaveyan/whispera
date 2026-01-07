@@ -395,7 +395,8 @@ type jsonResponse struct {
 
 func (s *Server) jsonOK(w http.ResponseWriter, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(jsonResponse{Success: true, Data: data})
+	// Return data directly without wrapper for frontend compatibility
+	json.NewEncoder(w).Encode(data)
 }
 
 func (s *Server) jsonError(w http.ResponseWriter, status int, message string) {
@@ -762,7 +763,8 @@ func (s *Server) handleGetUsers(w http.ResponseWriter, r *http.Request) {
 		users = append(users, u)
 	}
 
-	s.jsonOK(w, users)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(users)
 }
 
 func (s *Server) handleAddUser(w http.ResponseWriter, r *http.Request) {
