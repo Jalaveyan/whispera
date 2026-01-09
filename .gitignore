@@ -12,13 +12,10 @@
 /client
 !/internal/server/
 
+
 # Tauri / Frontend
-/client-package-tauri/
-client-package-tauri/target/
-**/node_modules/
-**/dist/
-*.nupkg
-*.blockmap
+client-package-tauri/src-tauri/target/
+node_modules/
 
 # Logs
 *.log
@@ -58,7 +55,6 @@ desktop.ini
 # Build artifacts
 bin/
 obj/
-dist/
 *.cache
 coverage.out
 coverage.html

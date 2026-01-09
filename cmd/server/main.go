@@ -58,6 +58,7 @@ var (
 	globalSessionMgr   *session.Manager
 	globalUDPTransport *udp.Transport
 	globalRelay        *relay.Server
+	globalObfuscator   interfaces.Obfuscator
 )
 
 func main() {
@@ -213,6 +214,7 @@ func createModules(manager *lifecycle.Manager) error {
 	if err != nil {
 		return err
 	}
+	globalObfuscator = obfuscatorEngine
 	if err := manager.Register(obfuscatorEngine); err != nil {
 		return err
 	}
@@ -394,12 +396,23 @@ func handlePacket(data []byte, addr net.Addr) {
 
 	// Check if this is a relay protocol frame (min 8 bytes header)
 	// Relay frames have: [StreamID:2][Type:1][Flags:1][Length:4][Payload:N]
-	if len(data) >= 8 && globalRelay != nil {
+
+	// Try deobfuscation first if obfuscator is active
+	payload := data
+	if globalObfuscator != nil {
+		deobfuscated, _, err := globalObfuscator.Process(data, interfaces.DirectionInbound)
+		if err == nil && len(deobfuscated) > 0 {
+			payload = deobfuscated
+		}
+	}
+
+	if len(payload) >= 8 && globalRelay != nil {
 		// Check if frame type is valid relay protocol (0x01-0x08)
-		frameType := data[2]
+		frameType := payload[2]
 		if frameType >= 0x01 && frameType <= 0x08 {
 			// Process through relay server - this handles CONNECT, DATA, etc.
-			if err := globalRelay.ProcessFrame(data, sess, addr); err != nil {
+			// Note: We pass the DEOBFUSCATED payload
+			if err := globalRelay.ProcessFrame(payload, sess, addr); err != nil {
 				if *debug {
 					log.Printf("[Packet] Relay error: %v", err)
 				}

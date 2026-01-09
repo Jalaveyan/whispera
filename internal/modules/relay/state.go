@@ -113,8 +113,8 @@ func (f *FSM) initTransitions() {
 	// Connecting -> Connected
 	f.addTransition(StateConnecting, EventConnectOK, StateConnected, func(s *Stream) error {
 		// Action: Send CONNECT_OK frame
-		if s.onFrame != nil {
-			return s.onFrame(NewConnectOKFrame(s.ID))
+		if s.onFrameWithAddr != nil && s.ClientAddr != nil {
+			return s.onFrameWithAddr(NewConnectOKFrame(s.ID), s.ClientAddr)
 		}
 		return nil
 	})
@@ -122,8 +122,8 @@ func (f *FSM) initTransitions() {
 	// Connecting -> Closed (Fail)
 	f.addTransition(StateConnecting, EventConnectFail, StateClosed, func(s *Stream) error {
 		// Action: Send CONNECT_FAIL frame and cleanup
-		if s.onFrame != nil {
-			s.onFrame(NewConnectFailFrame(s.ID, "connection failed"))
+		if s.onFrameWithAddr != nil && s.ClientAddr != nil {
+			s.onFrameWithAddr(NewConnectFailFrame(s.ID, "connection failed"), s.ClientAddr)
 		}
 		s.cleanupResources()
 		return nil
@@ -131,8 +131,8 @@ func (f *FSM) initTransitions() {
 
 	// Connecting -> Closed (Timeout)
 	f.addTransition(StateConnecting, EventTimeout, StateClosed, func(s *Stream) error {
-		if s.onFrame != nil {
-			s.onFrame(NewConnectFailFrame(s.ID, "connection timeout"))
+		if s.onFrameWithAddr != nil && s.ClientAddr != nil {
+			s.onFrameWithAddr(NewConnectFailFrame(s.ID, "connection timeout"), s.ClientAddr)
 		}
 		s.cleanupResources()
 		return nil
@@ -144,8 +144,8 @@ func (f *FSM) initTransitions() {
 	// Connected -> HalfClosed (Peer Close)
 	f.addTransition(StateConnected, EventPeerClose, StateHalfClosed, func(s *Stream) error {
 		// Send CLOSE frame
-		if s.onFrame != nil {
-			s.onFrame(NewCloseFrame(s.ID))
+		if s.onFrameWithAddr != nil && s.ClientAddr != nil {
+			s.onFrameWithAddr(NewCloseFrame(s.ID), s.ClientAddr)
 		}
 		return nil
 	})

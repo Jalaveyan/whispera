@@ -327,7 +327,7 @@ type HandshakeHandler interface {
 	HandleHandshake(ctx context.Context, data []byte, addr net.Addr) (Session, error)
 
 	// InitiateHandshake initiates a handshake with a server
-	InitiateHandshake(ctx context.Context, addr net.Addr) (Session, error)
+	InitiateHandshake(ctx context.Context, conn net.Conn, addr net.Addr) (Session, error)
 
 	// SetRateLimiter sets the handshake rate limiter
 	SetRateLimiter(rate float64, burst int)

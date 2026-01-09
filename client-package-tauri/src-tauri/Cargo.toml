@@ -1,0 +1,25 @@
+[package]
+name = "whispera-client"
+version = "1.0.0"
+edition = "2021"
+description = "Whispera VPN Client"
+authors = ["Whispera Team"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-shell = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+base64 = "0.22"
+sysinfo = "0.30"
+
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
+
+[[bin]]
+name = "whispera-client"
+path = "src/main.rs"

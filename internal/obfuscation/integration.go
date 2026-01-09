@@ -120,11 +120,18 @@ func NewIntegrationManager() *IntegrationManager {
 // NewIntegrationManagerWithOptions creates a new integration manager with options
 func NewIntegrationManagerWithOptions(enableML, enableFTE bool) *IntegrationManager {
 	adapter := marionettepkg.NewMarionetteAdapter()
+	cfg := DefaultMLConfig()
+
 	im := &IntegrationManager{
-		marionette: adapter.GetCore(),
-		adapter:    adapter,
-		mlEnabled:  enableML,
-		fteEnabled: enableFTE,
+		marionette:    adapter.GetCore(),
+		adapter:       adapter,
+		mlEnabled:     enableML,
+		fteEnabled:    enableFTE,
+		config:        cfg,
+		sampleRate:    cfg.DefaultSampleRate,
+		packetBatch:   make([][]byte, 0, cfg.BatchSize),
+		packetTimings: make([]time.Time, 0, 20),
+		mlSemaphore:   make(chan struct{}, cfg.MaxConcurrentWorkers),
 	}
 
 	if enableML {

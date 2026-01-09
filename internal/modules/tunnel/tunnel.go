@@ -131,6 +131,9 @@ type Manager struct {
 
 	// Kill Switch
 	killSwitch *killswitch.KillSwitch
+
+	// Obfuscation
+	obfuscator interfaces.Obfuscator
 }
 
 // New creates a new tunnel manager
@@ -143,7 +146,8 @@ func New(cfg *Config) (*Manager, error) {
 	}
 
 	m := &Manager{
-		Module: base.NewModule(ModuleName, ModuleVersion, []string{"tun.device", "handshake.handler"}),
+		// tun.device removed - client uses SOCKS5 proxy instead of TUN interface
+		Module: base.NewModule(ModuleName, ModuleVersion, []string{"handshake.handler"}),
 		config: cfg,
 		state:  StateDisconnected,
 	}
@@ -220,6 +224,15 @@ func (m *Manager) SetDependencies(
 	m.crypto = crypto
 }
 
+// SetObfuscator sets the obfuscation engine for traffic masking
+// The obfuscator applies FTE, Marionette, and ML-based obfuscation
+func (m *Manager) SetObfuscator(o interfaces.Obfuscator) {
+	m.obfuscator = o
+	if o != nil {
+		log.Info("Obfuscation enabled for tunnel traffic")
+	}
+}
+
 // Connect connects to the VPN server
 func (m *Manager) Connect(ctx context.Context) error {
 	m.setState(StateConnecting)
@@ -244,7 +257,7 @@ func (m *Manager) Connect(ctx context.Context) error {
 
 	// Perform handshake
 	if m.handshake != nil {
-		session, err := m.handshake.InitiateHandshake(ctx, addr)
+		session, err := m.handshake.InitiateHandshake(ctx, m.conn, addr)
 		if err != nil {
 			m.setError(fmt.Errorf("handshake failed: %w", err))
 			conn.Close()
@@ -345,8 +358,21 @@ func (m *Manager) Reconnect(ctx context.Context) error {
 	}
 }
 
-// Send sends data through the tunnel
+// Send sends data through the tunnel with obfuscation
 func (m *Manager) Send(data []byte) error {
+	// Apply obfuscation if available (FTE -> Marionette -> ML chain)
+	// Also applies anti-reputation timing jitter
+	if m.obfuscator != nil {
+		obfuscated, delay, err := m.obfuscator.Process(data, interfaces.DirectionOutbound)
+		if err == nil && obfuscated != nil {
+			data = obfuscated
+		}
+		// Apply anti-reputation jitter delay
+		if delay > 0 && delay < 5*time.Second {
+			time.Sleep(delay)
+		}
+	}
+
 	m.connMu.RLock()
 	conn := m.conn
 	m.connMu.RUnlock()
@@ -366,7 +392,7 @@ func (m *Manager) Send(data []byte) error {
 	return nil
 }
 
-// Receive receives data from the tunnel
+// Receive receives data from the tunnel with deobfuscation
 func (m *Manager) Receive(buf []byte) (int, error) {
 	m.connMu.RLock()
 	conn := m.conn
@@ -379,6 +405,15 @@ func (m *Manager) Receive(buf []byte) (int, error) {
 	n, err := conn.Read(buf)
 	if err != nil {
 		return n, err
+	}
+
+	// Apply deobfuscation if available
+	if m.obfuscator != nil && n > 0 {
+		deobfuscated, _, err := m.obfuscator.Process(buf[:n], interfaces.DirectionInbound)
+		if err == nil && deobfuscated != nil {
+			copy(buf, deobfuscated)
+			n = len(deobfuscated)
+		}
 	}
 
 	atomic.AddUint64(&m.bytesDown, uint64(n))

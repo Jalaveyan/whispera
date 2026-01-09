@@ -19,14 +19,17 @@ type Stream struct {
 	TargetAddr string
 	TargetPort uint16
 
+	// Client address for sending responses back
+	ClientAddr net.Addr
+
 	// TCP connection to target (server-side)
 	conn net.Conn
 
 	// UDP connection (for UDP relay)
 	udpConn *net.UDPConn
 
-	// Callbacks for sending frames back through tunnel
-	onFrame func(*Frame) error
+	// Callbacks for sending frames back through tunnel (with address)
+	onFrameWithAddr func(*Frame, net.Addr) error
 
 	// Channels
 	incoming  chan []byte // Data from tunnel to target
@@ -48,19 +51,20 @@ type Stream struct {
 }
 
 // NewStream creates a new stream
-func NewStream(id uint16, proto uint8, addr string, port uint16, profile uint8, onFrame func(*Frame) error) *Stream {
+func NewStream(id uint16, proto uint8, addr string, port uint16, profile uint8, clientAddr net.Addr, onFrameWithAddr func(*Frame, net.Addr) error) *Stream {
 	s := &Stream{
-		ID:         id,
-		Protocol:   proto,
-		Profile:    profile,
-		TargetAddr: addr,
-		TargetPort: port,
-		onFrame:    onFrame,
-		incoming:   make(chan []byte, 256),
-		outgoing:   make(chan []byte, 256),
-		closeChan:  make(chan struct{}),
-		CreatedAt:  time.Now(),
-		LastActive: time.Now(),
+		ID:              id,
+		Protocol:        proto,
+		Profile:         profile,
+		TargetAddr:      addr,
+		TargetPort:      port,
+		ClientAddr:      clientAddr,
+		onFrameWithAddr: onFrameWithAddr,
+		incoming:        make(chan []byte, 256),
+		outgoing:        make(chan []byte, 256),
+		closeChan:       make(chan struct{}),
+		CreatedAt:       time.Now(),
+		LastActive:      time.Now(),
 	}
 	s.fsm = NewFSM(s)
 	return s
@@ -217,8 +221,8 @@ func (s *Stream) readFromTarget() {
 
 			// Send data frame back through tunnel
 			frame := NewDataFrame(s.ID, buf[:n])
-			if s.onFrame != nil {
-				if err := s.onFrame(frame); err != nil {
+			if s.onFrameWithAddr != nil && s.ClientAddr != nil {
+				if err := s.onFrameWithAddr(frame, s.ClientAddr); err != nil {
 					return
 				}
 			}
@@ -261,8 +265,8 @@ func (s *Stream) readUDPFromTarget() {
 
 			// Send data frame back through tunnel
 			frame := NewDataFrame(s.ID, buf[:n])
-			if s.onFrame != nil {
-				if err := s.onFrame(frame); err != nil {
+			if s.onFrameWithAddr != nil && s.ClientAddr != nil {
+				if err := s.onFrameWithAddr(frame, s.ClientAddr); err != nil {
 					return
 				}
 			}
@@ -308,24 +312,24 @@ func (s *Stream) IsActive() bool {
 
 // StreamManager manages all active streams
 type StreamManager struct {
-	streams map[uint16]*Stream
-	mu      sync.RWMutex
-	idGen   *StreamIDGenerator
-	onFrame func(*Frame) error
+	streams         map[uint16]*Stream
+	mu              sync.RWMutex
+	idGen           *StreamIDGenerator
+	onFrameWithAddr func(*Frame, net.Addr) error
 
 	ctx    context.Context
 	cancel context.CancelFunc
 }
 
 // NewStreamManager creates a new stream manager
-func NewStreamManager(onFrame func(*Frame) error) *StreamManager {
+func NewStreamManager(onFrameWithAddr func(*Frame, net.Addr) error) *StreamManager {
 	ctx, cancel := context.WithCancel(context.Background())
 	sm := &StreamManager{
-		streams: make(map[uint16]*Stream),
-		idGen:   NewStreamIDGenerator(),
-		onFrame: onFrame,
-		ctx:     ctx,
-		cancel:  cancel,
+		streams:         make(map[uint16]*Stream),
+		idGen:           NewStreamIDGenerator(),
+		onFrameWithAddr: onFrameWithAddr,
+		ctx:             ctx,
+		cancel:          cancel,
 	}
 
 	// Start cleanup goroutine
@@ -335,23 +339,23 @@ func NewStreamManager(onFrame func(*Frame) error) *StreamManager {
 }
 
 // CreateStream creates a new stream for outgoing connections (client-side)
-func (sm *StreamManager) CreateStream(proto uint8, addr string, port uint16, profile uint8) *Stream {
+func (sm *StreamManager) CreateStream(proto uint8, addr string, port uint16, profile uint8, clientAddr net.Addr) *Stream {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
 	id := sm.idGen.Next()
-	stream := NewStream(id, proto, addr, port, profile, sm.onFrame)
+	stream := NewStream(id, proto, addr, port, profile, clientAddr, sm.onFrameWithAddr)
 	sm.streams[id] = stream
 
 	return stream
 }
 
 // HandleConnect handles incoming CONNECT frame (server-side)
-func (sm *StreamManager) HandleConnect(streamID uint16, payload *ConnectPayload) error {
+func (sm *StreamManager) HandleConnect(streamID uint16, payload *ConnectPayload, clientAddr net.Addr) error {
 	sm.mu.Lock()
 
-	// Create stream with requested profile
-	stream := NewStream(streamID, payload.Protocol, payload.Addr, payload.Port, payload.Profile, sm.onFrame)
+	// Create stream with requested profile and client address
+	stream := NewStream(streamID, payload.Protocol, payload.Addr, payload.Port, payload.Profile, clientAddr, sm.onFrameWithAddr)
 	sm.streams[streamID] = stream
 	sm.mu.Unlock()
 

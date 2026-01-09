@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="ru">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Whispera VPN</title>
+    <link rel="stylesheet" href="./src/styles.css">
+    <!-- Using Google Fonts for a premium look -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+
+<body>
+    <!-- Custom Window Title Bar -->
+    <div class="titlebar" data-tauri-drag-region>
+        <div class="titlebar-title">Whispera VPN</div>
+        <div class="titlebar-controls">
+            <button id="btn-minimize" class="titlebar-btn" title="Свернуть">
+                <svg width="10" height="1" viewBox="0 0 10 1">
+                    <path d="M0 0h10v1H0z" fill="currentColor" />
+                </svg>
+            </button>
+            <button id="btn-maximize" class="titlebar-btn" title="Развернуть">
+                <svg width="10" height="10" viewBox="0 0 10 10">
+                    <path d="M0 0h10v10H0V0zm1 1v8h8V1H1z" fill="currentColor" />
+                </svg>
+            </button>
+            <button id="btn-close" class="titlebar-btn close" title="Закрыть">
+                <svg width="10" height="10" viewBox="0 0 10 10">
+                    <path d="M1 0L0 1l4 4-4 4 1 1 4-4 4 4 1-1-4-4 4-4-1-1-4 4-4-4z" fill="currentColor" />
+                </svg>
+            </button>
+        </div>
+    </div>
+
+    <div class="app-container">
+        <!-- Sidebar -->
+        <aside class="sidebar">
+            <div class="sidebar-header">
+                <div class="logo">
+                    <div class="logo-icon">W</div>
+                    <h1>Whispera</h1>
+                </div>
+            </div>
+
+            <nav class="sidebar-nav">
+                <button class="nav-item active" data-page="home">
+                    <span class="icon">🏠</span>
+                    <span data-i18n="nav.home">Главная</span>
+                </button>
+                <button class="nav-item" data-page="settings">
+                    <span class="icon">⚙️</span>
+                    <span data-i18n="nav.settings">Настройки</span>
+                </button>
+                <button class="nav-item" data-page="connections">
+                    <span class="icon">🔗</span>
+                    <span data-i18n="nav.connections">Соединения</span>
+                </button>
+                <button class="nav-item" data-page="profiles">
+                    <span class="icon">📄</span>
+                    <span data-i18n="nav.profiles">Профили</span>
+                </button>
+                <button class="nav-item" data-page="stats">
+                    <span class="icon">📊</span>
+                    <span data-i18n="nav.stats">Статистика</span>
+                </button>
+                <button class="nav-item" data-page="logs">
+                    <span class="icon">📋</span>
+                    <span data-i18n="nav.logs">Логи</span>
+                </button>
+            </nav>
+
+            <div class="sidebar-footer">
+                <button class="footer-btn" id="lang-btn" title="Язык">🌐</button>
+                <button class="footer-btn" title="Обновить">🔄</button>
+                <button class="footer-btn" title="Выход">🚪</button>
+            </div>
+        </aside>
+
+        <!-- Main Content -->
+        <main class="main-content">
+            <header class="header">
+                <h2 id="page-title">Главная</h2>
+                <div class="header-actions">
+                    <!-- Notification Bell -->
+                    <div class="notification-wrapper">
+                        <button id="btn-notify" class="icon-btn" title="Уведомления">
+                            🔔
+                            <span class="notify-badge" style="display:none"></span>
+                        </button>
+                        <div id="notifications-popup" class="popup">
+                            <div class="popup-header">
+                                <h4 data-i18n="notify.title">Уведомления</h4>
+                                <button id="clear-notifications" class="text-btn"
+                                    data-i18n="notify.clear">Очистить</button>
+                            </div>
+                            <div class="popup-content">
+                                <div class="empty-notify" data-i18n="notify.empty">Нет новых уведомлений</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </header>
+
+            <!-- Page: Home -->
+            <div id="page-home" class="page active">
+                <!-- Status Card -->
+                <div class="status-card">
+                    <div class="status-indicator-wrapper">
+                        <div class="status-indicator" id="status-indicator"></div>
+                        <div class="status-pulse"></div>
+                    </div>
+                    <div class="status-info">
+                        <h3 id="status-text">Отключено</h3>
+                        <p id="status-details">Готов к подключению</p>
+                    </div>
+                    <div class="status-actions">
+                        <button id="connect-btn" class="btn btn-primary btn-lg">🚀 Подключиться</button>
+                        <button id="disconnect-btn" class="btn btn-secondary btn-lg" style="display: none;">🛑
+                            Отключиться</button>
+                    </div>
+                </div>
+
+                <!-- Quick Connect -->
+                <div class="connection-form">
+                    <h3>🔑 <span data-i18n="key.title">Быстрое подключение</span></h3>
+                    <div class="form-group">
+                        <div class="input-wrapper">
+                            <textarea id="connection-key" placeholder="whispera://eyJ2..." rows="2"
+                                data-i18n-placeholder="key.placeholder"></textarea>
+                        </div>
+                    </div>
+                    <button id="connect-key-btn" class="btn btn-primary full-width" data-i18n="key.connect">Подключиться
+                        по ключу</button>
+
+                    <div id="connection-info" class="connection-details-panel" style="display:none;">
+                        <div class="detail-row"><strong><span data-i18n="key.server">Сервер</span>:</strong> <span
+                                id="info-server">-</span></div>
+                        <div class="detail-row"><strong><span data-i18n="key.transport">Транспорт</span>:</strong> <span
+                                id="info-transport">-</span></div>
+                        <div class="detail-row"><strong><span data-i18n="key.obfs">Обфускация</span>:</strong> <span
+                                id="info-obfs">-</span></div>
+                    </div>
+                </div>
+
+                <!-- Dashboard Grid -->
+                <div class="dashboard-grid">
+                    <!-- IP Info -->
+                    <div class="info-card">
+                        <div class="card-header">
+                            <h4 data-i18n="card.ip_info">🌍 IP Информация</h4>
+                            <button id="refresh-ip" class="btn-icon-small">🔄</button>
+                        </div>
+                        <div class="info-rows">
+                            <p><span class="label" data-i18n="info.real_ip">IP:</span> <span id="real-ip"
+                                    class="value-highlight">Загрузка...</span></p>
+                            <p><span class="label" data-i18n="info.city">Город:</span> <span id="ip-city">--</span></p>
+                            <p><span class="label" data-i18n="info.country">Страна:</span> <span
+                                    id="ip-country">--</span></p>
+                            <p><span class="label" data-i18n="info.provider">Провайдер:</span> <span
+                                    id="ip-provider">--</span></p>
+                            <p><span class="label" data-i18n="info.timezone">Zone:</span> <span
+                                    id="ip-timezone">--</span></p>
+                        </div>
+                    </div>
+
+                    <!-- System Info -->
+                    <div class="info-card">
+                        <div class="card-header">
+                            <h4 data-i18n="card.system">💻 Система</h4>
+                        </div>
+                        <div class="info-rows">
+                            <p><span class="label" data-i18n="info.os">ОС:</span> <span id="sys-os">--</span></p>
+                            <p><span class="label" data-i18n="info.uptime">Uptime:</span> <span
+                                    id="sys-uptime">00:00:00</span></p>
+                            <p><span class="label" data-i18n="info.autostart">Автостарт:</span> <span
+                                    id="sys-autostart">--</span></p>
+                            <p><span class="label">Админ:</span> <span id="sys-admin">--</span></p>
+                            <p><span class="label">Версия:</span> <span id="sys-version">v1.2.0</span></p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Site Testing -->
+                <div class="info-card wide">
+                    <div class="card-header">
+                        <h4 data-i18n="card.site_testing">🌐 Тестирование сайтов</h4>
+                        <div class="card-actions">
+                            <button id="site-refresh-btn" class="btn-small">🔄 Обновить</button>
+                            <button id="site-add-btn" class="btn-small">➕</button>
+                        </div>
+                    </div>
+                    <div class="sites-grid">
+                        <!-- Dynamic content -->
+                    </div>
+                </div>
+            </div>
+
+            <!-- Page: Settings -->
+            <div id="page-settings" class="page">
+                <h3>⚙️ <span data-i18n="page.settings">Настройки</span></h3>
+
+                <div class="settings-group">
+                    <h4>Режим работы</h4>
+                    <div class="mode-tabs">
+                        <button class="mode-tab active" data-mode="global" data-i18n="mode.global">Глобальный</button>
+                        <button class="mode-tab" data-mode="rule" data-i18n="mode.rule">Правило (Split)</button>
+                    </div>
+                </div>
+
+                <div class="settings-group">
+                    <h4>Основные</h4>
+                    <div class="setting-item">
+                        <div class="setting-info">
+                            <span data-i18n="toggle.proxy">Системный прокси</span>
+                            <small>Автоматически настраивать прокси системы</small>
+                        </div>
+                        <label class="switch">
+                            <input type="checkbox" id="proxy-toggle">
+                            <span class="slider round"></span>
+                        </label>
+                    </div>
+                    <div class="setting-item">
+                        <div class="setting-info">
+                            <span data-i18n="toggle.tun">TUN Режим</span>
+                            <small>Перехват всего трафика через виртуальный адаптер</small>
+                        </div>
+                        <label class="switch">
+                            <input type="checkbox" id="tun-toggle" checked>
+                            <span class="slider round"></span>
+                        </label>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Page: Connections -->
+            <div id="page-connections" class="page">
+                <div class="connections-header">
+                    <h3>🔗 <span data-i18n="page.connections">Активные соединения</span> (<span
+                            id="connections-count">0</span>)</h3>
+                    <div class="connection-search">
+                        <input type="text" placeholder="Поиск..." data-i18n-placeholder="header.search">
+                    </div>
+                </div>
+
+                <div class="connection-list">
+                    <!-- Dynamic List -->
+                </div>
+
+                <div class="empty-state">
+                    <div class="empty-icon">🔌</div>
+                    <span data-i18n="notify.empty">Ожидание данных...</span>
+                </div>
+            </div>
+
+            <!-- Page: Profiles -->
+            <div id="page-profiles" class="page">
+                <h3>📄 <span data-i18n="page.profiles">Профили</span></h3>
+                <div id="profiles-list" class="profiles-list"></div>
+                <div class="profiles-actions-bottom">
+                    <button id="add-profile-btn" class="btn btn-primary">➕ Добавить</button>
+                    <button id="import-profile-btn" class="btn btn-secondary">📥 Импорт</button>
+                    <button id="export-profile-btn" class="btn btn-secondary">📤 Экспорт</button>
+                </div>
+            </div>
+
+            <!-- Page: Stats -->
+            <div id="page-stats" class="page">
+                <h3>📊 <span data-i18n="page.stats">Статистика</span></h3>
+
+                <div class="stats-cards-row">
+                    <div class="stat-card-mini dl">
+                        <div class="stat-label" data-i18n="traffic.download">Download</div>
+                        <div id="download-speed" class="stat-val">0 B/s</div>
+                    </div>
+                    <div class="stat-card-mini ul">
+                        <div class="stat-label" data-i18n="traffic.upload">Upload</div>
+                        <div id="upload-speed" class="stat-val">0 B/s</div>
+                    </div>
+                </div>
+
+                <div class="wave-container-card">
+                    <div class="wave-stats-header">
+                        <span>Real-time Traffic</span>
+                        <span id="memory-usage">0 MB</span>
+                    </div>
+                    <div class="wave-viewport">
+                        <svg width="100%" height="100%" viewBox="0 0 100 30" preserveAspectRatio="none">
+                            <path class="download-wave" fill="none" stroke="#4ade80" stroke-width="0.5"></path>
+                            <path class="upload-wave" fill="none" stroke="#f472b6" stroke-width="0.5"></path>
+                            <path class="memory-wave" fill="none" stroke="#60a5fa" stroke-width="0.5" opacity="0.3">
+                            </path>
+                        </svg>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Page: Logs -->
+            <div id="page-logs" class="page">
+                <h3>📋 <span data-i18n="page.logs">Логи</span></h3>
+                <div id="logs-content" class="logs-content"></div>
+                <button id="clear-logs-btn" class="btn btn-secondary" data-i18n="notify.clear">Очистить</button>
+            </div>
+
+        </main>
+    </div>
+
+    <!-- Main Module Entry -->
+    <script type="module" src="./src/main.js"></script>
+</body>
+
+</html>

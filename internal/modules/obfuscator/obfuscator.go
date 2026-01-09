@@ -4,6 +4,7 @@ package obfuscator
 import (
 	"context"
 	"fmt"
+	"math/rand"
 	"sync"
 	"time"
 
@@ -25,6 +26,13 @@ type Config struct {
 	EnableML       bool
 	EnableFTE      bool
 	WorkerCount    int
+
+	// Anti-reputation evasion (edge-node filtering bypass)
+	EnableJitter             bool // Add human-like timing jitter between operations
+	EnableResidentialMimicry bool // Mimic residential connection patterns
+	ConnectionBurstLimit     int  // Max connections per second (0 = unlimited)
+	JitterMinMs              int  // Minimum jitter delay in ms
+	JitterMaxMs              int  // Maximum jitter delay in ms
 }
 
 // DefaultConfig returns default obfuscator configuration
@@ -35,6 +43,12 @@ func DefaultConfig() *Config {
 		EnableML:       true,
 		EnableFTE:      true,
 		WorkerCount:    4,
+		// Anti-reputation evasion defaults
+		EnableJitter:             true,
+		EnableResidentialMimicry: true,
+		ConnectionBurstLimit:     10, // Max 10 connections/sec
+		JitterMinMs:              50, // 50-300ms human-like delays
+		JitterMaxMs:              300,
 	}
 }
 
@@ -56,6 +70,12 @@ type Engine struct {
 	// Cache current settings
 	currentProfile string
 	threatLevel    int
+
+	// Anti-reputation state
+	jitterRand      *rand.Rand
+	lastConnTime    time.Time
+	connCountWindow int
+	windowStart     time.Time
 }
 
 // New creates a new obfuscation engine
@@ -110,7 +130,7 @@ func (e *Engine) Start() error {
 	}
 
 	e.SetHealthy(true, fmt.Sprintf("Active Profile: %s, Threat Level: %d", e.currentProfile, e.threatLevel))
-	
+
 	e.PublishEvent(events.EventTypeModuleStarted, map[string]interface{}{
 		"profile":      e.currentProfile,
 		"threat_level": e.threatLevel,
@@ -131,6 +151,12 @@ func (e *Engine) Stop() error {
 func (e *Engine) Process(data []byte, direction interfaces.Direction) ([]byte, time.Duration, error) {
 	e.UpdateActivity()
 
+	// Anti-reputation: Apply timing jitter for outbound traffic
+	var jitterDelay time.Duration
+	if direction == interfaces.DirectionOutbound && e.config.EnableJitter {
+		jitterDelay = e.calculateJitter()
+	}
+
 	// Map Direction type to string expected by IntegrationManager
 	dirStr := "outbound"
 	if direction == interfaces.DirectionInbound {
@@ -144,7 +170,57 @@ func (e *Engine) Process(data []byte, direction interfaces.Direction) ([]byte, t
 		return data, 0, err
 	}
 
-	return processed, delay, nil
+	// Combine obfuscation delay with anti-reputation jitter
+	totalDelay := delay + jitterDelay
+	return processed, totalDelay, nil
+}
+
+// calculateJitter returns a human-like random delay for anti-reputation evasion
+func (e *Engine) calculateJitter() time.Duration {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	// Initialize random source if needed
+	if e.jitterRand == nil {
+		e.jitterRand = rand.New(rand.NewSource(time.Now().UnixNano()))
+	}
+
+	// Connection burst limiting
+	now := time.Now()
+	if e.config.ConnectionBurstLimit > 0 {
+		if now.Sub(e.windowStart) > time.Second {
+			// Reset window
+			e.windowStart = now
+			e.connCountWindow = 0
+		}
+		e.connCountWindow++
+
+		// If exceeding burst limit, add extra delay
+		if e.connCountWindow > e.config.ConnectionBurstLimit {
+			extraDelay := time.Duration(e.connCountWindow-e.config.ConnectionBurstLimit) * 100 * time.Millisecond
+			return extraDelay
+		}
+	}
+
+	// Calculate human-like jitter
+	minMs := e.config.JitterMinMs
+	maxMs := e.config.JitterMaxMs
+	if minMs <= 0 {
+		minMs = 50
+	}
+	if maxMs <= minMs {
+		maxMs = minMs + 250
+	}
+
+	// Residential mimicry: occasional longer pauses (simulates user thinking)
+	if e.config.EnableResidentialMimicry && e.jitterRand.Float64() < 0.05 {
+		// 5% chance of a longer "thinking" pause (500-2000ms)
+		return time.Duration(500+e.jitterRand.Intn(1500)) * time.Millisecond
+	}
+
+	// Standard jitter
+	jitterMs := minMs + e.jitterRand.Intn(maxMs-minMs)
+	return time.Duration(jitterMs) * time.Millisecond
 }
 
 // SetProfile sets the obfuscation profile
@@ -201,7 +277,7 @@ func (e *Engine) SetThreatLevel(level int) {
 func (e *Engine) GetStats() interfaces.ObfuscationStats {
 	// Fetch metrics from the manager
 	metrics := e.manager.GetPerformanceMetrics()
-	
+
 	// Default values
 	var pkts, bytes uint64
 	var avgLat time.Duration
@@ -209,15 +285,21 @@ func (e *Engine) GetStats() interfaces.ObfuscationStats {
 	// Safe type assertions from the map[string]interface{} returned by manager
 	// Note: IntegrationManager returns generic maps, so we must be defensive
 	if sys, ok := metrics["system"].(map[string]interface{}); ok {
-		if p, ok := sys["packets_processed"].(uint64); ok { pkts = p } else if p, ok := sys["packets_processed"].(int64); ok { pkts = uint64(p) }
-		
+		if p, ok := sys["packets_processed"].(uint64); ok {
+			pkts = p
+		} else if p, ok := sys["packets_processed"].(int64); ok {
+			pkts = uint64(p)
+		}
+
 		if latStr, ok := sys["average_latency"].(string); ok {
 			avgLat, _ = time.ParseDuration(latStr)
 		}
 	}
-	
+
 	if traffic, ok := metrics["traffic"].(map[string]interface{}); ok {
-		if b, ok := traffic["total_bytes"].(int64); ok { bytes = uint64(b) }
+		if b, ok := traffic["total_bytes"].(int64); ok {
+			bytes = uint64(b)
+		}
 	}
 
 	e.mu.RLock()
@@ -235,10 +317,10 @@ func (e *Engine) GetStats() interfaces.ObfuscationStats {
 // HealthCheck returns health status
 func (e *Engine) HealthCheck() interfaces.HealthStatus {
 	status := e.Module.HealthCheck()
-	
+
 	// Get deep health status from manager
 	internalHealth := e.manager.GetHealthStatus()
-	
+
 	status.Details["profile"] = e.currentProfile
 	status.Details["threat_level"] = e.threatLevel
 	status.Details["internal_modules"] = internalHealth

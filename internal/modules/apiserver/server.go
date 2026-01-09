@@ -4,6 +4,7 @@ package apiserver
 import (
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -142,6 +143,7 @@ func (s *Server) registerDefaultRoutes() {
 
 	// Key generation
 	s.Handle("POST /api/keys/generate", s.handleGenerateKeys)
+	s.Handle("POST /api/keys/connection", s.handleGenerateConnectionKey)
 
 	// Sessions (frontend format)
 	s.Handle("GET /api/sessions", s.handleGetSessionsAPI)
@@ -909,6 +911,79 @@ func (s *Server) handleGenerateKeys(w http.ResponseWriter, r *http.Request) {
 		"success":    true,
 		"privateKey": keys.PrivateKey,
 		"publicKey":  keys.PublicKey,
+	})
+}
+
+// handleGenerateConnectionKey generates a connection key for client provisioning
+func (s *Server) handleGenerateConnectionKey(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Username  string `json:"username"`
+		Name      string `json:"name"`
+		Transport string `json:"transport"` // auto, tcp, udp (ws optional)
+		Obfs      string `json:"obfs"`      // default, stealth, aggressive
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.jsonError(w, http.StatusBadRequest, "Invalid request")
+		return
+	}
+
+	// Set defaults
+	if req.Name == "" {
+		req.Name = "Whispera VPN"
+	}
+	if req.Transport == "" {
+		req.Transport = "auto"
+	}
+	if req.Obfs == "" {
+		req.Obfs = "stealth"
+	}
+
+	// Get server external IP
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+	serverIP, err := network.DetectServerIP(ctx)
+	if err != nil {
+		serverIP = "0.0.0.0"
+	}
+
+	// Generate keys for this connection
+	keys, err := generateX25519Keys()
+	if err != nil {
+		s.jsonError(w, http.StatusInternalServerError, "Failed to generate keys")
+		return
+	}
+
+	// Build key data
+	keyData := map[string]interface{}{
+		"v":          1,
+		"name":       req.Name,
+		"server":     fmt.Sprintf("%s:51820", serverIP), // UDP (primary)
+		"server_tcp": fmt.Sprintf("%s:443", serverIP),   // TCP fallback
+		"psk":        keys.PrivateKey,
+		"pub":        keys.PublicKey,
+		"obfs":       req.Obfs,
+		"transport":  req.Transport,
+		"enable_ml":  true,
+		"enable_fte": true,
+	}
+
+	// Encode to JSON then Base64
+	jsonData, err := json.Marshal(keyData)
+	if err != nil {
+		s.jsonError(w, http.StatusInternalServerError, "Failed to encode key")
+		return
+	}
+
+	connectionKey := "whispera://" + base64.StdEncoding.EncodeToString(jsonData)
+
+	s.jsonOK(w, map[string]interface{}{
+		"success":   true,
+		"key":       connectionKey,
+		"name":      req.Name,
+		"server":    serverIP,
+		"transport": req.Transport,
+		"obfs":      req.Obfs,
 	})
 }
 

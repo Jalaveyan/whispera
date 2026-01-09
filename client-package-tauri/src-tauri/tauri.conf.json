@@ -1,0 +1,42 @@
+{
+    "$schema": "https://schema.tauri.app/config/2",
+    "productName": "Whispera",
+    "version": "1.0.0",
+    "identifier": "com.whispera.vpn",
+    "build": {
+        "beforeDevCommand": "npm run dev",
+        "devUrl": "http://localhost:1420",
+        "beforeBuildCommand": "npm run build",
+        "frontendDist": "../dist"
+    },
+    "app": {
+        "windows": [
+            {
+                "title": "Whispera VPN",
+                "width": 420,
+                "height": 680,
+                "resizable": true,
+                "decorations": true,
+                "center": true,
+                "visible": true
+            }
+        ],
+        "security": {
+            "csp": null
+        }
+    },
+    "bundle": {
+        "active": true,
+        "targets": [
+            "msi",
+            "nsis"
+        ],
+        "icon": [],
+        "resources": [
+            "core/**/*"
+        ],
+        "externalBin": [
+            "bin/whispera-go-client"
+        ]
+    }
+}

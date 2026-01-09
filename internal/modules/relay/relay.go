@@ -113,8 +113,8 @@ func (s *Server) Start() error {
 		return err
 	}
 
-	// Create stream manager with callback to send frames
-	s.streamManager = NewStreamManager(s.handleOutgoingFrame)
+	// Create stream manager with callback to send frames (with address)
+	s.streamManager = NewStreamManager(s.sendFrameToAddrDirect)
 
 	// Start health monitoring loop
 	go s.healthLoop()
@@ -252,7 +252,7 @@ func (s *Server) handleConnect(frame *Frame, addr net.Addr) error {
 			}
 		}()
 
-		if err := s.streamManager.HandleConnect(frame.StreamID, payload); err != nil {
+		if err := s.streamManager.HandleConnect(frame.StreamID, payload, addr); err != nil {
 			atomic.AddUint64(&s.connectFailed, 1)
 			if s.config.Debug {
 				s.log.Debug("Connect failed streamID=%d: %v", frame.StreamID, err)
@@ -414,6 +414,15 @@ func (s *Server) sendFrameToAddr(frame *Frame, addr net.Addr) error {
 
 	atomic.AddUint64(&s.framesOut, 1)
 	return sendFunc(data, addr)
+}
+
+// sendFrameToAddrDirect is a callback for StreamManager that sends frames directly to client address
+func (s *Server) sendFrameToAddrDirect(frame *Frame, addr net.Addr) error {
+	if s.config.Debug {
+		s.log.Debug("Sending frame: type=%s streamID=%d len=%d",
+			FrameTypeName(frame.Type), frame.StreamID, len(frame.Payload))
+	}
+	return s.sendFrameToAddr(frame, addr)
 }
 
 // HealthCheck returns health status
