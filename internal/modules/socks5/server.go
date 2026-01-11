@@ -815,37 +815,56 @@ func (s *Server) relayThroughTunnel(conn net.Conn, targetAddr string, targetPort
 // receiveFrames continuously receives frames from the tunnel and dispatches them
 func (s *Server) receiveFrames() {
 	buf := make([]byte, 65535+relay.HeaderSize)
+	loggedWaiting := false
+	loggedStarted := false
 
 	for s.IsRunning() {
 		s.mu.RLock()
 		tunnel := s.tunnel
 		s.mu.RUnlock()
 
-		if tunnel == nil || !tunnel.IsConnected() {
+		// Just check if tunnel is set - don't rely on IsConnected() which may be out of sync
+		if tunnel == nil {
+			if !loggedWaiting {
+				stdlog.Printf("[SOCKS5] receiveFrames: waiting for tunnel to be set...")
+				loggedWaiting = true
+			}
 			time.Sleep(100 * time.Millisecond)
 			continue
 		}
 
+		if !loggedStarted {
+			stdlog.Printf("[SOCKS5] receiveFrames: tunnel set, starting to receive frames...")
+			loggedStarted = true
+		}
+
+		// Set read timeout to avoid blocking forever
 		n, err := tunnel.Receive(buf)
 		if err != nil {
 			if err != io.EOF {
+				// Don't spam logs for expected errors
+				if err.Error() != "not connected" {
+					stdlog.Printf("[SOCKS5] receiveFrames: receive error: %v", err)
+				}
 				time.Sleep(100 * time.Millisecond)
 			}
 			continue
 		}
 
 		if n < relay.HeaderSize {
+			stdlog.Printf("[SOCKS5] receiveFrames: packet too small: %d bytes", n)
 			continue
 		}
 
 		// Decode frame
 		frame, err := relay.Decode(buf[:n])
 		if err != nil {
-			if s.config.Debug {
-				stdlog.Printf("[SOCKS5] Failed to decode frame: %v\n", err)
-			}
+			stdlog.Printf("[SOCKS5] Failed to decode frame (%d bytes): %v", n, err)
 			continue
 		}
+
+		stdlog.Printf("[SOCKS5] Received frame: type=%s streamID=%d len=%d",
+			relay.FrameTypeName(frame.Type), frame.StreamID, len(frame.Payload))
 
 		// Handle frame
 		s.handleIncomingFrame(frame)

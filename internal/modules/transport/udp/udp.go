@@ -114,23 +114,32 @@ func (t *Transport) Init(ctx context.Context, cfg interfaces.ModuleConfig) error
 
 // Start starts the UDP transport
 func (t *Transport) Start() error {
+	fmt.Printf("[UDP] Start() called, ListenAddr=%s\n", t.config.ListenAddr)
+
 	if err := t.Module.Start(); err != nil {
+		fmt.Printf("[UDP] Module.Start() failed: %v\n", err)
 		return err
 	}
 
 	// Resolve UDP address
+	fmt.Printf("[UDP] Resolving address: %s\n", t.config.ListenAddr)
 	addr, err := net.ResolveUDPAddr("udp", t.config.ListenAddr)
 	if err != nil {
+		fmt.Printf("[UDP] ResolveUDPAddr failed: %v\n", err)
 		t.SetHealthy(false, fmt.Sprintf("failed to resolve address: %v", err))
 		return fmt.Errorf("failed to resolve UDP address: %w", err)
 	}
+	fmt.Printf("[UDP] Resolved to: %v\n", addr)
 
 	// Listen on UDP
+	fmt.Printf("[UDP] Calling net.ListenUDP on %v\n", addr)
 	conn, err := net.ListenUDP("udp", addr)
 	if err != nil {
+		fmt.Printf("[UDP] ListenUDP FAILED: %v\n", err)
 		t.SetHealthy(false, fmt.Sprintf("failed to listen: %v", err))
 		return fmt.Errorf("failed to listen on UDP: %w", err)
 	}
+	fmt.Printf("[UDP] SUCCESS! Listening on UDP %s\n", conn.LocalAddr().String())
 
 	t.mu.Lock()
 	t.conn = conn
@@ -147,6 +156,7 @@ func (t *Transport) Start() error {
 		"listen_addr": t.config.ListenAddr,
 	})
 
+	fmt.Printf("[UDP] Start() completed successfully\n")
 	return nil
 }
 

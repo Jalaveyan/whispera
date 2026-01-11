@@ -474,9 +474,23 @@ func (m *Manager) Receive(buf []byte) (int, error) {
 		return 0, fmt.Errorf("not connected")
 	}
 
+	// Set read deadline to avoid blocking forever
+	if udpConn, ok := conn.(*net.UDPConn); ok {
+		udpConn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	}
+
 	n, err := conn.Read(buf)
 	if err != nil {
+		// Don't log timeout errors as they are expected
+		if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+			return n, err
+		}
+		log.Printf("[TUNNEL] Receive: read error: %v", err)
 		return n, err
+	}
+
+	if n > 0 {
+		log.Printf("[TUNNEL] Receive: got %d bytes from server", n)
 	}
 
 	// Apply deobfuscation if available
