@@ -33,8 +33,8 @@ type Config struct {
 func DefaultConfig() *Config {
 	return &Config{
 		ListenAddr:    ":443",
-		MaxPacketSize: 65535,
-		ReadTimeout:   0, // No timeout by default
+		MaxPacketSize: 1350, // Reduced to prevent IP fragmentation issues
+		ReadTimeout:   0,    // No timeout by default
 		WriteTimeout:  10 * time.Second,
 		BufferSize:    1024,
 		WorkerCount:   4,
@@ -263,6 +263,7 @@ func (t *Transport) OnPacket(handler func(data []byte, addr net.Addr)) {
 
 // readLoop is the main packet reading loop
 func (t *Transport) readLoop() {
+	fmt.Printf("[UDP] readLoop started\n")
 	buf := make([]byte, t.config.MaxPacketSize)
 
 	for t.IsRunning() {
@@ -273,13 +274,17 @@ func (t *Transport) readLoop() {
 			}
 			// Handle temporary errors
 			if netErr, ok := err.(net.Error); ok && netErr.Temporary() {
+				fmt.Printf("[UDP] Temporary read error: %v\n", err)
 				continue
 			}
 			// Log and continue for other errors
+			fmt.Printf("[UDP] Read error: %v\n", err)
 			t.metrics.Increment("read_errors")
 			time.Sleep(100 * time.Millisecond) // Prevent busy loop
 			continue
 		}
+
+		fmt.Printf("[UDP] Read %d bytes from %s\n", n, addr.String())
 
 		// Rate limit check
 		if !t.rateLimiter.Allow() {

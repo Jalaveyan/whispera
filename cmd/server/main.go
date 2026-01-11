@@ -358,6 +358,7 @@ func createModules(manager *lifecycle.Manager) error {
 
 // handlePacket processes incoming UDP packets
 func handlePacket(data []byte, addr net.Addr) {
+	fmt.Printf("[Packet] Received %d bytes from %v\n", len(data), addr)
 	ctx := context.Background()
 
 	// Try handshake first for small packets (32-96 bytes are handshake range)
