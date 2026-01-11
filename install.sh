@@ -70,7 +70,13 @@ install_dependencies() {
             CMD_INSTALL="yum install -y"
             ;;
         ubuntu|debian)
-            apt-get update >/dev/null
+            log_info "Updating system and installing security tools..."
+            apt-get update
+            DEBIAN_FRONTEND=noninteractive apt-get upgrade -y
+            DEBIAN_FRONTEND=noninteractive apt-get install -y fail2ban whois
+            systemctl enable fail2ban
+            systemctl start fail2ban
+            
             CMD_INSTALL="apt-get install -y"
             ;;
         alpine)
@@ -308,7 +314,6 @@ setup_firewall() {
         ufw allow 22/tcp
         
         # Whispera Ports
-        ufw allow 51820/udp  # Whispera UDP Transport (Legacy)
         ufw allow 443/tcp    # HTTPS / Whispera Fallback
         ufw allow 443/udp    # Whispera UDP Transport (New)
         ufw allow 4443/tcp   # Whispera TCP Transport
