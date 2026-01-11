@@ -8,48 +8,61 @@ class ConfigManager {
 
     async loadConfig() {
         try {
-            // Загружаем конфигурацию из localStorage или API
+            // Загружаем конфигурацию из localStorage
             const saved = localStorage.getItem('whispera_config');
             if (saved) {
                 this.config = JSON.parse(saved);
-            } else {
-                // Загружаем с сервера
-                await this.loadFromServer();
             }
+
+            // Всегда обновляем данные с сервера (порты, IP, ключи)
+            await this.loadFromServer();
+
         } catch (error) {
             console.error('Ошибка загрузки конфигурации:', error);
-            this.config = this.getDefaultConfig();
+            if (!this.config) {
+                this.config = this.getDefaultConfig();
+            }
         }
     }
 
     async loadFromServer() {
         try {
             const info = await api.getSystemInfo();
-            this.config = {
-                server: {
-                    ip: info.server_ip || this.detectServerIP(),
-                    port: info.server_port || 51820,
-                    tcpPort: info.tcp_port || 4443,
-                    wsPort: info.ws_port || 8080,
-                    ws2Port: info.ws2_port || 8443,
-                    publicKey: info.server_pub || info.serverPublicKey
-                },
-                obfuscation: {
-                    defaultProfile: 'http2',
-                    defaultMarionette: 'browser',
-                    autoProfile: true
-                },
-                features: {
-                    aiEvasion: true,
-                    hardwareEvasion: true,
-                    behavioralMimicry: true,
-                    russianMimicry: true
-                }
+            const serverSettings = {
+                ip: info.server_ip || this.detectServerIP(),
+                port: info.server_port || 51820,
+                tcpPort: info.tcp_port || 4443,
+                wsPort: info.ws_port || 8080,
+                ws2Port: info.ws2_port || 8443,
+                publicKey: info.server_pub || info.serverPublicKey
             };
+
+            if (this.config) {
+                // Обновляем только серверную часть, сохраняя пользовательские настройки
+                this.config.server = { ...this.config.server, ...serverSettings };
+            } else {
+                // Создаем новую конфигурацию
+                this.config = {
+                    server: serverSettings,
+                    obfuscation: {
+                        defaultProfile: 'http2',
+                        defaultMarionette: 'browser',
+                        autoProfile: true
+                    },
+                    features: {
+                        aiEvasion: true,
+                        hardwareEvasion: true,
+                        behavioralMimicry: true,
+                        russianMimicry: true
+                    }
+                };
+            }
             this.saveConfig();
         } catch (error) {
             console.error('Ошибка загрузки конфигурации с сервера:', error);
-            this.config = this.getDefaultConfig();
+            if (!this.config) {
+                this.config = this.getDefaultConfig();
+            }
         }
     }
 
