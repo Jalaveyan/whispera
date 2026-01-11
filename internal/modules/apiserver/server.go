@@ -1125,9 +1125,57 @@ func (s *Server) handleSystemInfoAPI(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Detect ports
+	udpPort := "443"
+	tcpPort := "443"
+	wsPort := "8080"
+
+	if s.registry != nil {
+		if configMod, ok := s.registry.Get("config.provider"); ok {
+			type ConfigProvider interface {
+				GetConfig() *config.ServerConfig
+			}
+			if provider, ok := configMod.(ConfigProvider); ok {
+				cfg := provider.GetConfig()
+				if cfg != nil {
+					// UDP
+					if cfg.Transport.UDP.Enabled {
+						_, port, err := net.SplitHostPort(cfg.Transport.UDP.ListenAddr)
+						if err == nil {
+							udpPort = port
+						} else if strings.HasPrefix(cfg.Transport.UDP.ListenAddr, ":") {
+							udpPort = cfg.Transport.UDP.ListenAddr[1:]
+						}
+					}
+					// TCP
+					if cfg.Transport.TCP.Enabled {
+						_, port, err := net.SplitHostPort(cfg.Transport.TCP.ListenAddr)
+						if err == nil {
+							tcpPort = port
+						} else if strings.HasPrefix(cfg.Transport.TCP.ListenAddr, ":") {
+							tcpPort = cfg.Transport.TCP.ListenAddr[1:]
+						}
+					}
+					// WS
+					if cfg.API.Enabled {
+						_, port, err := net.SplitHostPort(cfg.API.ListenAddr)
+						if err == nil {
+							wsPort = port
+						} else if strings.HasPrefix(cfg.API.ListenAddr, ":") {
+							wsPort = cfg.API.ListenAddr[1:]
+						}
+					}
+				}
+			}
+		}
+	}
+
 	info := map[string]interface{}{
 		"server_ip":       externalIP,
 		"serverIP":        externalIP,
+		"server_port":     udpPort, // Dynamic
+		"tcp_port":        tcpPort, // Dynamic
+		"ws_port":         wsPort,  // Dynamic
 		"server_pub":      serverPub,
 		"serverPublicKey": serverPub,
 		"hostname":        hostname,

@@ -274,19 +274,35 @@ show_cli_help() {
 install_cli_wrapper() {
     cat > "$BIN_PATH/whispera-cli" <<'EOF'
 #!/bin/bash
+GREEN='\033[0;32m'
+PLAIN='\033[0m'
+
+get_public_ip() {
+    local IP=$(curl -s https://api.ipify.org -m 5)
+    if [[ -z "$IP" ]]; then
+        IP=$(ip addr show | grep 'inet ' | grep -v '127.0.0.1' | awk '{print $2}' | cut -d/ -f1 | head -n1)
+    fi
+    echo "${IP:-localhost}"
+}
+
+show_summary() {
+    echo ""
+    echo -e "${GREEN}[OK]${PLAIN} Command executed successfully."
+    echo -e "  Manage command: ${GREEN}whispera-mgmt${PLAIN}"
+    echo -e "  Config file:    ${GREEN}/etc/whispera/config.yaml${PLAIN}"
+    local SERVER_IP=$(get_public_ip)
+    echo -e "  Web Interface:  ${GREEN}http://${SERVER_IP}:8080${PLAIN}"
+    echo -e "Update dependencies: apt-get update"
+}
+
 case $1 in
-    start) systemctl start whispera ;;
-    stop) systemctl stop whispera ;;
-    restart) systemctl restart whispera ;;
+    start) systemctl start whispera && show_summary ;;
+    stop) systemctl stop whispera && echo "Stopped." ;;
+    restart) systemctl restart whispera && show_summary ;;
     status) systemctl status whispera ;;
     log) journalctl -u whispera -f ;;
     config) nano /etc/whispera/config.yaml ;;
-    info)
-        echo "=== Whispera Server Info ==="
-        echo "UUID:       $(cat /etc/whispera/uuid)"
-        echo "Public Key: $(cat /etc/whispera/server.pub)"
-        echo "Config:     /etc/whispera/config.yaml"
-        ;;
+    info) show_summary ;;
     *) echo "Usage: whispera-mgmt {start|stop|restart|status|log|config|info}" ;;
 esac
 EOF
