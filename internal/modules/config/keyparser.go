@@ -20,6 +20,12 @@ type ConnectionKey struct {
 	Transport  string `json:"transport"`  // auto|tcp|ws|udp
 	EnableML   bool   `json:"enable_ml"`  // Enable ML obfuscation
 	EnableFTE  bool   `json:"enable_fte"` // Enable FTE obfuscation
+
+	// ASN Bypass - for VPN/Datacenter IP detection evasion
+	EnableASNBypass    bool   `json:"asn_bypass"`      // Enable ASN bypass
+	TLSFingerprint     string `json:"tls_fingerprint"` // Browser fingerprint: chrome, firefox, safari
+	DomainFrontHost    string `json:"front_host"`      // Domain fronting host (CDN)
+	ResidentialProxies string `json:"res_proxies"`     // Comma-separated residential proxy list
 }
 
 // ParseConnectionKey parses a whispera:// or wpn:// connection key

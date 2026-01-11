@@ -14,6 +14,7 @@ import (
 	"whispera/internal/core/interfaces"
 	"whispera/internal/logger"
 	"whispera/internal/modules/killswitch"
+	asnbypass "whispera/internal/modules/transport/asn_bypass"
 )
 
 var log = logger.Module("tunnel")
@@ -64,6 +65,14 @@ type Config struct {
 	KillSwitchEnabled  bool // Enable kill switch
 	KillSwitchAllowLAN bool // Allow LAN access when kill switch active
 	KillSwitchAllowDNS bool // Allow DNS when kill switch active
+
+	// ASN Bypass (for VPN/Datacenter IP detection evasion)
+	EnableASNBypass    bool               // Enable ASN bypass for datacenter IPs
+	ASNBypassStrategy  asnbypass.Strategy // Bypass strategy
+	TLSFingerprint     string             // Browser TLS fingerprint: chrome, firefox, safari
+	DomainFrontHost    string             // Domain fronting host (e.g., CDN domain)
+	ResidentialProxies []string           // Residential proxy list for proxy chain strategy
+	EnableJA3Randomize bool               // Randomize JA3 fingerprint per connection
 }
 
 // DefaultConfig returns default tunnel configuration
@@ -134,6 +143,9 @@ type Manager struct {
 
 	// Obfuscation
 	obfuscator interfaces.Obfuscator
+
+	// ASN Bypass - for evading datacenter IP detection
+	asnBypassDialer *asnbypass.Dialer
 }
 
 // New creates a new tunnel manager
@@ -150,6 +162,23 @@ func New(cfg *Config) (*Manager, error) {
 		Module: base.NewModule(ModuleName, ModuleVersion, []string{"handshake.handler"}),
 		config: cfg,
 		state:  StateDisconnected,
+	}
+
+	// Initialize ASN Bypass dialer if enabled
+	if cfg.EnableASNBypass {
+		asnConfig := &asnbypass.Config{
+			Strategy:               cfg.ASNBypassStrategy,
+			TLSFingerprint:         cfg.TLSFingerprint,
+			FrontDomain:            cfg.DomainFrontHost,
+			ResidentialProxies:     cfg.ResidentialProxies,
+			EnableJA3Randomization: cfg.EnableJA3Randomize,
+			ConnectionBurstLimit:   5,
+			ConnectionCooldown:     2 * time.Second,
+			FailoverTimeout:        cfg.ConnectionTimeout,
+			FallbackStrategies:     []asnbypass.Strategy{asnbypass.StrategyTLSMasquerade, asnbypass.StrategyDomainFronting},
+		}
+		m.asnBypassDialer = asnbypass.NewDialer(asnConfig)
+		log.Info("ASN bypass enabled with strategy: %d, fingerprint: %s", cfg.ASNBypassStrategy, cfg.TLSFingerprint)
 	}
 
 	// Initialize Kill Switch if enabled in config
@@ -237,18 +266,41 @@ func (m *Manager) SetObfuscator(o interfaces.Obfuscator) {
 func (m *Manager) Connect(ctx context.Context) error {
 	m.setState(StateConnecting)
 
-	// Resolve server address
-	addr, err := net.ResolveUDPAddr("udp", m.config.ServerAddr)
-	if err != nil {
-		m.setError(fmt.Errorf("failed to resolve address: %w", err))
-		return err
+	var conn net.Conn
+	var err error
+
+	// Try ASN bypass (TCP with TLS masquerading) first if enabled
+	// This is critical for VPN/Datacenter IPs that get blocked at ClientHello
+	if m.asnBypassDialer != nil && m.config.EnableASNBypass {
+		log.Info("Using ASN bypass dialer (strategy: %d, fingerprint: %s)",
+			m.config.ASNBypassStrategy, m.config.TLSFingerprint)
+
+		// ASN bypass uses TCP with browser TLS fingerprints
+		conn, err = m.asnBypassDialer.DialContext(ctx, "tcp", m.config.ServerAddr)
+		if err != nil {
+			log.Warn("ASN bypass failed: %v, falling back to direct UDP", err)
+			// Fall through to UDP
+		} else {
+			log.Info("ASN bypass connection established successfully")
+		}
 	}
 
-	// Create connection
-	conn, err := net.DialUDP("udp", nil, addr)
-	if err != nil {
-		m.setError(fmt.Errorf("failed to dial: %w", err))
-		return err
+	// Fallback to direct UDP connection if ASN bypass not enabled or failed
+	if conn == nil {
+		// Resolve server address
+		addr, err := net.ResolveUDPAddr("udp", m.config.ServerAddr)
+		if err != nil {
+			m.setError(fmt.Errorf("failed to resolve address: %w", err))
+			return err
+		}
+
+		// Create UDP connection
+		udpConn, err := net.DialUDP("udp", nil, addr)
+		if err != nil {
+			m.setError(fmt.Errorf("failed to dial UDP: %w", err))
+			return err
+		}
+		conn = udpConn
 	}
 
 	m.connMu.Lock()
@@ -256,8 +308,9 @@ func (m *Manager) Connect(ctx context.Context) error {
 	m.connMu.Unlock()
 
 	// Perform handshake
+	// Note: handshake needs to work with both TCP and UDP connections
 	if m.handshake != nil {
-		session, err := m.handshake.InitiateHandshake(ctx, m.conn, addr)
+		session, err := m.handshake.InitiateHandshake(ctx, m.conn, conn.RemoteAddr())
 		if err != nil {
 			m.setError(fmt.Errorf("handshake failed: %w", err))
 			conn.Close()
@@ -276,12 +329,31 @@ func (m *Manager) Connect(ctx context.Context) error {
 
 	// Activate Kill Switch
 	if m.killSwitch != nil && m.config.KillSwitchEnabled {
-		// Set VPN server IP (resolved address)
-		// addr is already *net.UDPAddr from net.ResolveUDPAddr above
-		m.killSwitch.SetVPNServer(addr.IP, addr.Port)
-		if err := m.killSwitch.Enable(); err != nil {
-			log.Error("Failed to enable kill switch: %v", err)
-			m.PublishEvent("killswitch.error", err.Error())
+		// Extract VPN server IP from connection's remote address
+		remoteAddr := conn.RemoteAddr()
+		var serverIP net.IP
+		var serverPort int
+
+		switch addr := remoteAddr.(type) {
+		case *net.UDPAddr:
+			serverIP = addr.IP
+			serverPort = addr.Port
+		case *net.TCPAddr:
+			serverIP = addr.IP
+			serverPort = addr.Port
+		default:
+			// Try to parse as string
+			host, portStr, _ := net.SplitHostPort(remoteAddr.String())
+			serverIP = net.ParseIP(host)
+			fmt.Sscanf(portStr, "%d", &serverPort)
+		}
+
+		if serverIP != nil {
+			m.killSwitch.SetVPNServer(serverIP, serverPort)
+			if err := m.killSwitch.Enable(); err != nil {
+				log.Error("Failed to enable kill switch: %v", err)
+				m.PublishEvent("killswitch.error", err.Error())
+			}
 		}
 	}
 

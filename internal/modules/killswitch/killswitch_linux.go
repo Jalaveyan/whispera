@@ -164,6 +164,12 @@ func (l *LinuxKillSwitch) Disable() error {
 
 	l.rulesActive = false
 	log.Info("Linux iptables kill switch rules removed")
+
+	// Restore original rules if we have them
+	if err := l.restoreRules(); err != nil {
+		log.Warn("Failed to restore original iptables rules: %v", err)
+	}
+
 	return nil
 }
 

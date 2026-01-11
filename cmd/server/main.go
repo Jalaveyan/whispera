@@ -294,11 +294,13 @@ func createModules(manager *lifecycle.Manager) error {
 	}
 
 	// 8.5. Relay Server (for client traffic relay to internet)
+	// 8.5. Relay Server (for client traffic relay to internet)
 	relayServer, err := relay.New(&relay.Config{
-		MaxStreams: 10000,
-		EnableTCP:  true,
-		EnableUDP:  true,
-		Debug:      *debug,
+		MaxStreams:    serverConfig.Relay.MaxStreams,
+		EnableTCP:     serverConfig.Relay.EnableTCP,
+		EnableUDP:     serverConfig.Relay.EnableUDP,
+		Debug:         serverConfig.Relay.Debug || *debug,
+		UpstreamProxy: serverConfig.Relay.UpstreamProxy,
 	})
 	if err != nil {
 		return err

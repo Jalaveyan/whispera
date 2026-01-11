@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"net/url"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -13,6 +14,8 @@ import (
 	"whispera/internal/core/events"
 	"whispera/internal/core/interfaces"
 	"whispera/internal/logger"
+
+	"golang.org/x/net/proxy"
 )
 
 const (
@@ -22,11 +25,12 @@ const (
 
 // Config holds relay module configuration
 type Config struct {
-	MaxStreams int  // Maximum concurrent streams
-	EnableTCP  bool // Enable TCP relay
-	EnableUDP  bool // Enable UDP relay
-	Debug      bool // Enable debug logging
-	SafeMode   bool // Force safe profiles (disable Aggressive)
+	MaxStreams    int    // Maximum concurrent streams
+	EnableTCP     bool   // Enable TCP relay
+	EnableUDP     bool   // Enable UDP relay
+	Debug         bool   // Enable debug logging
+	SafeMode      bool   // Force safe profiles (disable Aggressive)
+	UpstreamProxy string // Upstream proxy URL (socks5://...)
 }
 
 // DefaultConfig returns default configuration
@@ -55,6 +59,7 @@ type Server struct {
 
 	// Stream management
 	streamManager *StreamManager
+	proxyDialer   proxy.Dialer
 
 	// Transport callback for sending frames to client
 	sendFrame func(data []byte, addr net.Addr) error
@@ -113,8 +118,25 @@ func (s *Server) Start() error {
 		return err
 	}
 
+	// Setup upstream proxy if configured
+	if s.config.UpstreamProxy != "" {
+		u, err := url.Parse(s.config.UpstreamProxy)
+		if err != nil {
+			s.log.Error("Invalid upstream proxy URL: %v", err)
+			return fmt.Errorf("invalid upstream proxy URL: %v", err)
+		}
+
+		dialer, err := proxy.FromURL(u, proxy.Direct)
+		if err != nil {
+			s.log.Error("Failed to create proxy dialer: %v", err)
+			return fmt.Errorf("failed to create proxy dialer: %v", err)
+		}
+		s.proxyDialer = dialer
+		s.log.Info("Enabled upstream proxy: %s", u.Redacted())
+	}
+
 	// Create stream manager with callback to send frames (with address)
-	s.streamManager = NewStreamManager(s.sendFrameToAddrDirect)
+	s.streamManager = NewStreamManager(s.sendFrameToAddrDirect, s.proxyDialer)
 
 	// Start health monitoring loop
 	go s.healthLoop()
@@ -357,8 +379,8 @@ func (s *Server) handleUDPData(frame *Frame) error {
 	return err
 }
 
-// handleOutgoingFrame is called when stream has data to send back to client
-func (s *Server) handleOutgoingFrame(frame *Frame) error {
+// HandleOutgoingFrame is called when stream has data to send back to client
+func (s *Server) HandleOutgoingFrame(frame *Frame) error {
 	s.mu.RLock()
 	sendFunc := s.sendFrame
 	s.mu.RUnlock()

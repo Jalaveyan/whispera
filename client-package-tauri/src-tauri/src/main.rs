@@ -30,10 +30,13 @@ struct ConnectionStatus {
     server: String,
     transport: String,
     obfuscation: String,
+    kill_switch_active: bool,
+    asn_bypass_enabled: bool,
+    dns_mode: String,
     error: Option<String>,
 }
 
-#[derive(Clone, Serialize, Deserialize, Debug)]
+#[derive(Clone, Serialize, Deserialize, Debug, Default)]
 struct ConnectionKey {
     v: Option<i32>,
     name: Option<String>,
@@ -46,6 +49,20 @@ struct ConnectionKey {
     transport: Option<String>,
     enable_ml: Option<bool>,
     enable_fte: Option<bool>,
+    // New fields for advanced features
+    kill_switch: Option<bool>,
+    allow_lan: Option<bool>,
+    // ASN Bypass settings
+    asn_bypass: Option<bool>,
+    asn_strategy: Option<String>,
+    tls_fingerprint: Option<String>,
+    front_domain: Option<String>,
+    // DNS settings
+    dns_mode: Option<String>,
+    dns_servers: Option<Vec<String>>,
+    // Obfuscation settings
+    obfs_level: Option<i32>,
+    threat_level: Option<i32>,
 }
 
 impl ConnectionKey {
@@ -333,6 +350,202 @@ fn check_admin() -> bool {
 #[tauri::command]
 fn is_autostart_enabled() -> bool { false }
 
+// Kill Switch control commands
+#[tauri::command]
+fn enable_kill_switch(allow_lan: bool, state: State<'_, VpnState>) -> Result<String, String> {
+    // Kill switch is managed by the Go client when connected
+    // This command updates the status to reflect UI state
+    let mut status = state.status.lock().unwrap();
+    status.kill_switch_active = true;
+    
+    // Log the request - actual kill switch is handled in Go client
+    println!("[Tauri] Kill switch enabled (allow_lan: {})", allow_lan);
+    Ok("Kill switch enabled".into())
+}
+
+#[tauri::command]
+fn disable_kill_switch(state: State<'_, VpnState>) -> Result<String, String> {
+    let mut status = state.status.lock().unwrap();
+    status.kill_switch_active = false;
+    
+    println!("[Tauri] Kill switch disabled");
+    Ok("Kill switch disabled".into())
+}
+
+#[tauri::command]
+fn get_kill_switch_status(state: State<'_, VpnState>) -> bool {
+    state.status.lock().unwrap().kill_switch_active
+}
+
+// Available transports list
+#[derive(Serialize)]
+struct TransportInfo {
+    id: String,
+    name: String,
+    description: String,
+    available: bool,
+}
+
+#[tauri::command]
+fn get_available_transports() -> Vec<TransportInfo> {
+    vec![
+        TransportInfo {
+            id: "auto".into(),
+            name: "Автоматический".into(),
+            description: "Автовыбор лучшего транспорта".into(),
+            available: true,
+        },
+        TransportInfo {
+            id: "udp".into(),
+            name: "UDP".into(),
+            description: "Быстрый UDP протокол (по умолчанию)".into(),
+            available: true,
+        },
+        TransportInfo {
+            id: "tcp".into(),
+            name: "TCP".into(),
+            description: "Надёжный TCP для строгих сетей".into(),
+            available: true,
+        },
+        TransportInfo {
+            id: "mkcp".into(),
+            name: "mKCP".into(),
+            description: "UDP с FEC для потерянных сетей".into(),
+            available: true,
+        },
+        TransportInfo {
+            id: "h2c".into(),
+            name: "HTTP/2".into(),
+            description: "HTTP/2 cleartext для корпоративных сетей".into(),
+            available: true,
+        },
+        TransportInfo {
+            id: "ws".into(),
+            name: "WebSocket".into(),
+            description: "WebSocket туннелирование".into(),
+            available: true,
+        },
+    ]
+}
+
+// Obfuscation profiles
+#[derive(Serialize)]
+struct ObfsProfile {
+    id: String,
+    name: String,
+    description: String,
+    threat_level: i32,
+}
+
+#[tauri::command]
+fn get_obfuscation_profiles() -> Vec<ObfsProfile> {
+    vec![
+        ObfsProfile {
+            id: "none".into(),
+            name: "Без обфускации".into(),
+            description: "Максимальная скорость".into(),
+            threat_level: 0,
+        },
+        ObfsProfile {
+            id: "minimal".into(),
+            name: "Минимальная".into(),
+            description: "Базовое шифрование".into(),
+            threat_level: 2,
+        },
+        ObfsProfile {
+            id: "balanced".into(),
+            name: "Сбалансированная".into(),
+            description: "Баланс скорости и защиты".into(),
+            threat_level: 5,
+        },
+        ObfsProfile {
+            id: "stealth".into(),
+            name: "Стелс".into(),
+            description: "Максимальная маскировка".into(),
+            threat_level: 8,
+        },
+        ObfsProfile {
+            id: "paranoid".into(),
+            name: "Паранойдный".into(),
+            description: "Для враждебных сетей".into(),
+            threat_level: 10,
+        },
+    ]
+}
+
+// ASN Bypass strategies
+#[derive(Serialize)]
+struct AsnStrategy {
+    id: String,
+    name: String,
+    description: String,
+}
+
+#[tauri::command]
+fn get_asn_bypass_strategies() -> Vec<AsnStrategy> {
+    vec![
+        AsnStrategy {
+            id: "direct".into(),
+            name: "Прямое".into(),
+            description: "Без обхода ASN блокировок".into(),
+        },
+        AsnStrategy {
+            id: "tls_masquerade".into(),
+            name: "TLS Маскировка".into(),
+            description: "Имитация браузера Chrome/Firefox".into(),
+        },
+        AsnStrategy {
+            id: "domain_fronting".into(),
+            name: "Domain Fronting".into(),
+            description: "Через CDN (Cloudflare, Akamai)".into(),
+        },
+        AsnStrategy {
+            id: "residential_proxy".into(),
+            name: "Residential Proxy".into(),
+            description: "Через резидентные прокси".into(),
+        },
+    ]
+}
+
+// Extended connection info
+#[derive(Serialize)]
+struct ExtendedStatus {
+    connected: bool,
+    server: String,
+    transport: String,
+    obfuscation: String,
+    kill_switch_active: bool,
+    asn_bypass_enabled: bool,
+    dns_mode: String,
+    uptime_seconds: u64,
+    bytes_sent: u64,
+    bytes_received: u64,
+}
+
+#[tauri::command]
+fn get_extended_status(state: State<'_, VpnState>) -> ExtendedStatus {
+    let status = state.status.lock().unwrap();
+    let mut networks = state.networks.lock().unwrap();
+    networks.refresh();
+    
+    let (rx, tx) = networks.iter().fold((0u64, 0u64), |(rx, tx), (_, n)| {
+        (rx + n.total_received(), tx + n.total_transmitted())
+    });
+    
+    ExtendedStatus {
+        connected: status.connected,
+        server: status.server.clone(),
+        transport: status.transport.clone(),
+        obfuscation: status.obfuscation.clone(),
+        kill_switch_active: status.kill_switch_active,
+        asn_bypass_enabled: status.asn_bypass_enabled,
+        dns_mode: status.dns_mode.clone(),
+        uptime_seconds: 0, // TODO: track actual uptime
+        bytes_sent: tx,
+        bytes_received: rx,
+    }
+}
+
 fn main() {
     // Set up crash logging
     std::panic::set_hook(Box::new(|info| {
@@ -365,8 +578,39 @@ fn main() {
             get_memory_usage,
             get_active_connections,
             check_admin,
-            is_autostart_enabled
+            is_autostart_enabled,
+            // New commands for advanced features
+            enable_kill_switch,
+            disable_kill_switch,
+            get_kill_switch_status,
+            get_available_transports,
+            get_obfuscation_profiles,
+            get_asn_bypass_strategies,
+            get_extended_status
         ])
-        .run(tauri::generate_context!())
-        .expect("error running Tauri application");
+        .build(tauri::generate_context!())
+        .expect("error building Tauri application")
+        .run(|_app_handle, event| {
+            if let tauri::RunEvent::ExitRequested { .. } = event {
+                // Force kill backend processes on exit as requested
+                #[cfg(target_os = "windows")]
+                {
+                    use std::process::Command;
+                    use std::os::windows::process::CommandExt;
+                    const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+                    // Kill Go client
+                    let _ = Command::new("taskkill")
+                        .args(["/F", "/IM", "whispera-go-client.exe"])
+                        .creation_flags(CREATE_NO_WINDOW)
+                        .spawn();
+                    
+                    // Kill HevTunnel
+                    let _ = Command::new("taskkill")
+                        .args(["/F", "/IM", "hev-socks5-tunnel.exe"])
+                        .creation_flags(CREATE_NO_WINDOW)
+                        .spawn();
+                }
+            }
+        });
 }

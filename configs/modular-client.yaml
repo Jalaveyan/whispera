@@ -57,3 +57,26 @@ metrics:
   enabled: true
   address: ":9091"
   path: "/metrics"
+
+# ASN Bypass - for VPN/Datacenter IP detection evasion
+# Enable this if connections are blocked immediately after TLS ClientHello
+# due to the source IP being from a VPN/datacenter ASN
+asn_bypass:
+  enabled: false  # Set to true if experiencing ASN-based blocking
+  strategy: "tls_masquerade"  # direct, tls_masquerade, domain_fronting, residential_proxy, websocket, grpc
+  tls_fingerprint: "chrome"   # Browser fingerprint: chrome, firefox, safari, ios, android, edge, 360, qq
+  
+  # Domain fronting (optional) - connect to CDN, send real Host header
+  # front_host: "ajax.cloudflare.com"
+  
+  # Residential proxies (optional) - route through residential IPs first
+  # residential_proxies:
+  #   - "socks5://user:pass@residential-proxy.com:1080"
+  #   - "http://user:pass@another-proxy.com:8080"
+  # proxy_rotation: true
+  
+  # Advanced options
+  ja3_randomize: true      # Randomize JA3 fingerprint per connection
+  enable_ech: false        # Enable Encrypted Client Hello (when available)
+  connection_burst: 5      # Max connections per burst window
+  burst_cooldown_ms: 2000  # Cooldown between bursts

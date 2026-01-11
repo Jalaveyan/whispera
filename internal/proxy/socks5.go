@@ -41,6 +41,35 @@ const (
 // AuthHandler функция для проверки аутентификации
 type AuthHandler func(username, password string) bool
 
+// mapErrorToReplyCode converts generic errors to SOCKS5 reply codes
+func mapErrorToReplyCode(err error) byte {
+	if err == nil {
+		return socks5ReplySuccess
+	}
+
+	// Check for specific network errors
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		if netErr.Timeout() {
+			return socks5ReplyTTLExpired
+		}
+	}
+
+	msg := err.Error()
+	switch msg {
+	case "connection refused":
+		return socks5ReplyConnectionRefused
+	case "network unreachable":
+		return socks5ReplyNetworkUnreachable
+	case "host unreachable":
+		return socks5ReplyHostUnreachable
+	case "permission denied":
+		return socks5ReplyConnectionNotAllowed
+	}
+
+	return socks5ReplyGeneralFailure
+}
+
 // SOCKS5Server представляет SOCKS5 прокси сервер
 type SOCKS5Server struct {
 	listenAddr  string
@@ -322,7 +351,7 @@ func (s *SOCKS5Server) handleRequest(conn net.Conn) (string, uint16, error) {
 func (s *SOCKS5Server) sendReply(conn net.Conn, reply byte, addr []byte, port uint16) error {
 	response := []byte{socks5Version, reply, 0} // версия, reply, зарезервировано
 
-	if addr != nil && len(addr) > 0 {
+	if len(addr) > 0 {
 		// Добавляем адрес (уже содержит ATYP)
 		response = append(response, addr...)
 		// Добавляем порт
@@ -406,24 +435,24 @@ func (s *SOCKS5Server) handleUDPAssociate(conn net.Conn, atyp byte) (string, uin
 	case socks5ATYPIPv4:
 		addr := make([]byte, 4)
 		if _, err := io.ReadFull(conn, addr); err != nil {
-			s.sendReply(conn, socks5ReplyGeneralFailure, nil, 0)
+			s.sendReply(conn, mapErrorToReplyCode(err), nil, 0)
 			return "", 0, err
 		}
 	case socks5ATYPIPv6:
 		addr := make([]byte, 16)
 		if _, err := io.ReadFull(conn, addr); err != nil {
-			s.sendReply(conn, socks5ReplyGeneralFailure, nil, 0)
+			s.sendReply(conn, mapErrorToReplyCode(err), nil, 0)
 			return "", 0, err
 		}
 	case socks5ATYPDomain:
 		lenBuf := make([]byte, 1)
 		if _, err := io.ReadFull(conn, lenBuf); err != nil {
-			s.sendReply(conn, socks5ReplyGeneralFailure, nil, 0)
+			s.sendReply(conn, mapErrorToReplyCode(err), nil, 0)
 			return "", 0, err
 		}
 		domain := make([]byte, int(lenBuf[0]))
 		if _, err := io.ReadFull(conn, domain); err != nil {
-			s.sendReply(conn, socks5ReplyGeneralFailure, nil, 0)
+			s.sendReply(conn, mapErrorToReplyCode(err), nil, 0)
 			return "", 0, err
 		}
 	default:

@@ -95,6 +95,9 @@ type ClientConfig struct {
 	// Phase 3: Security features
 	KillSwitch *ClientKillSwitchConfig `yaml:"kill_switch,omitempty" json:"kill_switch,omitempty"`
 	Failover   *ClientFailoverConfig   `yaml:"failover,omitempty" json:"failover,omitempty"`
+
+	// Phase 4: ASN Bypass (for VPN/Datacenter IP detection evasion)
+	ASNBypass *ClientASNBypassConfig `yaml:"asn_bypass,omitempty" json:"asn_bypass,omitempty"`
 }
 
 // ClientRoutingConfig holds routing rules and engine settings
@@ -158,6 +161,22 @@ type ClientFailoverConfig struct {
 	MaxRetries      int      `yaml:"max_retries" json:"max_retries"`           // Max retries per server
 	StickySession   bool     `yaml:"sticky_session" json:"sticky_session"`     // Prefer last working server
 	WeightedBalance bool     `yaml:"weighted_balance" json:"weighted_balance"` // Use weighted server selection
+}
+
+// ClientASNBypassConfig holds ASN bypass settings for VPN/Datacenter IP evasion
+// When traffic comes from VPN/datacenter ASN, anti-bot systems may block
+// connections immediately after ClientHello. This config enables bypass techniques.
+type ClientASNBypassConfig struct {
+	Enabled            bool     `yaml:"enabled" json:"enabled"`                         // Enable ASN bypass
+	Strategy           string   `yaml:"strategy" json:"strategy"`                       // direct, tls_masquerade, domain_fronting, residential_proxy, websocket, grpc
+	TLSFingerprint     string   `yaml:"tls_fingerprint" json:"tls_fingerprint"`         // Browser fingerprint: chrome, firefox, safari, ios, android, edge, 360, qq
+	DomainFrontHost    string   `yaml:"front_host" json:"front_host"`                   // CDN domain for domain fronting (e.g., ajax.cloudflare.com)
+	ResidentialProxies []string `yaml:"residential_proxies" json:"residential_proxies"` // List of residential SOCKS5/HTTP proxies
+	ProxyRotation      bool     `yaml:"proxy_rotation" json:"proxy_rotation"`           // Rotate through proxies
+	EnableJA3Random    bool     `yaml:"ja3_randomize" json:"ja3_randomize"`             // Randomize JA3 fingerprint per connection
+	EnableECH          bool     `yaml:"enable_ech" json:"enable_ech"`                   // Enable Encrypted Client Hello
+	ConnectionBurst    int      `yaml:"connection_burst" json:"connection_burst"`       // Max connections per burst window
+	BurstCooldownMs    int      `yaml:"burst_cooldown_ms" json:"burst_cooldown_ms"`     // Cooldown between bursts in ms
 }
 
 // LoadClient loads client configuration from path

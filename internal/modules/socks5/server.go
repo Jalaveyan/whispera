@@ -183,8 +183,28 @@ func (s *Server) Stop() error {
 	s.activeStreams = make(map[uint16]net.Conn)
 	s.streamMu.Unlock()
 
+	// Clean stop
+	s.StopHevTunnel()
 	s.PublishEvent(events.EventTypeModuleStopped, nil)
 	return s.Module.Stop()
+}
+
+// StopHevTunnel forcibly kills the hev-socks5-tunnel process
+func (s *Server) StopHevTunnel() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.cmd != nil && s.cmd.Process != nil {
+		logger.Info("Stopping HevTunnel (PID: %d)", s.cmd.Process.Pid)
+		// Try graceful kill first if supported
+		s.cmd.Process.Kill()
+	}
+
+	s.cmd = nil
+
+	// Force kill by image name as requested by user ("taskkill /F /IM hev-socks5-tunnel.exe")
+	// This ensures checks for any dangling instances
+	exec.Command("taskkill", "/F", "/IM", "hev-socks5-tunnel.exe").Run()
 }
 
 // SetTunnel sets the tunnel manager for encrypted traffic relay
@@ -278,6 +298,7 @@ misc:
 
 	// Start Process
 	cmd := exec.Command(binPath, configPath)
+	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Dir = filepath.Dir(binPath)
@@ -319,122 +340,106 @@ func (s *Server) configureRoutes() {
 		vpnServerIP = os.Getenv("WHISPERA_VPN_SERVER")
 	}
 
-	// Get default gateway
-	defaultGateway := getDefaultGateway()
+	// 1. Auto-detect Default Gateway
+	defaultGateway := s.getDefaultGateway()
 	if defaultGateway == "" {
-		logger.Error("Could not detect default gateway, attempting to proceed without explicit exclusion (risky)")
+		logger.Error("Could not detect default gateway! Routing functionality may be limited.")
 	} else {
-		logger.Info("Default gateway: %s", defaultGateway)
+		logger.Info("Auto-detected Default Gateway: %s", defaultGateway)
 	}
 
 	// TUN interface settings
 	tunName := "Whispera"
 	tunIP := "10.0.85.1"
 
-	// 0. Force Interface Metric for Whispera to 1 (Highest Priority)
-	// This helps Windows prefer this interface for matching routes
-	cmdMetric := exec.Command("netsh", "interface", "ip", "set", "interface", tunName, "metric=1")
-	if out, err := cmdMetric.CombinedOutput(); err != nil {
-		logger.Warn("Failed to set interface metric: %v %s", err, string(out))
-	} else {
-		logger.Info("Set interface %s metric to 1", tunName)
-	}
-
-	// 1. Exclude VPN server IP - route it through the default gateway
-	// This is CRITICAL to avoid the "VPN loop" where encrypted packets go into the tunnel again
+	// 2. Add route for VPN server through Physical Gateway
+	// route add <VPN_IP> mask 255.255.255.255 <GATEWAY> metric 1
 	if vpnServerIP != "" && defaultGateway != "" {
-		// Delete potential existing route first to avoid "already exists" error
+		logger.Info("Adding route for VPN server %s via gateway %s", vpnServerIP, defaultGateway)
+		// Delete potential existing route first
 		exec.Command("route", "delete", vpnServerIP).Run()
 
 		cmd := exec.Command("route", "add", vpnServerIP, "mask", "255.255.255.255", defaultGateway, "metric", "1")
-		output, err := cmd.CombinedOutput()
-		if err != nil {
-			logger.Error("Failed to add VPN server route: %v. Output: %s", err, string(output))
-		} else {
-			logger.Info("Added route for VPN server %s via %s", vpnServerIP, defaultGateway)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			logger.Error("Failed to add VPN route: %v %s", err, string(out))
 		}
+	} else {
+		logger.Warn("Skipping VPN server route (missing VPN IP or Gateway)")
 	}
 
-	// Step 2: Add routes to send all traffic through TUN
-	// First, find the interface index for our TUN IP
-	tunIndex, tunName, err := getTunInterface(tunIP)
+	// 3. Force Interface Metric for Whispera to 1
+	exec.Command("netsh", "interface", "ip", "set", "interface", tunName, "metric=1").Run()
+
+	// 4. Determine TUN Interface Index
+	tunIndex, _, err := getTunInterface(tunIP)
 	if err != nil {
-		logger.Error("Failed to find TUN interface for IP %s: %v. Routing may fail.", tunIP, err)
-		// Fallback to IP-based routing (legacy)
-		tunIndex = 0
+		logger.Warn("Failed to find TUN interface index: %v", err)
 	} else {
-		logger.Info("Detected TUN Interface: %s (Index: %d)", tunName, tunIndex)
-		// Force metric of this specific interface to 1 to ensure priority
-		exec.Command("netsh", "interface", "ip", "set", "interface", fmt.Sprintf("%d", tunIndex), "metric=1").Run()
+		logger.Info("Detected TUN Interface Index: %d", tunIndex)
 	}
 
-	// Retry loop for main routes
-	for i := 0; i < 3; i++ {
-		success := true
+	// 5. Add TUN Routes (hijack all traffic)
+	// route add 0.0.0.0 mask 128.0.0.0 10.0.85.1 metric 1
+	// route add 128.0.0.0 mask 128.0.0.0 10.0.85.1 metric 1
+	logger.Info("Adding TUN routes...")
 
-		// Define routes: Target, Mask, Gateway, Metric, IF, Index
-		// Using tunIP as gateway is standard for Point-to-Point TUN
+	var routeArgs [][]string
+	if tunIndex > 0 {
+		// Use IF index if available (more reliable)
+		routeArgs = [][]string{
+			{"route", "add", "0.0.0.0", "mask", "128.0.0.0", tunIP, "metric", "1", "if", fmt.Sprintf("%d", tunIndex)},
+			{"route", "add", "128.0.0.0", "mask", "128.0.0.0", tunIP, "metric", "1", "if", fmt.Sprintf("%d", tunIndex)},
+		}
+	} else {
+		routeArgs = [][]string{
+			{"route", "add", "0.0.0.0", "mask", "128.0.0.0", tunIP, "metric", "1"},
+			{"route", "add", "128.0.0.0", "mask", "128.0.0.0", tunIP, "metric", "1"},
+		}
+	}
 
-		var routeCmds [][]string
+	for _, args := range routeArgs {
+		// Cleanup old
+		exec.Command("route", "delete", args[2]).Run()
 
-		if tunIndex > 0 {
-			// Use Interface Index - Most Reliable Method
-			// route add <target> mask <mask> <gateway> metric <m> if <idx>
-			routeCmds = [][]string{
-				{"route", "add", "0.0.0.0", "mask", "128.0.0.0", tunIP, "metric", "1", "if", fmt.Sprintf("%d", tunIndex)},
-				{"route", "add", "128.0.0.0", "mask", "128.0.0.0", tunIP, "metric", "1", "if", fmt.Sprintf("%d", tunIndex)},
-			}
+		cmd := exec.Command(args[0], args[1:]...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			logger.Error("Failed to add TUN route %s: %v %s", args[2], err, string(out))
 		} else {
-			// Fallback to simple IP gateway routing without explicit interface (OS decides)
-			routeCmds = [][]string{
-				{"route", "add", "0.0.0.0", "mask", "128.0.0.0", tunIP, "metric", "1"},
-				{"route", "add", "128.0.0.0", "mask", "128.0.0.0", tunIP, "metric", "1"},
-			}
+			logger.Info("Added TUN route: %s", strings.Join(args, " "))
 		}
-
-		for _, args := range routeCmds {
-			// Clean up potential existing routes
-			mask := args[4]
-			network := args[2]
-			// Ignore errors on delete
-			exec.Command("route", "delete", network, "mask", mask).Run()
-
-			logger.Debug("Executing: %s", strings.Join(args, " "))
-			cmd := exec.Command(args[0], args[1:]...)
-			output, err := cmd.CombinedOutput()
-			if err != nil {
-				logger.Warn("Attempt %d: Route add failed: %v %s", i+1, err, string(output))
-				success = false
-			} else {
-				logger.Info("Added route: %s", strings.Join(args, " "))
-			}
-		}
-
-		if success {
-			break
-		}
-		time.Sleep(1 * time.Second)
 	}
 
-	// 3. IPv6 Leak Protection
-	// ... (Rest of IPv6 logic)
-	// If we have index, use it for netsh too if possible, but netsh prefers names.
-	// We already tried "Whispera", let's leave it as is or try to use the detected Name
-	if tunName != "" {
-		exec.Command("netsh", "interface", "ipv6", "set", "interface", tunName, "metric=1").Run()
-		ipv6Cmds := [][]string{
-			{"netsh", "interface", "ipv6", "add", "route", "::/1", "interface=" + tunName, "metric=1"},
-			{"netsh", "interface", "ipv6", "add", "route", "8000::/1", "interface=" + tunName, "metric=1"},
-		}
-		for _, args := range ipv6Cmds {
-			exec.Command(args[0], args[1:]...).Run()
-		}
-	} else {
-		// Fallback to "Whispera" name assumption
-		exec.Command("netsh", "interface", "ipv6", "add", "route", "::/1", "interface=Whispera", "metric=1").Run()
+	// IPv6 Leak Protection (Minimal)
+	if tunIndex > 0 {
+		exec.Command("netsh", "interface", "ipv6", "add", "route", "::/1", "interface="+fmt.Sprintf("%d", tunIndex), "metric=1").Run()
+		exec.Command("netsh", "interface", "ipv6", "add", "route", "8000::/1", "interface="+fmt.Sprintf("%d", tunIndex), "metric=1").Run()
 	}
 
-	logger.Info("Route configuration complete")
+	logger.Info("Smart routing configuration complete")
+}
+
+// getDefaultGateway attempts to detect the default gateway IP using 'route print'
+func (s *Server) getDefaultGateway() string {
+	cmd := exec.Command("route", "print", "0.0.0.0")
+	output, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+
+	lines := strings.Split(string(output), "\n")
+	for _, line := range lines {
+		fields := strings.Fields(line)
+		// Standard line looks like:
+		// 0.0.0.0          0.0.0.0      192.168.1.1    192.168.1.15     25
+		if len(fields) >= 5 && fields[0] == "0.0.0.0" && fields[1] == "0.0.0.0" {
+			gateway := fields[2]
+			// Check if it's a valid IP and not "On-link" (which sometimes happens)
+			if net.ParseIP(gateway) != nil {
+				return gateway
+			}
+		}
+	}
+	return ""
 }
 
 // getTunInterface finds the interface index and name by its assigned IP address

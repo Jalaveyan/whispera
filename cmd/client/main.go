@@ -17,6 +17,7 @@ import (
 	"whispera/internal/modules/crypto"
 	"whispera/internal/modules/dnsmodule"
 	"whispera/internal/modules/handshake"
+	"whispera/internal/modules/killswitch"
 	"whispera/internal/modules/obfuscator"
 	"whispera/internal/modules/session"
 	"whispera/internal/modules/socks5"
@@ -29,12 +30,16 @@ var log = logger.Module("client")
 var Version = "2.0.0"
 
 var (
-	configPath = flag.String("config", "", "Path to configuration file")
-	serverAddr = flag.String("server", "144.124.225.252:8443", "Server address (host:port)")
-	socksAddr  = flag.String("socks", "127.0.0.1:10800", "SOCKS5 listen address for hev-socks5-tunnel")
-	connKey    = flag.String("key", "", "Connection key (whispera://...)")
-	transport  = flag.String("transport", "auto", "Transport mode: auto|tcp|udp")
-	obfsLevel  = flag.Int("obfs-level", 5, "Obfuscation threat level (0-10)")
+	configPath       = flag.String("config", "", "Path to configuration file")
+	serverAddr       = flag.String("server", "144.124.225.252:8443", "Server address (host:port)")
+	socksAddr        = flag.String("socks", "127.0.0.1:10800", "SOCKS5 listen address for hev-socks5-tunnel")
+	connKey          = flag.String("key", "", "Connection key (whispera://...)")
+	transport        = flag.String("transport", "auto", "Transport mode: auto|tcp|udp")
+	obfsLevel        = flag.Int("obfs-level", 5, "Obfuscation threat level (0-10)")
+	asnBypass        = flag.Bool("asn-bypass", false, "Enable ASN bypass for VPN/datacenter IP evasion")
+	tlsFingerprint   = flag.String("tls-fingerprint", "chrome", "TLS fingerprint for ASN bypass: chrome, firefox, safari, ios, android")
+	enableKillSwitch = flag.Bool("kill-switch", true, "Enable kill switch to prevent traffic leaks")
+	allowLAN         = flag.Bool("allow-lan", true, "Allow LAN traffic when kill switch is enabled")
 )
 
 func main() {
@@ -147,10 +152,29 @@ func main() {
 		serverAddress = cfg.ServerTCP
 	}
 
+	// Configure ASN bypass (for VPN/datacenter IP evasion)
+	asnBypassEnabled := *asnBypass
+	asnBypassFingerprint := *tlsFingerprint
+	if cfg.ASNBypass != nil && cfg.ASNBypass.Enabled {
+		asnBypassEnabled = true
+		if cfg.ASNBypass.TLSFingerprint != "" {
+			asnBypassFingerprint = cfg.ASNBypass.TLSFingerprint
+		}
+	}
+
 	tunnelMod, _ := tunnel.New(&tunnel.Config{
 		ServerAddr:        serverAddress,
 		KeepaliveInterval: 30 * time.Second,
+		// ASN Bypass settings
+		EnableASNBypass:    asnBypassEnabled,
+		TLSFingerprint:     asnBypassFingerprint,
+		EnableJA3Randomize: true,
 	})
+
+	if asnBypassEnabled {
+		log.Printf("ASN bypass enabled (fingerprint: %s)", asnBypassFingerprint)
+	}
+
 	// Inject dependencies: Transport(nil/SOCKS), Handshake, DataPlane(nil), Crypto
 	tunnelMod.SetDependencies(nil, hsMod, nil, cryptoMod)
 	lc.Register(tunnelMod)
@@ -168,6 +192,21 @@ func main() {
 
 	// Connect tunnel to VPN server
 	log.Printf("Connecting to VPN server: %s", serverAddress)
+
+	// Create Kill Switch manager (but don't activate yet)
+	var ks *killswitch.KillSwitch
+	if *enableKillSwitch {
+		var err error
+		ks, err = killswitch.New(&killswitch.Config{
+			Enabled:  true,
+			AllowLAN: *allowLAN,
+			AllowDNS: true,
+		})
+		if err != nil {
+			log.Printf("WARNING: Failed to create kill switch: %v", err)
+		}
+	}
+
 	if err := tunnelMod.Connect(ctx); err != nil {
 		log.Printf("WARNING: Failed to connect to VPN server: %v", err)
 		log.Printf("Running in local proxy mode (traffic NOT encrypted)")
@@ -177,9 +216,15 @@ func main() {
 
 		// Set VPN server IP for route configuration
 		// This ensures the VPN server traffic doesn't go through TUN (avoiding loop)
-		if host, _, err := net.SplitHostPort(serverAddress); err == nil {
+		var vpnServerIP net.IP
+		var vpnPort int = 8443
+		if host, portStr, err := net.SplitHostPort(serverAddress); err == nil {
 			os.Setenv("WHISPERA_VPN_SERVER", host)
 			log.Printf("VPN server IP for routing: %s", host)
+			vpnServerIP = net.ParseIP(host)
+			if p, _ := net.LookupPort("udp", portStr); p > 0 {
+				vpnPort = p
+			}
 		}
 
 		// Start HevTunnel now that tunnel is connected
@@ -188,6 +233,17 @@ func main() {
 			log.Printf("WARNING: Failed to start HevTunnel: %v", err)
 		} else {
 			log.Printf("HevTunnel started - all traffic routed through VPN")
+
+			// Activate Kill Switch AFTER HevTunnel is running
+			// This ensures VPN traffic is allowed before blocking other traffic
+			if ks != nil && vpnServerIP != nil {
+				ks.SetVPNServer(vpnServerIP, vpnPort)
+				if err := ks.Enable(); err != nil {
+					log.Printf("WARNING: Failed to enable kill switch: %v", err)
+				} else {
+					log.Printf("Kill Switch ENABLED - traffic will NOT leak if VPN drops")
+				}
+			}
 		}
 	}
 

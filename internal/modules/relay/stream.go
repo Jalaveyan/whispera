@@ -8,6 +8,8 @@ import (
 	"net"
 	"sync"
 	"time"
+
+	"golang.org/x/net/proxy"
 )
 
 // Stream represents a single multiplexed stream (one TCP/UDP connection)
@@ -47,11 +49,13 @@ type Stream struct {
 	// Graceful Degradation
 	RetryCount int
 
+	dialer proxy.Dialer
+
 	mu sync.RWMutex
 }
 
 // NewStream creates a new stream
-func NewStream(id uint16, proto uint8, addr string, port uint16, profile uint8, clientAddr net.Addr, onFrameWithAddr func(*Frame, net.Addr) error) *Stream {
+func NewStream(id uint16, proto uint8, addr string, port uint16, profile uint8, clientAddr net.Addr, onFrameWithAddr func(*Frame, net.Addr) error, dialer proxy.Dialer) *Stream {
 	s := &Stream{
 		ID:              id,
 		Protocol:        proto,
@@ -65,6 +69,7 @@ func NewStream(id uint16, proto uint8, addr string, port uint16, profile uint8, 
 		closeChan:       make(chan struct{}),
 		CreatedAt:       time.Now(),
 		LastActive:      time.Now(),
+		dialer:          dialer,
 	}
 	s.fsm = NewFSM(s)
 	return s
@@ -82,16 +87,17 @@ func (s *Stream) Connect(ctx context.Context) error {
 
 	// Profile-based adjustment
 	connectTimeout := 10 * time.Second
-	if s.Profile == ProfileAggressive {
+	switch s.Profile {
+	case ProfileAggressive:
 		// Aggressive: Random delay to mimic diverse traffic? Or faster timeout?
 		// Let's assume Aggressive means "Harder to block", so maybe use longer timeout or specific handshake tricks
 		connectTimeout = 20 * time.Second
 		// Artificial delay to vary timing analysis (obfuscation)
 		// time.Sleep(time.Millisecond * time.Duration(rand.Intn(100)))
-	} else if s.Profile == ProfileLowLatency {
+	case ProfileLowLatency:
 		// LoLatency: Fail fast
 		connectTimeout = 3 * time.Second
-	} else if s.Profile == ProfilePersonal {
+	case ProfilePersonal:
 		// Personal: Mimic standard browser behavior (human-like)
 		connectTimeout = 15 * time.Second
 		// Introduce small jitter to mimic human/network variation
@@ -102,17 +108,28 @@ func (s *Stream) Connect(ctx context.Context) error {
 
 	// Action logic (could be moved to FSM action, but here for context control)
 	var err error
-	if s.Protocol == ProtoTCP {
-		dialer := &net.Dialer{
-			Timeout: connectTimeout,
+	switch s.Protocol {
+	case ProtoTCP:
+		if s.dialer != nil {
+			var conn net.Conn
+			conn, err = s.dialer.Dial("tcp", target)
+			if err != nil {
+				s.fsm.Event(EventConnectFail)
+				return err
+			}
+			s.conn = conn
+		} else {
+			dialer := &net.Dialer{
+				Timeout: connectTimeout,
+			}
+			var conn net.Conn
+			conn, err = dialer.DialContext(ctx, "tcp", target)
+			if err != nil {
+				s.fsm.Event(EventConnectFail)
+				return err
+			}
+			s.conn = conn
 		}
-		var conn net.Conn
-		conn, err = dialer.DialContext(ctx, "tcp", target)
-		if err != nil {
-			s.fsm.Event(EventConnectFail)
-			return err
-		}
-		s.conn = conn
 
 		// Event: ConnectOK
 		if err := s.fsm.Event(EventConnectOK); err != nil {
@@ -122,7 +139,8 @@ func (s *Stream) Connect(ctx context.Context) error {
 
 		// Start relay goroutines
 		go s.readFromTarget()
-	} else if s.Protocol == ProtoUDP {
+
+	case ProtoUDP:
 		var addr *net.UDPAddr
 		addr, err = net.ResolveUDPAddr("udp", target)
 		if err != nil {
@@ -316,18 +334,20 @@ type StreamManager struct {
 	mu              sync.RWMutex
 	idGen           *StreamIDGenerator
 	onFrameWithAddr func(*Frame, net.Addr) error
+	dialer          proxy.Dialer
 
 	ctx    context.Context
 	cancel context.CancelFunc
 }
 
 // NewStreamManager creates a new stream manager
-func NewStreamManager(onFrameWithAddr func(*Frame, net.Addr) error) *StreamManager {
+func NewStreamManager(onFrameWithAddr func(*Frame, net.Addr) error, dialer proxy.Dialer) *StreamManager {
 	ctx, cancel := context.WithCancel(context.Background())
 	sm := &StreamManager{
 		streams:         make(map[uint16]*Stream),
 		idGen:           NewStreamIDGenerator(),
 		onFrameWithAddr: onFrameWithAddr,
+		dialer:          dialer,
 		ctx:             ctx,
 		cancel:          cancel,
 	}
@@ -344,7 +364,7 @@ func (sm *StreamManager) CreateStream(proto uint8, addr string, port uint16, pro
 	defer sm.mu.Unlock()
 
 	id := sm.idGen.Next()
-	stream := NewStream(id, proto, addr, port, profile, clientAddr, sm.onFrameWithAddr)
+	stream := NewStream(id, proto, addr, port, profile, clientAddr, sm.onFrameWithAddr, sm.dialer)
 	sm.streams[id] = stream
 
 	return stream
@@ -355,7 +375,7 @@ func (sm *StreamManager) HandleConnect(streamID uint16, payload *ConnectPayload,
 	sm.mu.Lock()
 
 	// Create stream with requested profile and client address
-	stream := NewStream(streamID, payload.Protocol, payload.Addr, payload.Port, payload.Profile, clientAddr, sm.onFrameWithAddr)
+	stream := NewStream(streamID, payload.Protocol, payload.Addr, payload.Port, payload.Profile, clientAddr, sm.onFrameWithAddr, sm.dialer)
 	sm.streams[streamID] = stream
 	sm.mu.Unlock()
 

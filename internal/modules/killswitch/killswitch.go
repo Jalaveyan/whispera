@@ -354,6 +354,24 @@ func (ks *KillSwitch) notifyError(err error) {
 	}
 }
 
+// MonitorHealth periodically checks if kill switch rules are still active
+func (ks *KillSwitch) MonitorHealth() {
+	if !ks.config.Enabled || !ks.impl.IsSupported() {
+		return
+	}
+
+	active, err := ks.impl.IsActive()
+	if err != nil {
+		ks.notifyError(fmt.Errorf("health check failed: %v", err))
+		return
+	}
+
+	if !active && ks.state == StateActive {
+		ks.notifyError(fmt.Errorf("kill switch rules unexpectedly deactivated"))
+		// Try to re-enable?
+	}
+}
+
 // Status returns current kill switch status for API/monitoring
 type Status struct {
 	State       string    `json:"state"`

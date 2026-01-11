@@ -268,7 +268,7 @@ func (l *Logger) Printf(format string, args ...interface{}) {
 
 // Println logs at info level (compatibility with standard log)
 func (l *Logger) Println(args ...interface{}) {
-	l.Info(fmt.Sprint(args...))
+	l.Info("%s", fmt.Sprint(args...))
 }
 
 // Global logger instance

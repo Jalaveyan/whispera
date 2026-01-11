@@ -46,6 +46,9 @@ type ServerConfig struct {
 
 	// Logging settings
 	Logging LoggingConfig `yaml:"logging"`
+
+	// Relay settings
+	Relay RelayConfig `yaml:"relay"`
 }
 
 // ServerSettings contains basic server settings
@@ -218,6 +221,12 @@ func DefaultServerConfig() *ServerConfig {
 			Level:  "info",
 			Format: "text",
 			Output: "stdout",
+		},
+		Relay: RelayConfig{
+			MaxStreams: 10000,
+			EnableTCP:  true,
+			EnableUDP:  true,
+			Debug:      false,
 		},
 	}
 }

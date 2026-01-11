@@ -11,6 +11,7 @@ import { initNotifications } from './modules/notifications.js';
 import { initWindowControls } from './modules/window_controls.js';
 import { waveAnimator } from './modules/wave_animator.js';
 import { activeConnectionManager } from './modules/active_connections.js';
+import { advancedFeaturesManager } from './modules/advanced_features.js';
 
 // Dashboard data module may have its own initialization
 import './modules/dashboard_data.js';
@@ -22,6 +23,7 @@ window.whispera = {
     keyConnection: keyConnectionManager,
     waveAnimator: waveAnimator,
     activeConnections: activeConnectionManager,
+    advancedFeatures: advancedFeaturesManager,
 };
 
 // Initialize all modules when DOM is ready
