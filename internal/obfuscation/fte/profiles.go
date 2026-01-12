@@ -5,9 +5,10 @@ import (
 	"time"
 )
 
-// addRussianServiceProfiles definitions for VK, Yandex, MailRu, Rutube, Ozon
+// addRussianServiceProfiles definitions for VK, VK Video, Yandex, MailRu, Rutube, Ozon
 func (fte *FTE) addRussianServiceProfiles() {
 	fte.addVKProfile()
+	fte.addVKVideoProfile()
 	fte.addYandexProfile()
 	fte.addMailRuProfile()
 	fte.addRutubeProfile()
@@ -15,43 +16,126 @@ func (fte *FTE) addRussianServiceProfiles() {
 }
 
 func (fte *FTE) addVKProfile() {
+	// VK (VKontakte) accurate profile based on real API analysis
+	// VK uses REST API with JSON, ~3 billion page views daily
 	fte.addProfile("vk", &ProtocolProfile{
-		Name:        "VKontakte",
-		Regex:       regexp.MustCompile(`^[A-Za-z0-9+/=]{20,}$`),
-		MinSize:     32,
-		MaxSize:     8192,
-		CommonSizes: []int{32, 64, 128, 256, 512, 1024, 2048, 4096},
+		Name:  "VKontakte App",
+		Regex: regexp.MustCompile(`^[A-Za-z0-9+/=]{20,}$`),
+		// Real VK API packet sizes
+		MinSize:     64,
+		MaxSize:     16384,
+		CommonSizes: []int{128, 256, 512, 1024, 2048, 4096, 8192},
 		Timing: TimingProfile{
-			MinInterval: 50, MaxInterval: 200, BurstProb: 0.2, BurstMin: 2, BurstMax: 8,
-			PauseProb: 0.15, PauseMin: 200, PauseMax: 1000, RTT: 45, Jitter: 15,
+			// VK real usage: avg 37 min/day sessions, scrolling feed
+			MinInterval: 100,  // API polling
+			MaxInterval: 5000, // Feed scrolling pause
+			BurstProb:   0.35, // Feed loading bursts
+			BurstMin:    3,
+			BurstMax:    12,    // Multiple media loads
+			PauseProb:   0.20,  // Reading pauses
+			PauseMin:    2000,  // 2 sec reading
+			PauseMax:    30000, // 30 sec reading long post
+			RTT:         35,    // Moscow DC
+			Jitter:      10,
 		},
 		Headers: map[string]string{
-			"User-Agent":       "VKAndroidApp/7.0-1234 (Android 11; SDK 30; arm64-v8a; samsung SM-G975F; ru)",
-			"Content-Type":     "application/json",
-			"Accept":           "application/json",
-			"X-Requested-With": "XMLHttpRequest",
+			// Real VK Android app User-Agent format
+			"User-Agent":          "VKAndroidApp/8.72-19234 (Android 14; SDK 34; arm64-v8a; samsung SM-S918B; ru)",
+			"Content-Type":        "application/x-www-form-urlencoded",
+			"Accept":              "application/json",
+			"X-VK-Android-Client": "new",
+			"X-Requested-With":    "XMLHttpRequest",
 		},
 		Fingerprint: FingerprintProfile{
 			JA3:                fte.generateUniqueJA3Fingerprint("vk"),
 			JA4:                fte.generateUniqueJA4Fingerprint("vk"),
 			JA4S:               fte.generateUniqueJA4Fingerprint("vk"),
-			PacketSizePatterns: []int{32, 64, 128, 256, 512, 1024, 2048, 4096},
-			TimingPatterns:     []int64{50, 100, 150, 200, 300, 500, 1000},
-			EntropyProfile:     EntropyProfile{TargetEntropy: 7.5, EntropyVariance: 0.2, AntiEntropy: true, StatisticalNoise: 0.1},
-			ObfuscationLevel:   8, AntiAnalysis: true, StatisticalMasking: true,
+			PacketSizePatterns: []int{128, 256, 512, 1024, 2048, 4096, 8192},
+			TimingPatterns:     []int64{100, 300, 800, 2000, 5000, 15000},
+			EntropyProfile:     EntropyProfile{TargetEntropy: 7.2, EntropyVariance: 0.3, AntiEntropy: true, StatisticalNoise: 0.12},
+			ObfuscationLevel:   9, AntiAnalysis: true, StatisticalMasking: true,
 			HTTP2: HTTP2Fingerprint{
-				Settings:    map[string]int{"HEADER_TABLE_SIZE": 4096, "ENABLE_PUSH": 1, "MAX_CONCURRENT_STREAMS": 100, "INITIAL_WINDOW_SIZE": 65535, "MAX_FRAME_SIZE": 16384, "MAX_HEADER_LIST_SIZE": 8192},
-				HeaderOrder: []string{":method", ":path", ":scheme", ":authority", "user-agent", "accept"},
+				Settings:    map[string]int{"HEADER_TABLE_SIZE": 4096, "ENABLE_PUSH": 0, "MAX_CONCURRENT_STREAMS": 100, "INITIAL_WINDOW_SIZE": 65535, "MAX_FRAME_SIZE": 16384},
+				HeaderOrder: []string{":method", ":path", ":scheme", ":authority", "user-agent", "accept", "accept-language"},
 				WindowSize:  65535, StreamCount: 100, PingInterval: 30 * time.Second,
 			},
 			Behavioral: BehavioralProfile{
-				ThinkTime: 1 * time.Second, BurstPattern: "exponential", SessionLength: 45 * time.Minute, IdleTime: 3 * time.Minute,
-				HumanLikePatterns: true, AdaptiveLearning: true, ReinforcementRL: true,
-				InteractionPatterns: []string{"mobile_app", "social_media", "messaging"}, DeviceFingerprint: "android_mobile_vk", ContextAwareness: true,
+				ThinkTime:           2 * time.Second,  // Reading content
+				BurstPattern:        "feed_scroll",    // Scrolling behavior
+				SessionLength:       37 * time.Minute, // Real VK avg session
+				IdleTime:            5 * time.Minute,
+				HumanLikePatterns:   true,
+				AdaptiveLearning:    true,
+				InteractionPatterns: []string{"feed_scroll", "like", "comment", "message", "story_view"},
+				DeviceFingerprint:   "samsung_android14_vk",
+				ContextAwareness:    true,
 			},
-			WebsiteFingerprintDefense: WebsiteFingerprintDefense{Enabled: true, PaddingStrategy: "adaptive", TimingObfuscation: true, SizeObfuscation: true, DirectionObfuscation: true, CoverTraffic: true, CoverProbability: 0.15, CoverSize: 256, CoverInterval: 5 * time.Second},
-			TrafficObfuscation:        TrafficObfuscation{Enabled: true, MasqueradingType: "behavioral", ObfuscationLevel: 8, AdaptiveObfuscation: true, StatisticalMasking: true, EntropyAdjustment: true, TimingRandomization: true, SizeRandomization: true},
+			WebsiteFingerprintDefense: WebsiteFingerprintDefense{Enabled: true, PaddingStrategy: "adaptive", TimingObfuscation: true, SizeObfuscation: true, DirectionObfuscation: true, CoverTraffic: true, CoverProbability: 0.12, CoverSize: 256, CoverInterval: 8 * time.Second},
+			TrafficObfuscation:        TrafficObfuscation{Enabled: true, MasqueradingType: "behavioral", ObfuscationLevel: 9, AdaptiveObfuscation: true, StatisticalMasking: true, EntropyAdjustment: true, TimingRandomization: true, SizeRandomization: true},
 			ProtocolMasquerading:      ProtocolMasquerading{Enabled: true, TargetProtocol: "vk", MasqueradingLevel: 9, HeaderSpoofing: true, BehavioralMimicry: true, TimingMimicry: true, SizeMimicry: true, AdaptiveMimicry: true, MLResistance: true},
+		},
+	})
+}
+
+// VK Video profile - accurate for video.vk.com streaming
+// Based on VK video traffic patterns: 960 million video views daily
+func (fte *FTE) addVKVideoProfile() {
+	fte.addProfile("vkvideo", &ProtocolProfile{
+		Name:  "VK Video",
+		Regex: regexp.MustCompile(`^[A-Za-z0-9+/=]{20,}$`),
+		// Video streaming packet sizes - chunks and segments
+		MinSize:     256,                                                // Minimum chunk
+		MaxSize:     65536,                                              // Full video segment
+		CommonSizes: []int{1024, 2048, 4096, 8192, 16384, 32768, 65536}, // HLS/DASH chunks
+		Timing: TimingProfile{
+			// Video streaming timing - buffering + continuous playback
+			MinInterval: 20,    // Fast segment requests during buffering
+			MaxInterval: 10000, // Segment duration gaps
+			BurstProb:   0.45,  // High burst during initial buffering
+			BurstMin:    5,
+			BurstMax:    25,   // Multiple quality segments
+			PauseProb:   0.08, // Rare pauses during streaming
+			PauseMin:    100,
+			PauseMax:    5000, // Bitrate adaptation pause
+			RTT:         30,   // CDN edge server
+			Jitter:      8,
+		},
+		Headers: map[string]string{
+			// VK Video player headers
+			"User-Agent":         "VKAndroidApp/8.72-19234 (Android 14; SDK 34; arm64-v8a; samsung SM-S918B; ru)",
+			"Accept":             "video/*,*/*;q=0.8",
+			"Accept-Encoding":    "gzip, deflate, br",
+			"Range":              "bytes=0-",
+			"X-VK-Video-Player":  "android_native",
+			"X-VK-Video-Quality": "auto",
+		},
+		Fingerprint: FingerprintProfile{
+			JA3:                fte.generateUniqueJA3Fingerprint("vkvideo"),
+			JA4:                fte.generateUniqueJA4Fingerprint("vkvideo"),
+			PacketSizePatterns: []int{1024, 2048, 4096, 8192, 16384, 32768, 65536},
+			TimingPatterns:     []int64{20, 50, 100, 500, 2000, 5000, 10000},
+			EntropyProfile:     EntropyProfile{TargetEntropy: 0.98, EntropyVariance: 0.02, AntiEntropy: false}, // Video is high entropy
+			ObfuscationLevel:   8, AntiAnalysis: true, StatisticalMasking: true,
+			HTTP2: HTTP2Fingerprint{
+				Settings:     map[string]int{"HEADER_TABLE_SIZE": 4096, "ENABLE_PUSH": 0, "MAX_CONCURRENT_STREAMS": 250, "INITIAL_WINDOW_SIZE": 16777216, "MAX_FRAME_SIZE": 16384},
+				HeaderOrder:  []string{":method", ":path", ":scheme", ":authority", "range", "user-agent", "accept"},
+				WindowSize:   16777216, // Large window for video
+				StreamCount:  250,
+				PingInterval: 30 * time.Second,
+			},
+			Behavioral: BehavioralProfile{
+				ThinkTime:           100 * time.Millisecond, // Fast segment requests
+				BurstPattern:        "video_streaming",
+				SessionLength:       15 * time.Minute, // Average video watch time
+				IdleTime:            5 * time.Second,  // Buffering interval
+				HumanLikePatterns:   true,
+				InteractionPatterns: []string{"play", "pause", "seek", "quality_change", "fullscreen"},
+				DeviceFingerprint:   "samsung_android14_vkvideo",
+				ContextAwareness:    true,
+			},
+			WebsiteFingerprintDefense: WebsiteFingerprintDefense{Enabled: true, PaddingStrategy: "streaming", TimingObfuscation: false, SizeObfuscation: true, DirectionObfuscation: false, CoverTraffic: false},
+			TrafficObfuscation:        TrafficObfuscation{Enabled: true, MasqueradingType: "video_streaming", ObfuscationLevel: 8, AdaptiveObfuscation: true, StatisticalMasking: true, EntropyAdjustment: false, TimingRandomization: false, SizeRandomization: true},
+			ProtocolMasquerading:      ProtocolMasquerading{Enabled: true, TargetProtocol: "vkvideo", MasqueradingLevel: 9, HeaderSpoofing: true, BehavioralMimicry: true, TimingMimicry: true, SizeMimicry: true, AdaptiveMimicry: true, MLResistance: true},
 		},
 	})
 }
@@ -268,13 +352,46 @@ func (fte *FTE) addSocialProfiles() {
 }
 
 func (fte *FTE) addTelegramProfile() {
+	// Telegram MTProto 2.0 accurate profile
+	// Based on real protocol analysis - padding 12-1024 bytes, message length multiple of 16
 	fte.addProfile("telegram", &ProtocolProfile{
-		MinSize: 64, MaxSize: 4096, CommonSizes: []int{128, 256, 512, 1024, 2048},
-		Timing:  TimingProfile{MinInterval: 50, MaxInterval: 2000, BurstMin: 2, BurstMax: 10, PauseMin: 100, PauseMax: 5000, RTT: 50, Jitter: 10},
-		Headers: map[string]string{"User-Agent": "Telegram Desktop 4.8.4 (Windows 10.0; x64)", "Accept": "*/*"},
+		Name: "Telegram MTProto",
+		// MTProto packet sizes - padding ensures length is multiple of 16
+		MinSize:     12,                                                      // Quick ACK tokens 8-16 bytes
+		MaxSize:     1024,                                                    // Max MTProto padding
+		CommonSizes: []int{16, 32, 48, 64, 80, 96, 112, 128, 256, 512, 1024}, // Multiples of 16
+		Timing: TimingProfile{
+			// MTProto timing - fast messaging with variable gaps
+			MinInterval: 10,    // Very fast for real-time messaging
+			MaxInterval: 30000, // Long idle periods
+			BurstProb:   0.40,  // High burst probability for message threads
+			BurstMin:    3,
+			BurstMax:    15,     // Rapid message exchanges in groups
+			PauseProb:   0.25,   // Significant pause probability between conversations
+			PauseMin:    1000,   // 1 second min pause
+			PauseMax:    300000, // 5 minute max pause
+			RTT:         40,     // Low RTT for Moscow DC
+			Jitter:      15,
+		},
+		Headers: map[string]string{
+			// Real Telegram Desktop User-Agent
+			"User-Agent": "TDesktop/4.15.2 (Windows 10.0.22631; x64)",
+			"Accept":     "*/*",
+		},
 		Fingerprint: FingerprintProfile{
-			JA3: fte.generateUniqueJA3Fingerprint("telegram"), JA4: fte.generateUniqueJA4Fingerprint("telegram"),
-			Behavioral: BehavioralProfile{ThinkTime: 500 * time.Millisecond, BurstPattern: "normal", SessionLength: 2 * time.Hour, IdleTime: 30 * time.Second},
+			JA3: fte.generateUniqueJA3Fingerprint("telegram"),
+			JA4: fte.generateUniqueJA4Fingerprint("telegram"),
+			// MTProto behavioral patterns
+			Behavioral: BehavioralProfile{
+				ThinkTime:         300 * time.Millisecond, // Fast typing response
+				BurstPattern:      "interactive",          // Real-time messaging
+				SessionLength:     12 * time.Hour,         // Long persistent sessions
+				IdleTime:          45 * time.Second,       // Keep-alive interval
+				HumanLikePatterns: true,
+			},
+			PacketSizePatterns: []int{16, 32, 64, 128, 256, 512, 1024}, // MTProto aligned
+			TimingPatterns:     []int64{10, 50, 150, 500, 2000, 10000},
+			EntropyProfile:     EntropyProfile{TargetEntropy: 0.99, EntropyVariance: 0.01, AntiEntropy: true},
 		},
 	})
 }

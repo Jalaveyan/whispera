@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"whispera/internal/obfuscation/behavioral"
 	"whispera/internal/obfuscation/core/evasion"
 	"whispera/internal/obfuscation/core/types"
 	mlpkg "whispera/internal/obfuscation/ml"
@@ -41,6 +42,10 @@ type Marionette struct {
 	// uTLS Integration - real browser fingerprints
 	UTLSFingerprint string // "chrome", "firefox", "safari", "android", "random"
 	UTLSConn        *utls.UConn
+
+	// Behavioral Mimicry - full multi-layer traffic imitation
+	BehaviorEngine          *behavioral.BehaviorEngine
+	ActiveBehavioralProfile *behavioral.MessengerProfile
 }
 
 // CircuitBreaker alias

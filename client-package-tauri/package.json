@@ -1,0 +1,17 @@
+{
+    "name": "whispera-client",
+    "version": "0.1.0",
+    "description": "Whispera VPN Client",
+    "scripts": {
+        "tauri": "tauri",
+        "dev": "vite",
+        "build": "vite build"
+    },
+    "dependencies": {
+        "@tauri-apps/api": "^1.6.0"
+    },
+    "devDependencies": {
+        "@tauri-apps/cli": "^1.6.0",
+        "vite": "^5.0.0"
+    }
+}

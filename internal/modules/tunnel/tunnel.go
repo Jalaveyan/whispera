@@ -14,6 +14,7 @@ import (
 	"whispera/internal/core/interfaces"
 	"whispera/internal/logger"
 	"whispera/internal/modules/killswitch"
+	"whispera/internal/modules/phantom"
 	asnbypass "whispera/internal/modules/transport/asn_bypass"
 )
 
@@ -73,6 +74,12 @@ type Config struct {
 	DomainFrontHost    string             // Domain fronting host (e.g., CDN domain)
 	ResidentialProxies []string           // Residential proxy list for proxy chain strategy
 	EnableJA3Randomize bool               // Randomize JA3 fingerprint per connection
+
+	// Phantom Protocol (SNI masquerading)
+	EnablePhantom       bool   // Enable Phantom protocol for SNI masquerading
+	PhantomSNI          string // SNI to use (e.g., "cloudflare.com")
+	PhantomShortId      string // Client short ID for authentication
+	PhantomServerPubKey string // Server's x25519 public key (hex)
 }
 
 // DefaultConfig returns default tunnel configuration
@@ -146,6 +153,9 @@ type Manager struct {
 
 	// ASN Bypass - for evading datacenter IP detection
 	asnBypassDialer *asnbypass.Dialer
+
+	// Phantom Protocol - for SNI masquerading
+	phantomAuth *phantom.ClientAuth
 }
 
 // New creates a new tunnel manager
@@ -203,6 +213,22 @@ func New(cfg *Config) (*Manager, error) {
 				})
 			})
 		}
+	}
+
+	// Initialize Phantom Protocol if enabled
+	if cfg.EnablePhantom {
+		shortId := cfg.PhantomShortId
+		// Auto-generate shortId if not provided
+		if shortId == "" {
+			shortId = generateRandomShortId()
+			log.Info("Phantom: Auto-generated shortId: %s", shortId)
+		}
+
+		m.phantomAuth = phantom.NewClientAuth(&phantom.ClientConfig{
+			ServerPublicKey: cfg.PhantomServerPubKey,
+			ShortId:         shortId,
+		})
+		log.Info("Phantom protocol enabled (SNI: %s)", cfg.PhantomSNI)
 	}
 
 	return m, nil
@@ -268,6 +294,16 @@ func (m *Manager) Connect(ctx context.Context) error {
 
 	var conn net.Conn
 	var err error
+
+	// If Phantom protocol is enabled, configure SNI masquerading
+	if m.config.EnablePhantom && m.phantomAuth != nil {
+		log.Info("Phantom protocol active - using SNI: %s", m.config.PhantomSNI)
+
+		// Configure ASN bypass dialer with Phantom SNI
+		if m.asnBypassDialer != nil {
+			m.asnBypassDialer.SetPhantomConfig(m.config.PhantomSNI, m.phantomAuth)
+		}
+	}
 
 	// Try ASN bypass (TCP with TLS masquerading) first if enabled
 	// This is critical for VPN/Datacenter IPs that get blocked at ClientHello
@@ -637,4 +673,15 @@ func Factory(cfg interface{}) (interfaces.Module, error) {
 		config = DefaultConfig()
 	}
 	return New(config)
+}
+
+// generateRandomShortId generates a random 8-character hex short ID
+func generateRandomShortId() string {
+	const chars = "0123456789abcdef"
+	result := make([]byte, 8)
+	for i := range result {
+		// Use time-based seed for simplicity
+		result[i] = chars[int(time.Now().UnixNano()/int64(i+1))%len(chars)]
+	}
+	return string(result)
 }

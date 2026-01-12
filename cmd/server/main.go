@@ -24,6 +24,7 @@ import (
 	"whispera/internal/modules/handshake"
 	"whispera/internal/modules/metricscollector"
 	"whispera/internal/modules/obfuscator"
+	"whispera/internal/modules/phantom"
 	"whispera/internal/modules/relay"
 	"whispera/internal/modules/router"
 	"whispera/internal/modules/session"
@@ -129,6 +130,7 @@ func registerFactories() {
 	registry.GlobalFactoryRegistry.RegisterFactory("dataplane.processor", dataplane.Factory)
 	registry.GlobalFactoryRegistry.RegisterFactory("metrics.collector", metricscollector.Factory)
 	registry.GlobalFactoryRegistry.RegisterFactory("api.server", apiserver.Factory)
+	registry.GlobalFactoryRegistry.RegisterFactory("phantom.handler", phantom.Factory)
 }
 
 func createModules(manager *lifecycle.Manager) error {
@@ -349,6 +351,42 @@ func createModules(manager *lifecycle.Manager) error {
 		apiServer.SetRegistry(manager.Registry())
 		if err := manager.Register(apiServer); err != nil {
 			return err
+		}
+	}
+
+	// 11. Phantom Handler (SNI masquerading / TLS proxy)
+	if serverConfig.Phantom.Enabled {
+		var privateKey []byte
+		if serverConfig.Phantom.PrivateKey != "" {
+			var err error
+			privateKey, err = hex.DecodeString(serverConfig.Phantom.PrivateKey)
+			if err != nil {
+				log.Printf("⚠ Warning: Invalid Phantom private key: %v", err)
+			}
+		}
+
+		phantomHandler, err := phantom.New(&phantom.Config{
+			Enabled:     true,
+			ListenAddr:  serverConfig.Server.ListenAddr, // Use same port as main server
+			Dest:        serverConfig.Phantom.Dest,
+			ServerNames: serverConfig.Phantom.ServerNames,
+			PrivateKey:  privateKey,
+			ShortIds:    serverConfig.Phantom.ShortIds,
+			MaxTimeDiff: serverConfig.Phantom.MaxTimeDiff,
+			Fingerprint: serverConfig.Phantom.Fingerprint,
+			OnAuthenticated: func(conn net.Conn, clientID string) {
+				// Handle authenticated Whispera client
+				log.Printf("Phantom: Authenticated client %s from %s", clientID, conn.RemoteAddr())
+				// TODO: Hand off to VPN tunnel handler
+			},
+		})
+		if err != nil {
+			log.Printf("⚠ Warning: Failed to create Phantom handler: %v", err)
+		} else {
+			if err := manager.Register(phantomHandler); err != nil {
+				return err
+			}
+			log.Printf("  ✓ Phantom protocol enabled (dest: %s)", serverConfig.Phantom.Dest)
 		}
 	}
 

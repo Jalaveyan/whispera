@@ -49,6 +49,36 @@ type ServerConfig struct {
 
 	// Relay settings
 	Relay RelayConfig `yaml:"relay"`
+
+	// Phantom protocol settings for SNI masquerading and TLS proxying
+	Phantom PhantomConfig `yaml:"phantom"`
+}
+
+// PhantomConfig contains Phantom protocol settings for SNI masquerading
+// This allows the server to appear as a legitimate destination to DPI systems
+// Phantom proxies TLS handshakes to real servers while authenticating Whispera clients
+type PhantomConfig struct {
+	// Enabled enables Phantom protocol
+	Enabled bool `yaml:"enabled"`
+
+	// Dest is the target server to proxy TLS handshake to (e.g., "cloudflare.com:443")
+	// When a non-authenticated client connects, traffic is proxied to this server
+	Dest string `yaml:"dest"`
+
+	// ServerNames are the allowed SNI values clients can use
+	ServerNames []string `yaml:"server_names"`
+
+	// PrivateKey is the x25519 private key for client authentication (hex encoded)
+	PrivateKey string `yaml:"private_key"`
+
+	// ShortIds are the allowed shortId values for client identification
+	ShortIds []string `yaml:"short_ids"`
+
+	// MaxTimeDiff is the maximum allowed time difference for replay protection (ms)
+	MaxTimeDiff int `yaml:"max_time_diff"`
+
+	// Fingerprint is the default browser fingerprint for outbound connections
+	Fingerprint string `yaml:"fingerprint"`
 }
 
 // ServerSettings contains basic server settings
@@ -227,6 +257,15 @@ func DefaultServerConfig() *ServerConfig {
 			EnableTCP:  true,
 			EnableUDP:  true,
 			Debug:      false,
+		},
+		Phantom: PhantomConfig{
+			Enabled:     false, // Disabled by default, requires configuration
+			Dest:        "",    // e.g., "cloudflare.com:443"
+			ServerNames: []string{},
+			PrivateKey:  "", // Generate with: ./whispera x25519
+			ShortIds:    []string{""},
+			MaxTimeDiff: 60000, // 60 seconds
+			Fingerprint: "chrome",
 		},
 	}
 }

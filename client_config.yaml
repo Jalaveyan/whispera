@@ -54,3 +54,23 @@ security:
 monitoring:
   enabled: true
   metrics_port: 9100
+
+obfuscation:
+  enabled: true
+  profile: "telegram" 
+
+# ASN Bypass - Evades VPN/datacenter IP blocking
+# Anti-bot systems block connections based on source IP ASN
+asn_bypass:
+  enabled: true                    # Enable for datacenter/VPN IPs
+  strategy: "tls_masquerade"       # tls_masquerade, domain_fronting, residential_proxy
+  tls_fingerprint: "chrome"        # Browser fingerprint: chrome, firefox, safari, ios, android
+  ja3_randomize: true              # Randomize JA3 fingerprint per connection
+
+# Phantom Protocol - SNI masquerading for DPI evasion
+# Makes VPN traffic appear as legitimate website visits
+phantom:
+  enabled: true                    # Auto-enabled when asn_bypass is enabled
+  sni: "cloudflare.com"            # SNI to use in TLS ClientHello
+  short_id: ""                     # Auto-generated if empty
+  server_public_key: ""            # Server's x25519 public key (hex) - get from server admin

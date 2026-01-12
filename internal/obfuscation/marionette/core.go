@@ -6,6 +6,7 @@ import (
 	"math/rand"
 	"time"
 
+	"whispera/internal/obfuscation/behavioral"
 	"whispera/internal/obfuscation/core/types"
 	mlpkg "whispera/internal/obfuscation/ml"
 	"whispera/internal/util"
@@ -84,15 +85,72 @@ func (m *Marionette) SetUTLSConn(conn *utls.UConn) {
 	m.UTLSConn = conn
 }
 
+// isTLSHandshake checks if the data is a TLS handshake packet that should NOT be modified
+// TLS record: byte 0 = content type (0x16 = handshake, 0x17 = application data)
+// If we modify TLS handshake packets, the server will send RST because it can't parse them
+func isTLSHandshake(data []byte) bool {
+	if len(data) < 5 {
+		return false
+	}
+	contentType := data[0]
+	// TLS versions: 0x0301 (TLS 1.0), 0x0302 (TLS 1.1), 0x0303 (TLS 1.2/1.3)
+	majorVersion := data[1]
+	minorVersion := data[2]
+
+	// Check for TLS handshake (0x16) or change cipher spec (0x14) or alert (0x15)
+	isTLSContentType := contentType == 0x16 || contentType == 0x14 || contentType == 0x15
+	// Check for valid TLS version
+	isValidVersion := majorVersion == 0x03 && (minorVersion >= 0x01 && minorVersion <= 0x04)
+
+	return isTLSContentType && isValidVersion
+}
+
+// isTLSApplicationData checks if the data is TLS application data (0x17)
+// Application data CAN be obfuscated because it's already encrypted
+func isTLSApplicationData(data []byte) bool {
+	if len(data) < 5 {
+		return false
+	}
+	return data[0] == 0x17 && data[1] == 0x03 && (data[2] >= 0x01 && data[2] <= 0x04)
+}
+
 // ProcessPacket applies obfuscation rules to a packet with ML analysis
+// Now integrates with BehaviorEngine for realistic traffic timing
 func (m *Marionette) ProcessPacket(data []byte, direction string) ([]byte, time.Duration, error) {
 	m.Mutex.RLock()
 	isFallback := m.FallbackMode
+	behaviorEngine := m.BehaviorEngine
 	m.Mutex.RUnlock()
 
 	if isFallback {
 		return data, 0, nil
 	}
+
+	// CRITICAL: Never modify TLS handshake packets!
+	// This would corrupt the ClientHello/ServerHello and cause RST from the server
+	// Only allow obfuscation of TLS application data (which is already encrypted)
+	if isTLSHandshake(data) {
+		// Track TLS handshakes for statistics but don't modify
+		m.Mutex.Lock()
+		m.Metrics.PacketsProcessed++
+		m.updateStateInProcess(data, direction)
+		m.Mutex.Unlock()
+		return data, 0, nil
+	}
+
+	// Calculate behavioral delay if engine is active
+	var behavioralDelay time.Duration
+	if behaviorEngine != nil {
+		behavioralDelay = behaviorEngine.NextPacketDelay()
+
+		// Transition state machine based on traffic direction
+		if direction == "outbound" {
+			behaviorEngine.TransitionState()
+		}
+	}
+
+	// Check if this is TLS application data (can be obfuscated)
+	canObfuscate := isTLSApplicationData(data)
 
 	suggested := m.Profiler.SuggestProfile(data)
 	if suggested != "" && suggested != m.Active {
@@ -113,17 +171,21 @@ func (m *Marionette) ProcessPacket(data []byte, direction string) ([]byte, time.
 	}
 
 	processed := data
-	for _, rule := range rules {
-		if !rule.Enabled || rule.Priority < 7 {
-			continue
-		}
-		if m.evaluateConditionFast(rule.Condition) {
-			actionProcessed, _ := m.applyAction(rule.Action, processed, rule.Parameters)
-			processed = actionProcessed
+
+	// Only apply obfuscation rules to TLS application data
+	if canObfuscate {
+		for _, rule := range rules {
+			if !rule.Enabled || rule.Priority < 7 {
+				continue
+			}
+			if m.evaluateConditionFast(rule.Condition) {
+				actionProcessed, _ := m.applyAction(rule.Action, processed, rule.Parameters)
+				processed = actionProcessed
+			}
 		}
 	}
 
-	return processed, 0, nil
+	return processed, behavioralDelay, nil
 }
 
 func (m *Marionette) updateStateInProcess(data []byte, direction string) {
@@ -391,4 +453,141 @@ func (ma *MarionetteAdapter) ApplyProductionDPIEvasion(data []byte, service stri
 // StartDynamicManager starts the dynamic profile manager
 func (ma *MarionetteAdapter) StartDynamicManager() {
 	ma.m.StartDynamicManager()
+}
+
+// =============================================================================
+// BEHAVIORAL MIMICRY METHODS
+// =============================================================================
+
+// SetBehavioralProfile activates a complete messenger behavioral profile
+// This enables full multi-layer traffic imitation (TCP, TLS, L7, timing)
+// Supports both Android and iOS variants: use "telegram_ios", "vk_ios", etc.
+func (m *Marionette) SetBehavioralProfile(profileName string) error {
+	m.Mutex.Lock()
+	defer m.Mutex.Unlock()
+
+	var profile *behavioral.MessengerProfile
+	var isIOS bool
+
+	switch profileName {
+	// Android profiles
+	case "telegram":
+		profile = behavioral.TelegramProfile()
+	case "vk", "vk_messenger":
+		profile = behavioral.VKMessengerProfile()
+	case "vkvideo", "vk_video":
+		profile = behavioral.VKVideoProfile()
+	case "instagram":
+		profile = behavioral.InstagramProfile()
+	case "max", "max_messenger":
+		profile = behavioral.MaxMessengerProfile()
+	case "wechat":
+		profile = behavioral.WeChatProfile()
+	case "facebook", "messenger", "fb_messenger":
+		profile = behavioral.FacebookMessengerProfile()
+
+	// iOS profiles
+	case "telegram_ios":
+		profile = behavioral.TelegramIOSProfile()
+		isIOS = true
+	case "vk_ios", "vk_messenger_ios":
+		profile = behavioral.VKMessengerIOSProfile()
+		isIOS = true
+	case "instagram_ios":
+		profile = behavioral.InstagramIOSProfile()
+		isIOS = true
+	case "facebook_ios", "messenger_ios", "fb_messenger_ios":
+		profile = behavioral.FacebookMessengerIOSProfile()
+		isIOS = true
+	case "wechat_ios":
+		profile = behavioral.WeChatIOSProfile()
+		isIOS = true
+
+	default:
+		return fmt.Errorf("unknown behavioral profile: %s, available: telegram, vk, vkvideo, instagram, max, wechat, facebook (add '_ios' for iOS variant)", profileName)
+	}
+
+	m.ActiveBehavioralProfile = profile
+	m.BehaviorEngine = behavioral.NewBehaviorEngine(profile)
+
+	// Set matching uTLS fingerprint
+	if isIOS {
+		m.UTLSFingerprint = "ios"
+	} else {
+		m.UTLSFingerprint = "android"
+	}
+
+	return nil
+}
+
+// GetBehavioralDelay returns the next packet delay based on behavioral model
+func (m *Marionette) GetBehavioralDelay() time.Duration {
+	m.Mutex.RLock()
+	engine := m.BehaviorEngine
+	m.Mutex.RUnlock()
+
+	if engine == nil {
+		return 0
+	}
+
+	return engine.NextPacketDelay()
+}
+
+// GetBehavioralPacketSize returns recommended packet size based on current state
+func (m *Marionette) GetBehavioralPacketSize() int {
+	m.Mutex.RLock()
+	engine := m.BehaviorEngine
+	m.Mutex.RUnlock()
+
+	if engine == nil {
+		return 0
+	}
+
+	return engine.NextPacketSize()
+}
+
+// TransitionBehavioralState advances the behavioral state machine
+func (m *Marionette) TransitionBehavioralState() {
+	m.Mutex.RLock()
+	engine := m.BehaviorEngine
+	m.Mutex.RUnlock()
+
+	if engine != nil {
+		engine.TransitionState()
+	}
+}
+
+// GetBehavioralState returns current behavioral state
+func (m *Marionette) GetBehavioralState() string {
+	m.Mutex.RLock()
+	engine := m.BehaviorEngine
+	m.Mutex.RUnlock()
+
+	if engine == nil {
+		return "none"
+	}
+
+	return engine.GetCurrentState()
+}
+
+// SetBehavioralState manually sets the behavioral state
+func (m *Marionette) SetBehavioralState(state string) {
+	m.Mutex.RLock()
+	engine := m.BehaviorEngine
+	m.Mutex.RUnlock()
+
+	if engine != nil {
+		engine.SetState(state)
+	}
+}
+
+// GetActiveBehavioralProfile returns the active behavioral profile info
+func (m *Marionette) GetActiveBehavioralProfile() string {
+	m.Mutex.RLock()
+	defer m.Mutex.RUnlock()
+
+	if m.ActiveBehavioralProfile == nil {
+		return "none"
+	}
+	return m.ActiveBehavioralProfile.Name
 }

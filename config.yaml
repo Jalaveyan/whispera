@@ -77,3 +77,36 @@ monitoring:
   enabled: true
   metrics_port: 9090
   health_port: 8080
+
+# Phantom Protocol Settings
+# Whispera's stealth protocol for SNI masquerading and TLS proxying
+# Makes VPN traffic indistinguishable from legitimate website visits
+phantom:
+  enabled: false  # Set to true to enable Phantom protocol
+  
+  # Destination server to proxy TLS to for non-authenticated clients
+  # This should be a real website that supports TLS 1.3 and H2
+  # Good choices: cloudflare.com, www.google.com, www.microsoft.com
+  dest: "cloudflare.com:443"
+  
+  # Allowed SNI values that clients can use
+  # Should match the dest server or related domains
+  server_names:
+    - "cloudflare.com"
+    - "www.cloudflare.com"
+  
+  # x25519 private key for client authentication (hex encoded)
+  # Generate with: ./whispera-server x25519
+  private_key: ""
+  
+  # ShortIds for client identification (0-16 hex characters)
+  short_ids:
+    - ""  # Empty allowed
+    - "0123456789abcdef"
+  
+  # Maximum time difference for replay protection (milliseconds)
+  max_time_diff: 60000
+  
+  # Default browser fingerprint for TLS connections
+  # Options: chrome, firefox, safari, ios, android
+  fingerprint: "chrome"

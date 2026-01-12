@@ -1,0 +1,430 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Whispera VPN</title>
+    <style>
+        :root {
+            --bg-color: #0f172a;
+            --card-bg: #1e293b;
+            --primary: #3b82f6;
+            --primary-hover: #2563eb;
+            --text-main: #f8fafc;
+            --text-muted: #94a3b8;
+            --error: #ef4444;
+            --success: #10b981;
+            --vk-blue: #0077ff;
+        }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background: linear-gradient(135deg, #0f172a 0%, #1e1b4b 100%);
+            color: var(--text-main);
+            margin: 0;
+            height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            user-select: none;
+            overflow: hidden;
+        }
+
+        .container {
+            background: rgba(30, 41, 59, 0.95);
+            backdrop-filter: blur(10px);
+            padding: 2.5rem;
+            border-radius: 1.5rem;
+            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
+            width: 100%;
+            max-width: 420px;
+            text-align: center;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .logo {
+            width: 80px;
+            height: 80px;
+            margin: 0 auto 1rem;
+            background: linear-gradient(135deg, #3b82f6, #8b5cf6);
+            border-radius: 20px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 2.5rem;
+            box-shadow: 0 10px 40px rgba(59, 130, 246, 0.3);
+        }
+
+        h1 {
+            margin-top: 0;
+            margin-bottom: 0.5rem;
+            font-size: 1.75rem;
+            font-weight: 700;
+            background: linear-gradient(to right, #60a5fa, #a855f7);
+            background-clip: text;
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        p.subtitle {
+            color: var(--text-muted);
+            margin-bottom: 1.5rem;
+            font-size: 0.875rem;
+        }
+
+        .profile-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            background: rgba(0, 119, 255, 0.15);
+            border: 1px solid rgba(0, 119, 255, 0.3);
+            padding: 0.5rem 1rem;
+            border-radius: 2rem;
+            color: #60a5fa;
+            font-size: 0.75rem;
+            font-weight: 600;
+            margin-bottom: 1.5rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        .input-group {
+            margin-bottom: 1.5rem;
+            text-align: left;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 0.5rem;
+            font-size: 0.75rem;
+            font-weight: 500;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        textarea {
+            width: 100%;
+            padding: 1rem;
+            background-color: rgba(0, 0, 0, 0.3);
+            border: 1px solid #334155;
+            border-radius: 0.75rem;
+            color: white;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.8rem;
+            resize: none;
+            height: 100px;
+            transition: all 0.2s;
+            box-sizing: border-box;
+        }
+
+        textarea:focus {
+            outline: none;
+            border-color: var(--primary);
+            box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.2);
+        }
+
+        textarea::placeholder {
+            color: #475569;
+        }
+
+        button {
+            width: 100%;
+            padding: 1rem;
+            background: linear-gradient(135deg, #3b82f6, #6366f1);
+            color: white;
+            border: none;
+            border-radius: 0.75rem;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 0.75rem;
+            box-shadow: 0 4px 15px rgba(59, 130, 246, 0.3);
+        }
+
+        button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(59, 130, 246, 0.4);
+        }
+
+        button:active {
+            transform: translateY(0);
+        }
+
+        button:disabled {
+            background: #334155;
+            cursor: not-allowed;
+            opacity: 0.7;
+            transform: none;
+            box-shadow: none;
+        }
+
+        button.disconnect {
+            background: linear-gradient(135deg, #ef4444, #dc2626);
+            box-shadow: 0 4px 15px rgba(239, 68, 68, 0.3);
+        }
+
+        .status-container {
+            margin-top: 1.5rem;
+            padding: 1rem 1.5rem;
+            background: rgba(0, 0, 0, 0.2);
+            border-radius: 1rem;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .status-left {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+        }
+
+        .status-dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            background-color: #64748b;
+            transition: all 0.3s;
+        }
+
+        .status-text {
+            font-size: 0.875rem;
+            font-weight: 500;
+            color: var(--text-muted);
+        }
+
+        .status-info {
+            font-size: 0.7rem;
+            color: #64748b;
+        }
+
+        /* Status States */
+        .connected .status-dot {
+            background-color: var(--success);
+            box-shadow: 0 0 10px var(--success), 0 0 20px rgba(16, 185, 129, 0.3);
+        }
+
+        .connected .status-text {
+            color: var(--success);
+        }
+
+        .connecting .status-dot {
+            background-color: #eab308;
+            box-shadow: 0 0 10px #eab308;
+            animation: pulse 1.5s infinite;
+        }
+
+        .error .status-dot {
+            background-color: var(--error);
+            box-shadow: 0 0 10px var(--error);
+        }
+
+        .error .status-text {
+            color: var(--error);
+        }
+
+        @keyframes pulse {
+
+            0%,
+            100% {
+                opacity: 1;
+            }
+
+            50% {
+                opacity: 0.4;
+            }
+        }
+
+        .help-text {
+            margin-top: 1rem;
+            font-size: 0.7rem;
+            color: #64748b;
+            text-align: center;
+        }
+
+        .help-text code {
+            background: rgba(0, 0, 0, 0.3);
+            padding: 0.2rem 0.4rem;
+            border-radius: 0.25rem;
+            color: #94a3b8;
+        }
+
+        .hidden {
+            display: none;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <div class="logo">⚡</div>
+        <h1>Whispera</h1>
+        <p class="subtitle">Secure & Adaptive Tunneling</p>
+
+        <div class="profile-badge">
+            <span>🛡️</span>
+            <span id="profile-name">VK Messenger Profile</span>
+        </div>
+
+        <div class="input-group" id="key-section">
+            <label for="connection-key">Connection Key</label>
+            <textarea id="connection-key" placeholder="whispera://server:port?key=...&pub=...&profile=vk"></textarea>
+        </div>
+
+        <button id="connect-btn">
+            <span class="icon">⚡</span>
+            <span id="btn-text">Connect</span>
+        </button>
+
+        <div class="status-container" id="status-box">
+            <div class="status-left">
+                <div class="status-dot" id="status-dot"></div>
+                <div class="status-text" id="status-text">Disconnected</div>
+            </div>
+            <div class="status-info" id="status-info"></div>
+        </div>
+
+        <div class="help-text">
+            Paste your <code>whispera://</code> key from the admin panel
+        </div>
+    </div>
+
+    <script>
+        const { invoke } = window.__TAURI__.tauri;
+        let isConnected = false;
+
+        const btn = document.getElementById('connect-btn');
+        const keyInput = document.getElementById('connection-key');
+        const statusBox = document.getElementById('status-box');
+        const statusDot = document.getElementById('status-dot');
+        const statusText = document.getElementById('status-text');
+        const statusInfo = document.getElementById('status-info');
+        const btnText = document.getElementById('btn-text');
+        const profileName = document.getElementById('profile-name');
+
+        // Profile display names
+        const profileNames = {
+            'vk': 'VK Messenger',
+            'vk_ios': 'VK iOS',
+            'telegram': 'Telegram',
+            'telegram_ios': 'Telegram iOS',
+            'instagram': 'Instagram',
+            'instagram_ios': 'Instagram iOS',
+            'facebook': 'Facebook Messenger',
+            'messenger': 'Facebook Messenger',
+            'wechat': 'WeChat',
+            'max': 'Max Messenger'
+        };
+
+        function setStatus(state, message, info = '') {
+            statusBox.className = 'status-container ' + state;
+            statusText.innerText = message;
+            statusInfo.innerText = info;
+
+            if (state === 'connected') {
+                btnText.innerText = 'Disconnect';
+                btn.classList.add('disconnect');
+                keyInput.disabled = true;
+                isConnected = true;
+            } else if (state === 'disconnected' || state === '') {
+                btnText.innerText = 'Connect';
+                btn.classList.remove('disconnect');
+                keyInput.disabled = false;
+                isConnected = false;
+                btn.disabled = false;
+            } else {
+                keyInput.disabled = true;
+                btn.disabled = true;
+            }
+        }
+
+        function updateProfileBadge(profile) {
+            const name = profileNames[profile] || profile || 'VK Messenger';
+            profileName.innerText = name + ' Profile';
+        }
+
+        function parseKeyProfile(key) {
+            try {
+                const url = new URL(key);
+                return url.searchParams.get('profile') || 'vk';
+            } catch {
+                return 'vk';
+            }
+        }
+
+        // Update profile badge when key changes
+        keyInput.addEventListener('input', () => {
+            const key = keyInput.value.trim();
+            if (key.startsWith('whispera://')) {
+                const profile = parseKeyProfile(key);
+                updateProfileBadge(profile);
+            }
+        });
+
+        btn.addEventListener('click', async () => {
+            if (isConnected) {
+                // Handle Disconnect
+                setStatus('connecting', 'Disconnecting...');
+                try {
+                    await invoke('disconnect');
+                    setStatus('disconnected', 'Disconnected');
+                    updateProfileBadge('vk');
+                } catch (e) {
+                    console.error(e);
+                    setStatus('error', 'Disconnect failed');
+                }
+                return;
+            }
+
+            const key = keyInput.value.trim();
+            if (!key) {
+                setStatus('error', 'Please enter a key');
+                setTimeout(() => setStatus('disconnected', 'Disconnected'), 2000);
+                return;
+            }
+
+            if (!key.startsWith('whispera://')) {
+                setStatus('error', 'Invalid key format');
+                setTimeout(() => setStatus('disconnected', 'Disconnected'), 2000);
+                return;
+            }
+
+            setStatus('connecting', 'Connecting...');
+
+            try {
+                const response = await invoke('connect', { key });
+                console.log("Connect response:", response);
+
+                const profile = response.profile || parseKeyProfile(key);
+                updateProfileBadge(profile);
+
+                setStatus('connected', 'Connected', `SOCKS5: 127.0.0.1:${response.socks_port || 1080}`);
+            } catch (e) {
+                console.error(e);
+                setStatus('error', 'Connection failed', String(e).substring(0, 50));
+                btn.disabled = false;
+                keyInput.disabled = false;
+            }
+        });
+
+        // Check initial status
+        (async () => {
+            try {
+                const status = await invoke('get_status');
+                if (status === 'connected') {
+                    setStatus('connected', 'Connected');
+                }
+            } catch (e) {
+                console.log('Status check error:', e);
+            }
+        })();
+    </script>
+</body>
+
+</html>

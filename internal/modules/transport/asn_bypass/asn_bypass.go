@@ -111,6 +111,15 @@ type Dialer struct {
 	proxyAttempts   int64
 	successCount    int64
 	failureCount    int64
+
+	// Phantom Protocol support
+	phantomSNI  string              // SNI to use for masquerading
+	phantomAuth PhantomAuthProvider // Auth data generator
+}
+
+// PhantomAuthProvider generates auth data for ClientHello extension
+type PhantomAuthProvider interface {
+	GenerateAuthData() ([]byte, error)
 }
 
 // NewDialer creates a new ASN bypass dialer
@@ -591,6 +600,28 @@ func (d *Dialer) SetFingerprint(fp string) {
 	d.mu.Lock()
 	d.config.TLSFingerprint = fp
 	d.mu.Unlock()
+}
+
+// SetPhantomConfig configures Phantom protocol for SNI masquerading
+// sni is the server name to use in ClientHello (e.g., "cloudflare.com")
+// authProvider generates authentication data for the Phantom extension
+func (d *Dialer) SetPhantomConfig(sni string, authProvider PhantomAuthProvider) {
+	d.mu.Lock()
+	d.phantomSNI = sni
+	d.phantomAuth = authProvider
+	if sni != "" {
+		// Enable SNI masking when Phantom is configured
+		d.config.EnableSNIMask = true
+		d.config.FrontDomain = sni
+	}
+	d.mu.Unlock()
+}
+
+// GetPhantomSNI returns the configured Phantom SNI
+func (d *Dialer) GetPhantomSNI() string {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return d.phantomSNI
 }
 
 // domainFrontedConn wraps a connection with domain fronting

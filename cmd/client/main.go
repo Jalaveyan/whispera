@@ -174,6 +174,25 @@ func main() {
 		}
 	}
 
+	// Configure Phantom protocol (SNI masquerading for DPI evasion)
+	phantomEnabled := false
+	phantomSNI := "cloudflare.com" // Default SNI
+	phantomShortId := ""
+	phantomServerPubKey := ""
+
+	if cfg.Phantom != nil && cfg.Phantom.Enabled {
+		phantomEnabled = true
+		if cfg.Phantom.SNI != "" {
+			phantomSNI = cfg.Phantom.SNI
+		}
+		phantomShortId = cfg.Phantom.ShortId
+		phantomServerPubKey = cfg.Phantom.ServerPublicKey
+	} else if asnBypassEnabled {
+		// Auto-enable Phantom when ASN bypass is enabled for better DPI evasion
+		phantomEnabled = true
+		stdlog.Printf("Auto-enabling Phantom protocol for enhanced DPI evasion")
+	}
+
 	tunnelMod, _ := tunnel.New(&tunnel.Config{
 		ServerAddr:        serverAddress,
 		KeepaliveInterval: 30 * time.Second,
@@ -181,10 +200,18 @@ func main() {
 		EnableASNBypass:    asnBypassEnabled,
 		TLSFingerprint:     asnBypassFingerprint,
 		EnableJA3Randomize: true,
+		// Phantom Protocol settings
+		EnablePhantom:       phantomEnabled,
+		PhantomSNI:          phantomSNI,
+		PhantomShortId:      phantomShortId,
+		PhantomServerPubKey: phantomServerPubKey,
 	})
 
 	if asnBypassEnabled {
 		stdlog.Printf("ASN bypass enabled (fingerprint: %s)", asnBypassFingerprint)
+	}
+	if phantomEnabled {
+		stdlog.Printf("Phantom protocol enabled (SNI: %s)", phantomSNI)
 	}
 
 	// Inject dependencies: Transport(nil/SOCKS), Handshake, DataPlane(nil), Crypto

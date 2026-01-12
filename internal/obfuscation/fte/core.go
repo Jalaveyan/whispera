@@ -56,8 +56,32 @@ func (fte *FTE) initProfiles() {
 	fte.addRussianMessengerProfiles() // Max, VK Messenger, TamTam, Yandex Messenger
 }
 
+// isFTETLSHandshake checks if data is a TLS handshake that should not be modified
+func isFTETLSHandshake(data []byte) bool {
+	if len(data) < 5 {
+		return false
+	}
+	contentType := data[0]
+	majorVersion := data[1]
+	minorVersion := data[2]
+
+	// TLS handshake (0x16), change cipher spec (0x14), or alert (0x15)
+	isTLSContentType := contentType == 0x16 || contentType == 0x14 || contentType == 0x15
+	isValidVersion := majorVersion == 0x03 && (minorVersion >= 0x01 && minorVersion <= 0x04)
+
+	return isTLSContentType && isValidVersion
+}
+
 // Transform applies FTE camouflage
+// CRITICAL: TLS handshake packets are passed through unmodified to prevent RST
 func (fte *FTE) Transform(data []byte) ([]byte, error) {
+	// CRITICAL: Never modify TLS handshake packets!
+	// Modifying ClientHello/ServerHello will corrupt the TLS handshake
+	// and cause the server to send RST (connection reset)
+	if isFTETLSHandshake(data) {
+		return data, nil
+	}
+
 	fte.mutex.RLock()
 	active := fte.active
 	profile := fte.profiles[active]

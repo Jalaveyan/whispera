@@ -98,6 +98,9 @@ type ClientConfig struct {
 
 	// Phase 4: ASN Bypass (for VPN/Datacenter IP detection evasion)
 	ASNBypass *ClientASNBypassConfig `yaml:"asn_bypass,omitempty" json:"asn_bypass,omitempty"`
+
+	// Phase 5: Phantom Protocol (SNI masquerading for DPI evasion)
+	Phantom *ClientPhantomConfig `yaml:"phantom,omitempty" json:"phantom,omitempty"`
 }
 
 // ClientRoutingConfig holds routing rules and engine settings
@@ -177,6 +180,15 @@ type ClientASNBypassConfig struct {
 	EnableECH          bool     `yaml:"enable_ech" json:"enable_ech"`                   // Enable Encrypted Client Hello
 	ConnectionBurst    int      `yaml:"connection_burst" json:"connection_burst"`       // Max connections per burst window
 	BurstCooldownMs    int      `yaml:"burst_cooldown_ms" json:"burst_cooldown_ms"`     // Cooldown between bursts in ms
+}
+
+// ClientPhantomConfig holds Phantom protocol settings for SNI masquerading
+// Phantom makes VPN traffic appear as legitimate website visits to DPI systems
+type ClientPhantomConfig struct {
+	Enabled         bool   `yaml:"enabled" json:"enabled"`                     // Enable Phantom protocol
+	SNI             string `yaml:"sni" json:"sni"`                             // SNI to use (e.g., "cloudflare.com")
+	ShortId         string `yaml:"short_id" json:"short_id"`                   // Client short ID (auto-generated if empty)
+	ServerPublicKey string `yaml:"server_public_key" json:"server_public_key"` // Server's x25519 public key (hex)
 }
 
 // LoadClient loads client configuration from path
