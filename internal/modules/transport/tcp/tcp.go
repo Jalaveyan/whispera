@@ -32,7 +32,7 @@ type Config struct {
 // DefaultConfig returns default TCP configuration
 func DefaultConfig() *Config {
 	return &Config{
-		ListenAddr:   ":443",
+		ListenAddr:   ":8443",
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 30 * time.Second,
 		KeepAlive:    30 * time.Second,
