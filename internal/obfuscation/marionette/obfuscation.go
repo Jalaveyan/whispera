@@ -1,7 +1,6 @@
 package marionette
 
 import (
-	"fmt"
 	"math"
 	"math/rand"
 	"time"
@@ -67,30 +66,26 @@ func (m *Marionette) applyProtocolObfuscation(data []byte, profile *TrafficObfus
 	return data
 }
 
-func (m *Marionette) addProtocolHeaders(data []byte, profile *TrafficObfuscationProfile) []byte {
-	var h []byte
-	switch profile.TargetService {
-	case "vk":
-		h = []byte("POST /api/v1/ HTTP/1.1\r\nHost: vk.com\r\nContent-Type: application/json\r\n\r\n")
-	case "yandex":
-		h = []byte("POST /api/v1/ HTTP/1.1\r\nHost: yandex.ru\r\nContent-Type: application/json\r\n\r\n")
-	case "mailru":
-		h = []byte("POST /api/v1/ HTTP/1.1\r\nHost: mail.ru\r\nContent-Type: application/json\r\n\r\n")
-	default:
-		h = []byte("POST /api/v1/ HTTP/1.1\r\nHost: api.example.com\r\nContent-Type: application/json\r\n\r\n")
+func (m *Marionette) addProtocolHeaders(data []byte, _ *TrafficObfuscationProfile) []byte {
+	// HTTPS MASKING: Instead of HTTP headers ("POST /..."), we wrap the data
+	// in a fake TLS Record header. This makes it look like legitimate
+	// encrypted TLS Application Data (Type 0x17).
+
+	// TLS Record Header:
+	// Byte 0: Content Type (0x17 = Application Data)
+	// Byte 1-2: Version (0x0303 = TLS 1.2, commonly used for compatibility)
+	// Byte 3-4: Length (Big Endian)
+
+	length := len(data)
+	header := []byte{
+		0x17,       // Content Type: Application Data
+		0x03, 0x03, // Version: TLS 1.2
+		byte(length >> 8), byte(length & 0xFF), // Length
 	}
 
-	// Add Content-Length for DPI compliance
-	headerStr := string(h)
-	// Strip the last \r\n\r\n to append CL
-	if len(headerStr) > 4 {
-		headerStr = headerStr[:len(headerStr)-4]
-	}
-	h = []byte(fmt.Sprintf("%sContent-Length: %d\r\n\r\n", headerStr, len(data)))
-
-	res := make([]byte, len(h)+len(data))
-	copy(res, h)
-	copy(res[len(h):], data)
+	res := make([]byte, len(header)+length)
+	copy(res, header)
+	copy(res[len(header):], data)
 	return res
 }
 
@@ -137,29 +132,19 @@ func (m *Marionette) applyApplicationObfuscation(data []byte, profile *TrafficOb
 	return data
 }
 
-func (m *Marionette) addApplicationSpecificHeadersTraffic(data []byte, profile *TrafficObfuscationProfile) []byte {
-	var h []byte
-	switch profile.TargetService {
-	case "vk":
-		h = []byte("POST /api/v1/messages.send HTTP/1.1\r\nHost: vk.com\r\nContent-Type: application/json\r\n\r\n")
-	case "yandex":
-		h = []byte("POST /api/v1/search HTTP/1.1\r\nHost: yandex.ru\r\nContent-Type: application/json\r\n\r\n")
-	case "mailru":
-		h = []byte("POST /api/v1/messages HTTP/1.1\r\nHost: mail.ru\r\nContent-Type: application/json\r\n\r\n")
-	default:
-		h = []byte("POST /api/v1/ HTTP/1.1\r\nHost: api.example.com\r\nContent-Type: application/json\r\n\r\n")
+func (m *Marionette) addApplicationSpecificHeadersTraffic(data []byte, _ *TrafficObfuscationProfile) []byte {
+	// SAME AS PROTOCOL LEVEL: Wrap in TLS Record (Application Data)
+	// This ensures consistency. We don't want HTTP headers appearing inside a TLS-looking stream.
+	length := len(data)
+	header := []byte{
+		0x17,       // Content Type: Application Data
+		0x03, 0x03, // Version: TLS 1.2
+		byte(length >> 8), byte(length & 0xFF), // Length
 	}
 
-	// Add Content-Length
-	headerStr := string(h)
-	if len(headerStr) > 4 {
-		headerStr = headerStr[:len(headerStr)-4]
-	}
-	h = []byte(fmt.Sprintf("%sContent-Length: %d\r\n\r\n", headerStr, len(data)))
-
-	res := make([]byte, len(h)+len(data))
-	copy(res, h)
-	copy(res[len(h):], data)
+	res := make([]byte, len(header)+length)
+	copy(res, header)
+	copy(res[len(header):], data)
 	return res
 }
 

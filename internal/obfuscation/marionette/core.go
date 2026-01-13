@@ -156,20 +156,21 @@ func (m *Marionette) ProcessPacket(data []byte, direction string) ([]byte, time.
 		m.triggerAsyncAnalysis()
 	}
 
-	// CRITICAL FIX: Skip obfuscation for TLS handshakes to prevent TCP RST
-	// Direct connections to external servers (e.g. Google, Microsoft) must remain valid TLS.
-	// This ensures at least one "Pure TLS" connection remains functional amidst the obfuscation noise.
+	// REVERT: Sending raw TLS handshake bypasses the VPN protocol wrapper/headers.
+	// The Server expects an obfuscated/wrapped frame (e.g. HTTP POST).
+	// Sending raw TLS causes the Server to reject the packet, resulting in TCP RST.
+	// To support "Pure TLS" for real traffic, we would need to implement a 'TLS Wrapper' profile
+	// that encapsulates the packet in a TLS Record, rather than sending it raw.
+	// For now, we restore normal obfuscation to ensure connectivity.
+	/*
+		 if isTLSHandshake(data) {
+			 return data, behavioralDelay, nil
+		 }
 
-	if isTLSHandshake(data) {
-		return data, behavioralDelay, nil
-	}
-
-	// Stay "Pure TLS" for application data as well.
-	// The obfuscator adds noise via the ChaffGenerator, so the real connection
-	// must remain a clean, valid stream hidden in plain sight.
-	if isTLSApplicationData(data) {
-		return data, behavioralDelay, nil
-	}
+		 if isTLSApplicationData(data) {
+			 return data, behavioralDelay, nil
+		 }
+	*/
 
 	// Apply Obfuscation to ALL outbound packets (except Handshakes)
 	processed := data
@@ -199,6 +200,22 @@ func (m *Marionette) ProcessPacket(data []byte, direction string) ([]byte, time.
 
 // Deobfuscate reverses the obfuscation applied to inbound traffic
 func (m *Marionette) Deobfuscate(data []byte) ([]byte, time.Duration, error) {
+	if len(data) < 5 {
+		return data, 0, nil
+	}
+
+	// 1. Check for Fake TLS Record (0x17 = App Data, 0x03 = SSL/TLS)
+	// We wrap our traffic in a fake TLS record to look like HTTPS.
+	// We need to strip the 5-byte header: [Type, VerHigh, VerLow, LenHigh, LenLow]
+	if data[0] == 0x17 && data[1] == 0x03 {
+		// Verify version is reasonable (3.1=TLS1.0, 3.2=TLS1.1, 3.3=TLS1.2, 3.4=TLS1.3)
+		if data[2] >= 0x01 && data[2] <= 0x04 {
+			// This matches our wrapping logic. Strip header.
+			return data[5:], 0, nil
+		}
+	}
+
+	// 2. HTTP Header Stripping (Legacy / HTTP Profiles)
 	// Basic HTTP Header Stripping (for vk, yandex, etc. profiles)
 	// We look for the double CRLF (\r\n\r\n) which separates headers from body
 	// This assumes the inner protocol is NOT HTTP-like enough to have this preamble
@@ -247,8 +264,6 @@ func (m *Marionette) Deobfuscate(data []byte) ([]byte, time.Duration, error) {
 		}
 	}
 
-	// If no header found, return data as is (might be raw or different obfuscation)
-	// Or maybe it's just a small packet not wrapped.
 	return data, 0, nil
 }
 
