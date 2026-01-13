@@ -138,6 +138,8 @@ func generateTLSConfig() (*tls.Config, error) {
 	return &tls.Config{
 		Certificates: []tls.Certificate{tlsCert},
 		NextProtos:   []string{"whispera"},
+		MinVersion:   tls.VersionTLS13,
+		MaxVersion:   tls.VersionTLS13,
 	}, nil
 }
 
@@ -226,6 +228,8 @@ func (t *Transport) Dial(ctx context.Context, addr string) (net.Conn, error) {
 	tlsConf := &tls.Config{
 		InsecureSkipVerify: true,
 		NextProtos:         []string{"whispera"},
+		MinVersion:         tls.VersionTLS13,
+		MaxVersion:         tls.VersionTLS13,
 	}
 
 	quicConfig := &quic.Config{

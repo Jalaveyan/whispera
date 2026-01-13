@@ -118,6 +118,8 @@ func (cg *ChaffGenerator) spawnChaff() {
 	uConn := utls.UClient(conn, &utls.Config{
 		ServerName:         splitHost(target),
 		InsecureSkipVerify: true, // We don't care about the cert for chaff
+		MinVersion:         utls.VersionTLS13,
+		MaxVersion:         utls.VersionTLS13,
 	}, helloID)
 
 	// Set deadline for handshake

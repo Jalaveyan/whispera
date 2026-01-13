@@ -513,7 +513,7 @@ func (t *RussianTunneler) CreateTunnel(ctx context.Context, cdnEndpoint string) 
 	transport := &http.Transport{
 		TLSClientConfig: &tls.Config{
 			ServerName:         targetDomain, // Use original service domain for SNI
-			MinVersion:         tls.VersionTLS12,
+			MinVersion:         tls.VersionTLS13,
 			MaxVersion:         tls.VersionTLS13,
 			InsecureSkipVerify: false,
 			CipherSuites: []uint16{

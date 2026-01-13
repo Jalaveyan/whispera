@@ -103,7 +103,7 @@ func NewTransport(cfg *TransportConfig) (*Transport, error) {
 		Strategy:               cfg.Strategy,
 		FrontDomain:            cfg.FrontDomain,
 		TLSFingerprint:         cfg.TLSFingerprint,
-		TLSMinVersion:          tls.VersionTLS12,
+		TLSMinVersion:          tls.VersionTLS13,
 		TLSMaxVersion:          tls.VersionTLS13,
 		EnableECH:              cfg.EnableECH,
 		EnableJA3Randomization: cfg.EnableJA3Randomization,

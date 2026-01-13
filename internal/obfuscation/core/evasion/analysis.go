@@ -10,7 +10,7 @@ import (
 )
 
 // loadRealTrafficData loads real traffic data for calibration
-func (m *Marionette) loadRealTrafficData(filename string) {
+func (m *Marionette) loadRealTrafficData(_ string) {
 	timeCache := util.GetGlobalTimeCache()
 	now := timeCache.Now()
 
@@ -30,7 +30,7 @@ func (m *Marionette) loadRealTrafficData(filename string) {
 }
 
 // analyzeTrafficSuccess analyzes traffic success for adaptive learning
-func (m *Marionette) analyzeTrafficSuccess(data []byte, direction string) error {
+func (m *Marionette) analyzeTrafficSuccess(_ []byte, _ string) error {
 	return nil
 }
 
@@ -70,23 +70,6 @@ func (m *Marionette) HealthCheck() error {
 	}
 
 	return nil
-}
-
-// cleanupMemory performs periodic memory cleanup
-func (m *Marionette) cleanupMemory() {
-	now := util.GetGlobalTimeCache().Now()
-	lastCleanupNano := atomic.LoadInt64(&m.Metrics.LastCleanup)
-	lastCleanup := time.Unix(0, lastCleanupNano)
-
-	if now.Sub(lastCleanup) > m.State.CleanupInterval {
-		if len(m.State.PacketHistory) > m.State.MaxHistorySize/2 {
-			keepCount := m.State.MaxHistorySize / 2
-			copy(m.State.PacketHistory, m.State.PacketHistory[len(m.State.PacketHistory)-keepCount:])
-			m.State.PacketHistory = m.State.PacketHistory[:keepCount]
-		}
-		m.State.LastCleanup = now
-		atomic.StoreInt64(&m.Metrics.LastCleanup, now.UnixNano())
-	}
 }
 
 // cleanupRuleCache cleans up rule cache

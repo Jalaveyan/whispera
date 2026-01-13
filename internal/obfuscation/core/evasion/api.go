@@ -63,7 +63,7 @@ func createSecureAPIHTTPClient(timeout time.Duration) *http.Client {
 	return &http.Client{
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{
-				MinVersion:         tls.VersionTLS12,
+				MinVersion:         tls.VersionTLS13,
 				MaxVersion:         tls.VersionTLS13,
 				InsecureSkipVerify: false,
 			},

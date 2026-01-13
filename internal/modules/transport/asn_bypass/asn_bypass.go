@@ -81,7 +81,7 @@ func DefaultConfig() *Config {
 	return &Config{
 		Strategy:               StrategyTLSMasquerade,
 		TLSFingerprint:         "chrome",
-		TLSMinVersion:          tls.VersionTLS12,
+		TLSMinVersion:          tls.VersionTLS13,
 		TLSMaxVersion:          tls.VersionTLS13,
 		EnableJA3Randomization: true,
 		ConnectionBurstLimit:   5,
@@ -349,7 +349,7 @@ func (d *Dialer) dialCloudflareBypass(ctx context.Context, addr string) (net.Con
 	uconn := utls.UClient(tcpConn, &utls.Config{
 		ServerName: host,
 		NextProtos: []string{"h2", "http/1.1"}, // HTTP/2 preferred
-		MinVersion: tls.VersionTLS12,
+		MinVersion: tls.VersionTLS13,
 		MaxVersion: tls.VersionTLS13,
 	}, utls.HelloChrome_Auto)
 

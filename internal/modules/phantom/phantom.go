@@ -21,8 +21,6 @@ import (
 	"whispera/internal/core/base"
 	"whispera/internal/core/interfaces"
 	"whispera/internal/logger"
-
-	utls "github.com/refraction-networking/utls"
 )
 
 const (
@@ -515,22 +513,6 @@ func (h *Handler) dialDestination() (net.Conn, error) {
 
 	// Return the raw TCP connection so we can pipe the client's handshake through it
 	return tcpConn, nil
-}
-
-// getFingerprint returns the uTLS fingerprint
-func (h *Handler) getFingerprint() *utls.ClientHelloID {
-	fingerprints := map[string]*utls.ClientHelloID{
-		"chrome":  &utls.HelloChrome_Auto,
-		"firefox": &utls.HelloFirefox_Auto,
-		"safari":  &utls.HelloSafari_Auto,
-		"ios":     &utls.HelloIOS_Auto,
-		"android": &utls.HelloAndroid_11_OkHttp,
-	}
-
-	if fp, ok := fingerprints[h.config.Fingerprint]; ok {
-		return fp
-	}
-	return &utls.HelloChrome_Auto
 }
 
 // GetStats returns current statistics

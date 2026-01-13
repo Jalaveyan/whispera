@@ -205,7 +205,8 @@ func (p *connPool) dial(_ context.Context) (*dotConn, error) {
 	tlsConfig := p.config.TLSConfig
 	if tlsConfig == nil {
 		tlsConfig = &tls.Config{
-			MinVersion: tls.VersionTLS12,
+			MinVersion: tls.VersionTLS13,
+			MaxVersion: tls.VersionTLS13,
 		}
 	}
 

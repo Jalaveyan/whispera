@@ -15,9 +15,7 @@ import (
 
 // Feature gates for safe-by-default behavior in production
 var (
-	enableCoreEvasion     = os.Getenv("WHISPERA_CORE_EVASION") == "1"
-	enableCoreRules       = os.Getenv("WHISPERA_CORE_RULES") == "1"
-	enableAdaptiveMimicry = os.Getenv("WHISPERA_ADAPTIVE_MIMICRY") == "1"
+	enableCoreEvasion = os.Getenv("WHISPERA_CORE_EVASION") == "1"
 )
 
 // Helper constants for CircuitBreaker
@@ -252,9 +250,10 @@ func (m *Marionette) recordMLFailure() {
 
 func (m *Marionette) recordMLSuccess() {
 	m.CircuitBreaker.FailureCount = 0
-	if m.CircuitBreaker.State == CircuitStateOpen {
+	switch m.CircuitBreaker.State {
+	case CircuitStateOpen:
 		m.CircuitBreaker.State = CircuitStateHalfOpen
-	} else if m.CircuitBreaker.State == CircuitStateHalfOpen {
+	case CircuitStateHalfOpen:
 		m.CircuitBreaker.State = CircuitStateClosed
 		m.FallbackMode = false
 	}

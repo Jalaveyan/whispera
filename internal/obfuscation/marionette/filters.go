@@ -18,14 +18,15 @@ func isLocalDiscovery(data []byte) bool {
 	var dstIP net.IP
 	var headerLen int
 
-	if version == 4 {
+	switch version {
+	case 4:
 		headerLen = int(data[0]&0x0F) * 4
 		if len(data) < headerLen {
 			return false
 		}
 		protocol = data[9]
 		dstIP = net.IP(data[16:20])
-	} else if version == 6 {
+	case 6:
 		// IPv6 fixed header is 40 bytes
 		if len(data) < 40 {
 			return false
@@ -33,7 +34,7 @@ func isLocalDiscovery(data []byte) bool {
 		headerLen = 40
 		protocol = data[6] // Next Header
 		dstIP = net.IP(data[24:40])
-	} else {
+	default:
 		return false
 	}
 

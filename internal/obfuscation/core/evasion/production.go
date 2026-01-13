@@ -3,7 +3,6 @@ package evasion
 import (
 	crand "crypto/rand"
 	"fmt"
-	"math"
 	"math/big"
 	"time"
 )
@@ -120,24 +119,6 @@ func (m *Marionette) applyProductionOzonEvasion(data []byte) ([]byte, time.Durat
 	return []byte(request), time.Since(start), nil
 }
 
-// applyProductionGenericRussianEvasion применяет общую эвазию для российских сервисов
-func (m *Marionette) applyProductionGenericRussianEvasion(data []byte) ([]byte, time.Duration, error) {
-	start := time.Now()
-	targetSize := 300 + secureRandInt(700)
-	request := "GET / HTTP/1.1\r\nHost: example.ru\r\nUser-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36\r\n\r\n"
-	request += string(data)
-
-	if len(request) < targetSize {
-		padding := make([]byte, targetSize-len(request))
-		for i := range padding {
-			padding[i] = byte(32 + secureRandInt(95))
-		}
-		request += string(padding)
-	}
-
-	return []byte(request), time.Since(start), nil
-}
-
 // Helper struct and methods from production_evasion.go to support above functionality
 type ProductionEvasion struct{}
 
@@ -190,32 +171,14 @@ func (pe *ProductionEvasion) addVKPadding(data []byte, targetSize int) []byte {
 	}
 	padding := make([]byte, targetSize-len(data))
 	for i := range padding {
-		if i%3 == 0 {
+		switch i % 3 {
+		case 0:
 			padding[i] = byte(32 + secureRandInt(95))
-		} else if i%3 == 1 {
+		case 1:
 			padding[i] = byte(97 + secureRandInt(26))
-		} else {
+		default:
 			padding[i] = byte(48 + secureRandInt(10))
 		}
 	}
 	return append(data, padding...)
-}
-
-func (pe *ProductionEvasion) calculateEntropy(data []byte) float64 {
-	if len(data) == 0 {
-		return 0.0
-	}
-	freq := make(map[byte]int)
-	for _, b := range data {
-		freq[b]++
-	}
-	entropy := 0.0
-	dataLen := float64(len(data))
-	for _, count := range freq {
-		if count > 0 {
-			p := float64(count) / dataLen
-			entropy -= p * math.Log2(p)
-		}
-	}
-	return entropy
 }

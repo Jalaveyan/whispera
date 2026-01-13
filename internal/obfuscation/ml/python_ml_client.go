@@ -91,7 +91,7 @@ func createSecureHTTPClient(baseURL string, timeout time.Duration) *http.Client 
 	// Для HTTPS настроим TLS и HTTP/2
 	if isHTTPS {
 		tlsConfig := &tls.Config{
-			MinVersion: tls.VersionTLS12,
+			MinVersion: tls.VersionTLS13,
 			MaxVersion: tls.VersionTLS13,
 		}
 

@@ -3,7 +3,6 @@ package evasion
 import (
 	//nolint:gosec // MD5 used for TLS fingerprinting, not cryptography
 
-	"sync"
 	"time"
 
 	"whispera/internal/obfuscation/core/types"
@@ -11,29 +10,6 @@ import (
 )
 
 // Pools for buffer reuse (from marionette_core_ml_evasion.go)
-const (
-	bufferPoolSmallSize  = 128
-	bufferPoolMediumSize = 1024
-	bufferPoolLargeSize  = 4096
-)
-
-var (
-	bufferPoolSmall = sync.Pool{
-		New: func() interface{} {
-			return make([]byte, 0, bufferPoolSmallSize)
-		},
-	}
-	bufferPoolMedium = sync.Pool{
-		New: func() interface{} {
-			return make([]byte, 0, bufferPoolMediumSize)
-		},
-	}
-	bufferPoolLarge = sync.Pool{
-		New: func() interface{} {
-			return make([]byte, 0, bufferPoolLargeSize)
-		},
-	}
-)
 
 // applyAction applies a rule action
 func (m *Marionette) applyAction(action types.Action, data []byte, params map[string]interface{}) ([]byte, time.Duration) {
@@ -161,15 +137,15 @@ func (m *Marionette) applyObfuscationAction(data []byte, params map[string]inter
 	}
 }
 
-func (m *Marionette) adjustEntropy(data []byte, params map[string]interface{}) ([]byte, time.Duration) {
+func (m *Marionette) adjustEntropy(data []byte, _ map[string]interface{}) ([]byte, time.Duration) {
 	return data, 0
 }
 
-func (m *Marionette) maskPatterns(data []byte, params map[string]interface{}) ([]byte, time.Duration) {
+func (m *Marionette) maskPatterns(data []byte, _ map[string]interface{}) ([]byte, time.Duration) {
 	return data, 0
 }
 
-func (m *Marionette) addStatisticalNoise(data []byte, params map[string]interface{}) ([]byte, time.Duration) {
+func (m *Marionette) addStatisticalNoise(data []byte, _ map[string]interface{}) ([]byte, time.Duration) {
 	return data, 0
 }
 
@@ -390,18 +366,18 @@ func (m *Marionette) applyBehavioralMimicryAction(data []byte, params map[string
 	}
 }
 
-func (m *Marionette) applyHTTPEvasion(data []byte, params map[string]interface{}) ([]byte, time.Duration) {
+func (m *Marionette) applyHTTPEvasion(data []byte, _ map[string]interface{}) ([]byte, time.Duration) {
 	return data, 0
 }
 
-func (m *Marionette) applyTLSEvasion(data []byte, params map[string]interface{}) ([]byte, time.Duration) {
+func (m *Marionette) applyTLSEvasion(data []byte, _ map[string]interface{}) ([]byte, time.Duration) {
 	clientHello := m.generateTLSClientHello()
 	extensions := m.generateTLSExtensions()
 	tlsObfuscation := append(clientHello, extensions...)
 	return append(data, tlsObfuscation...), 0
 }
 
-func (m *Marionette) applyGREASEEvasion(data []byte) []byte {
+func (m *Marionette) applyGREASEEvasion(_ []byte) []byte {
 	var greaseValues = [16]byte{0x0a, 0x0a, 0x1a, 0x1a, 0x2a, 0x2a, 0x3a, 0x3a, 0x4a, 0x4a, 0x5a, 0x5a, 0x6a, 0x6a, 0x7a, 0x7a}
 	greaseObfuscation := make([]byte, 4)
 	greaseValuesLen := len(greaseValues)
@@ -412,7 +388,7 @@ func (m *Marionette) applyGREASEEvasion(data []byte) []byte {
 	return greaseObfuscation
 }
 
-func (m *Marionette) applyALPNEvasion(data []byte) []byte {
+func (m *Marionette) applyALPNEvasion(_ []byte) []byte {
 	var alpnPatterns = [4][6]byte{
 		{0x68, 0x32, 0x68, 0x74, 0x74, 0x70}, // h2,http
 		{0x68, 0x33, 0x68, 0x74, 0x74, 0x70}, // h3,http
@@ -425,64 +401,64 @@ func (m *Marionette) applyALPNEvasion(data []byte) []byte {
 	return alpnObfuscation
 }
 
-func (m *Marionette) applyECHEvasion(data []byte) []byte {
+func (m *Marionette) applyECHEvasion(_ []byte) []byte {
 	echObfuscation := make([]byte, 12)
 	return echObfuscation
 }
 
-func (m *Marionette) applyHPACKEvasion(data []byte) []byte {
+func (m *Marionette) applyHPACKEvasion(_ []byte) []byte {
 	hpackObfuscation := make([]byte, 8)
 	return hpackObfuscation
 }
 
-func (m *Marionette) applyQPACKEvasion(data []byte) []byte {
+func (m *Marionette) applyQPACKEvasion(_ []byte) []byte {
 	qpackObfuscation := make([]byte, 8)
 	return qpackObfuscation
 }
 
-func (m *Marionette) applyDoHEvasion(data []byte) []byte {
+func (m *Marionette) applyDoHEvasion(_ []byte) []byte {
 	dohObfuscation := make([]byte, 6)
 	return dohObfuscation
 }
 
-func (m *Marionette) applyDoQEvasion(data []byte) []byte {
+func (m *Marionette) applyDoQEvasion(_ []byte) []byte {
 	doqObfuscation := make([]byte, 6)
 	return doqObfuscation
 }
 
-func (m *Marionette) applyTimingAnalysisEvasion(data []byte) []byte {
+func (m *Marionette) applyTimingAnalysisEvasion(_ []byte) []byte {
 	timingObfuscation := make([]byte, 6)
 	return timingObfuscation
 }
 
-func (m *Marionette) applyFlowAnalysisEvasion(data []byte) []byte {
+func (m *Marionette) applyFlowAnalysisEvasion(_ []byte) []byte {
 	flowObfuscation := make([]byte, 6)
 	return flowObfuscation
 }
 
-func (m *Marionette) applyStatisticalEvasion(data []byte) []byte {
+func (m *Marionette) applyStatisticalEvasion(_ []byte) []byte {
 	statisticalObfuscation := make([]byte, 10)
 	return statisticalObfuscation
 }
 
-func (m *Marionette) applyMLClassificationEvasion(data []byte) []byte {
+func (m *Marionette) applyMLClassificationEvasion(_ []byte) []byte {
 	mlObfuscation := make([]byte, 24)
 	return mlObfuscation
 }
 
-func (m *Marionette) applyEnhancedBehavioralMimicry(data []byte) []byte {
+func (m *Marionette) applyEnhancedBehavioralMimicry(_ []byte) []byte {
 	return []byte{0x01, 0x02}
 }
 
-func (m *Marionette) mimicHumanBehavior(data []byte, params map[string]interface{}) ([]byte, time.Duration) {
+func (m *Marionette) mimicHumanBehavior(data []byte, _ map[string]interface{}) ([]byte, time.Duration) {
 	return data, 0
 }
 
-func (m *Marionette) mimicServiceBehavior(data []byte, params map[string]interface{}) ([]byte, time.Duration) {
+func (m *Marionette) mimicServiceBehavior(data []byte, _ map[string]interface{}) ([]byte, time.Duration) {
 	return data, 0
 }
 
-func (m *Marionette) mimicDeviceBehavior(data []byte, params map[string]interface{}) ([]byte, time.Duration) {
+func (m *Marionette) mimicDeviceBehavior(data []byte, _ map[string]interface{}) ([]byte, time.Duration) {
 	return data, 0
 }
 
@@ -511,12 +487,12 @@ func (m *Marionette) generateServiceSpecificPadding(profile string, size int) []
 	switch profile {
 	case "vk":
 		for i := 0; i < size; i++ {
-			mod3 := i % 3
-			if mod3 == 0 {
+			switch i % 3 {
+			case 0:
 				padding[i] = byte(32 + (i % 95))
-			} else if mod3 == 1 {
+			case 1:
 				padding[i] = byte(97 + (i % 26))
-			} else {
+			default:
 				padding[i] = byte(48 + (i % 10))
 			}
 		}
@@ -537,13 +513,6 @@ func (m *Marionette) generateServiceSpecificPadding(profile string, size int) []
 }
 
 // --- DPI Evasion (Analysis) ---
-
-const (
-	profileYandexDPI = "yandex"
-	profileMailruDPI = "mailru"
-	profileRutubeDPI = "rutube"
-	profileOzonDPI   = "ozon"
-)
 
 // DPIEvasion - модуль для эвазии DPI
 type DPIEvasion struct {

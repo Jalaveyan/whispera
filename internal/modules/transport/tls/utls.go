@@ -38,10 +38,19 @@ func (c *UTLSConfig) Dial(ctx context.Context, addr string) (net.Conn, error) {
 		fingerprint = &utls.HelloChrome_Auto // Default to Chrome Auto for stability
 	}
 
+	minVer := c.MinVersion
+	if minVer == 0 {
+		minVer = utls.VersionTLS13
+	}
+	maxVer := c.MaxVersion
+	if maxVer == 0 {
+		maxVer = utls.VersionTLS13
+	}
+
 	uconn := utls.UClient(conn, &utls.Config{
 		ServerName: extractHost(addr),
-		MinVersion: c.MinVersion,
-		MaxVersion: c.MaxVersion,
+		MinVersion: minVer,
+		MaxVersion: maxVer,
 	}, *fingerprint)
 
 	if err := uconn.Handshake(); err != nil {
@@ -59,10 +68,19 @@ func (c *UTLSConfig) WrapConn(conn net.Conn, addr string) (net.Conn, error) {
 		fingerprint = &utls.HelloChrome_Auto // Default to Chrome Auto for stability
 	}
 
+	minVer := c.MinVersion
+	if minVer == 0 {
+		minVer = utls.VersionTLS13
+	}
+	maxVer := c.MaxVersion
+	if maxVer == 0 {
+		maxVer = utls.VersionTLS13
+	}
+
 	uconn := utls.UClient(conn, &utls.Config{
 		ServerName: extractHost(addr),
-		MinVersion: c.MinVersion,
-		MaxVersion: c.MaxVersion,
+		MinVersion: minVer,
+		MaxVersion: maxVer,
 	}, *fingerprint)
 
 	if err := uconn.Handshake(); err != nil {
