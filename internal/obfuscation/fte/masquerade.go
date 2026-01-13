@@ -26,10 +26,13 @@ func (fte *FTE) ApplyProtocolMasquerading(data []byte) []byte {
 	}
 	masq := profile.Fingerprint.ProtocolMasquerading
 
-	// CRITICAL FIX: Do not apply header spoofing to TLS handshakes!
-	isTLS := isTLSHandshake(data)
+	// CRITICAL FIX: Do not apply ANY obfuscation to TLS handshakes!
+	// Modifying headers, size, or timing of the ClientHello will break the handshake.
+	if isTLSHandshake(data) {
+		return data
+	}
 
-	if masq.HeaderSpoofing && !isTLS {
+	if masq.HeaderSpoofing {
 		data = fte.applyHeaderSpoofing(data, masq)
 	}
 	if masq.BehavioralMimicry {
