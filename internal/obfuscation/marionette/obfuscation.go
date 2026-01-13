@@ -704,9 +704,10 @@ func (m *Marionette) applyProductionGenericRussianEvasion(data []byte) ([]byte, 
 	if len(data) == 0 {
 		return data, 0, nil
 	}
-	// Add some dummy padding or modify slightly
+	// Add larger padding to avoid "too small payload" detection
 	if len(data) < 1400 {
-		padding := make([]byte, 10+m.generateRealisticRandom(50))
+		// Increase padding to range [64, 320] bytes (64 + random(256))
+		padding := make([]byte, 64+m.generateRealisticRandom(256))
 		for i := range padding {
 			padding[i] = byte(m.generateRealisticRandom(256))
 		}

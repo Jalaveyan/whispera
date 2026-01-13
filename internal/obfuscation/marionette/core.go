@@ -184,14 +184,46 @@ func (m *Marionette) Deobfuscate(data []byte) ([]byte, time.Duration, error) {
 	// This assumes the inner protocol is NOT HTTP-like enough to have this preamble
 	// or that the obfuscation always prepends headers.
 
+	if len(data) < 16 {
+		return data, 0, nil
+	}
+
+	// Safety Check: Only scan for headers if the packet looks like an HTTP request/response
+	// to avoid corrupting random ciphertext that coincidentally contains \r\n\r\n.
+	prefix := string(data[:8]) // Check first 8 bytes
+	isValidHTTP := false
+
+	// Check for common HTTP methods (Request) or Signature (Response)
+	switch {
+	case len(data) >= 3 && (prefix[:3] == "GET" || prefix[:3] == "PUT"):
+		isValidHTTP = true
+	case len(data) >= 4 && (prefix[:4] == "POST" || prefix[:4] == "HEAD" || prefix[:4] == "HTTP"):
+		isValidHTTP = true
+	case len(data) >= 5 && (prefix[:5] == "PATCH" || prefix[:5] == "TRACE"):
+		isValidHTTP = true
+	case len(data) >= 6 && prefix[:6] == "DELETE":
+		isValidHTTP = true
+	case len(data) >= 7 && (prefix[:7] == "OPTIONS" || prefix[:7] == "CONNECT"):
+		isValidHTTP = true
+	}
+
+	if !isValidHTTP {
+		// Not HTTP-like, do not strip (returns original data)
+		return data, 0, nil
+	}
+
 	// Fast scan for \r\n\r\n
-	if len(data) > 16 { // Minimal HTTP header check
-		for i := 0; i < len(data)-3; i++ {
-			if data[i] == '\r' && data[i+1] == '\n' && data[i+2] == '\r' && data[i+3] == '\n' {
-				// Found header separator.
-				// The payload is everything after.
-				return data[i+4:], 0, nil
-			}
+	// Limit scan to first 4KB to avoid performance DoS
+	maxScan := 4096
+	if len(data) < maxScan {
+		maxScan = len(data)
+	}
+
+	for i := 0; i < maxScan-3; i++ {
+		if data[i] == '\r' && data[i+1] == '\n' && data[i+2] == '\r' && data[i+3] == '\n' {
+			// Found header separator.
+			// The payload is everything after.
+			return data[i+4:], 0, nil
 		}
 	}
 

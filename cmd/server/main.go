@@ -490,7 +490,7 @@ func handlePacket(data []byte, addr net.Addr) {
 	if globalDataPlane != nil {
 		packet := &interfaces.Packet{
 			SessionID: sess.ID(),
-			Payload:   data,
+			Payload:   payload,
 			SrcAddr:   addr,
 		}
 		if err := globalDataPlane.ProcessInbound(ctx, packet, sess); err != nil {
