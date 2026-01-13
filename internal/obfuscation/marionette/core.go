@@ -70,6 +70,11 @@ func NewMarionette() *Marionette {
 	m.initDynamicProfileManager()
 	m.initDefaultProfiles()
 	m.initDefaultRules()
+
+	// Initialize and start Chaff Generator (Fake Traffic)
+	m.Chaff = NewChaffGenerator()
+	m.Chaff.Start()
+
 	m.initRussianServiceProfiles()
 	m.initMobileDeviceProfiles()
 	for name, profile := range m.Profiles {
@@ -152,10 +157,19 @@ func (m *Marionette) ProcessPacket(data []byte, direction string) ([]byte, time.
 	}
 
 	// CRITICAL FIX: Skip obfuscation for TLS handshakes to prevent TCP RST
-	// Direct connections to external servers (e.g. Google, Microsoft) must remain valid TLS
-	// if isTLSHandshake(data) {
-	// 	return data, behavioralDelay, nil
-	// }
+	// Direct connections to external servers (e.g. Google, Microsoft) must remain valid TLS.
+	// This ensures at least one "Pure TLS" connection remains functional amidst the obfuscation noise.
+
+	if isTLSHandshake(data) {
+		return data, behavioralDelay, nil
+	}
+
+	// Stay "Pure TLS" for application data as well.
+	// The obfuscator adds noise via the ChaffGenerator, so the real connection
+	// must remain a clean, valid stream hidden in plain sight.
+	if isTLSApplicationData(data) {
+		return data, behavioralDelay, nil
+	}
 
 	// Apply Obfuscation to ALL outbound packets (except Handshakes)
 	processed := data

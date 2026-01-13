@@ -204,7 +204,7 @@ func (m *Marionette) applyBehavioralObfuscation(data []byte, profile *TrafficObf
 	return data
 }
 
-func (m *Marionette) applyHumanLikeBehaviorTraffic(data []byte, profile *TrafficObfuscationProfile) []byte {
+func (m *Marionette) applyHumanLikeBehaviorTraffic(data []byte, _ *TrafficObfuscationProfile) []byte {
 	// SAFEGUARD: Disabled destructive payload modification.
 	// v := m.generateRandomFloat() * 0.1 * float64(profile.ObfuscationLevel) / 10.0
 	// if v > 0.05 && len(data) > 0 {
@@ -213,7 +213,7 @@ func (m *Marionette) applyHumanLikeBehaviorTraffic(data []byte, profile *Traffic
 	return data
 }
 
-func (m *Marionette) applySessionBasedBehaviorTraffic(data []byte, profile *TrafficObfuscationProfile) []byte {
+func (m *Marionette) applySessionBasedBehaviorTraffic(data []byte, _ *TrafficObfuscationProfile) []byte {
 	// SAFEGUARD: Disabled destructive payload modification.
 	// v := m.generateRandomFloat() * 0.15 * float64(profile.ObfuscationLevel) / 10.0
 	// if v > 0.08 && len(data) > 1 {
@@ -222,7 +222,7 @@ func (m *Marionette) applySessionBasedBehaviorTraffic(data []byte, profile *Traf
 	return data
 }
 
-func (m *Marionette) applyDeviceSpecificBehaviorTraffic(data []byte, profile *TrafficObfuscationProfile) []byte {
+func (m *Marionette) applyDeviceSpecificBehaviorTraffic(data []byte, _ *TrafficObfuscationProfile) []byte {
 	// SAFEGUARD: Disabled destructive payload modification.
 	// v := m.generateRandomFloat() * 0.2 * float64(profile.ObfuscationLevel) / 10.0
 	// if v > 0.1 && len(data) > 2 {

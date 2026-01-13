@@ -20,6 +20,9 @@ var _ = []interface{}{
 	(*FTE).applyRutubeBehavioralPatterns,
 	(*FTE).applyGenericRussianBehavioralPatterns,
 	(*FTE).applyWebsiteFingerprintDefense,
+	(*FTE).adjustEntropy,
+	(*FTE).applyFeatureObfuscation,
+	(*FTE).applyStatisticalNoise,
 }
 
 // --- ML FEEDBACK & EFFECTIVENESS TRACKING ---
@@ -347,7 +350,7 @@ func (fte *FTE) adjustEntropy(data []byte, targetEntropy float64) []byte {
 	return result
 }
 
-func (fte *FTE) applyMLResistance(data []byte, masquerading ProtocolMasquerading) []byte {
+func (fte *FTE) applyMLResistance(data []byte, _ ProtocolMasquerading) []byte {
 	// SAFEGUARD: Disabled destructive payload modification (bit-flipping).
 	// ML Resistance was modifying random bytes, which corrupts the encrypted stream.
 	return data

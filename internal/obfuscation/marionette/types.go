@@ -46,6 +46,9 @@ type Marionette struct {
 	// Behavioral Mimicry - full multi-layer traffic imitation
 	BehaviorEngine          *behavioral.BehaviorEngine
 	ActiveBehavioralProfile *behavioral.MessengerProfile
+
+	// Artificial Traffic - Chaff Generator
+	Chaff *ChaffGenerator
 }
 
 // CircuitBreaker alias

@@ -82,6 +82,7 @@ func processMLAsync(processor func([]byte) ([]byte, error), data []byte, timeout
 var _ = []interface{}{
 	(*FTE).generateRealisticRandomFloat,
 	(*FTE).generateRealisticRandomInt,
+	processMLAsync,
 }
 
 // getPaddingBuffer gets a buffer from pools based on size
@@ -179,7 +180,7 @@ func (fte *FTE) applyFormat(data []byte, profile *ProtocolProfile) []byte {
 	return fte.ensureRegexMatch(formatted, profile)
 }
 
-func (fte *FTE) ensureRegexMatch(data []byte, profile *ProtocolProfile) []byte {
+func (fte *FTE) ensureRegexMatch(data []byte, _ *ProtocolProfile) []byte {
 	// SAFEGUARD: Do not modify payload to match regex.
 	// Forcing binary data (TLS/Encrypted) to match a regex (e.g. Base64/ASCII)
 	// by overwriting bytes triggers data corruption and connection failure.

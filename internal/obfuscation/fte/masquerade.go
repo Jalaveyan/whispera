@@ -15,6 +15,13 @@ import (
 // Reference methods to silence staticcheck unused warnings
 var _ = []interface{}{
 	(*FTE).applyProtocolMasquerading,
+	(*FTE).applyHumanLikePatterns,
+	(*FTE).applySessionBehavior,
+	(*FTE).applyDeviceBehavior,
+	isFTETLSHandshake,
+	(*FTE).applyTimingVariations,
+	(*FTE).applyBurstPatterns,
+	(*FTE).applySessionTiming,
 }
 
 // --- PROTOCOL MASQUERADING ---
@@ -30,9 +37,9 @@ func (fte *FTE) ApplyProtocolMasquerading(data []byte) []byte {
 	// FTE applies symmetric obfuscation (XOR/headers) that the Server expects.
 	// Sending raw TLS causes the Server to misinterpret/corrupt the data upon deobfuscation.
 	// Since we fixed the destructive actions in utils.go, normal obfuscation is safe.
-	// if isTLSHandshake(data) {
-	// 	 return data
-	// }
+	if isTLSHandshake(data) {
+		return data
+	}
 
 	if masq.HeaderSpoofing {
 		data = fte.applyHeaderSpoofing(data, masq)
@@ -131,7 +138,7 @@ func (fte *FTE) addApplicationSpecificHeaders(data []byte, obfuscation TrafficOb
 	return append(headers, data...)
 }
 
-func (fte *FTE) applyBehavioralMimicry(data []byte, masq ProtocolMasquerading) []byte {
+func (fte *FTE) applyBehavioralMimicry(data []byte, _ ProtocolMasquerading) []byte {
 	// SAFEGUARD: Disabled destructive payload modification.
 	// These functions were modifying data[0], data[1], data[2] directly,
 	// which corrupts the encrypt/transport headers and causes RST.
@@ -578,7 +585,7 @@ func (fte *FTE) generateRealisticTiming(baseDelay int, variance float64) time.Du
 	return time.Duration(finalDelay) * time.Millisecond
 }
 
-func (fte *FTE) applyTimingMimicry(data []byte, masq ProtocolMasquerading) []byte {
+func (fte *FTE) applyTimingMimicry(data []byte, _ ProtocolMasquerading) []byte {
 	// SAFEGUARD: Disabled destructive payload modification.
 	// These functions were modifying data[3], data[4], data[5] directly.
 	/*

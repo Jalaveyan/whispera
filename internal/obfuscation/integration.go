@@ -62,6 +62,9 @@ var batchPool = sync.Pool{
 	},
 }
 
+// prevent unused warning by referencing address (avoid lock copy)
+var _ = &batchPool
+
 // IntegrationManager manages integration between modules
 type IntegrationManager struct {
 	mu sync.RWMutex
