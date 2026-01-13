@@ -180,19 +180,9 @@ func (fte *FTE) applyFormat(data []byte, profile *ProtocolProfile) []byte {
 }
 
 func (fte *FTE) ensureRegexMatch(data []byte, profile *ProtocolProfile) []byte {
-	for i := 0; i < 10; i++ {
-		if profile.Regex.Match(data) {
-			return data
-		}
-		switch profile.Name {
-		case "HTTP/2", "WebSocket":
-			for j := range data {
-				if data[j] < 32 || data[j] > 126 {
-					data[j] = byte(32 + (j % 95))
-				}
-			}
-		}
-	}
+	// SAFEGUARD: Do not modify payload to match regex.
+	// Forcing binary data (TLS/Encrypted) to match a regex (e.g. Base64/ASCII)
+	// by overwriting bytes triggers data corruption and connection failure.
 	return data
 }
 

@@ -91,39 +91,43 @@ func (fte *FTE) Transform(data []byte) ([]byte, error) {
 		return data, nil
 	}
 
-	targetSize := fte.calculateTargetSize(profile)
-	obfuscated := fte.resizeToTarget(data, targetSize)
-	formatted := fte.applyFormat(obfuscated, profile)
+	// targetSize := fte.calculateTargetSize(profile)
+	// obfuscated := fte.resizeToTarget(data, targetSize)
+	// formatted := fte.applyFormat(obfuscated, profile)
 
 	// Apply timing obfuscation (if enabled in profile)
-	formatted = fte.applyTimingObfuscation(formatted)
+	// formatted = fte.applyTimingObfuscation(formatted)
 
-	fte.mutex.Lock()
-	fte.updateState(targetSize)
-	fte.mutex.Unlock()
+	// EMERGENCY FIX: Return data unmodified to prevent corruption of direct traffic
+	return data, nil
 
-	if fte.reinforcementLearning != nil {
-		state := fte.GetProtocolState()
-		if state == "" {
-			state = "connected"
-		}
-		action := fte.reinforcementLearning.SelectAction(state)
-		formatted = fte.applyReinforcementAction(formatted, action)
-	}
+	// fte.mutex.Lock()
+	// fte.updateState(targetSize)
+	// fte.mutex.Unlock()
 
-	formatted, _ = fte.ApplyRealDPIEvasion(formatted, active)
+	// if fte.reinforcementLearning != nil {
+	// 	state := fte.GetProtocolState()
+	// 	if state == "" {
+	// 		state = "connected"
+	// 	}
+	// 	action := fte.reinforcementLearning.SelectAction(state)
+	// 	formatted = fte.applyReinforcementAction(formatted, action)
+	// }
+
+	// SAFEGUARD: Disabled destructive payload modification (XOR masking).
+	// formatted, _ = fte.ApplyRealDPIEvasion(formatted, active)
 
 	// Apply behavioral variations
-	switch active {
-	case "vk":
-		formatted = fte.applyVKBehavioralPatterns(formatted)
-	case ProfileYandexFTE:
-		formatted = fte.applyYandexBehavioralPatterns(formatted)
-	case ProfileMailruFTE:
-		formatted = fte.applyMailruBehavioralPatterns(formatted)
-	}
+	// switch active {
+	// case "vk":
+	// 	formatted = fte.applyVKBehavioralPatterns(formatted)
+	// case ProfileYandexFTE:
+	// 	formatted = fte.applyYandexBehavioralPatterns(formatted)
+	// case ProfileMailruFTE:
+	// 	formatted = fte.applyMailruBehavioralPatterns(formatted)
+	// }
 
-	return formatted, nil
+	// return formatted, nil
 }
 
 // ProcessPacket handles higher level packet processing

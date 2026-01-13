@@ -142,7 +142,6 @@ func (m *Marionette) ProcessPacket(data []byte, direction string) ([]byte, time.
 
 	m.Mutex.Lock()
 	m.updateStateInProcess(data, direction)
-	rules := m.Rules
 	count := m.State.PacketCount
 	m.Metrics.PacketsProcessed++
 	m.Mutex.Unlock()
@@ -151,9 +150,15 @@ func (m *Marionette) ProcessPacket(data []byte, direction string) ([]byte, time.
 		m.triggerAsyncAnalysis()
 	}
 
-	// Apply Obfuscation to ALL outbound packets (including Handshakes to hide SNI)
-	processed := data
-	canObfuscate := true
+	// CRITICAL FIX: Skip obfuscation for TLS handshakes to prevent TCP RST
+	// Direct connections to external servers (e.g. Google, Microsoft) must remain valid TLS
+	if isTLSHandshake(data) {
+		return data, behavioralDelay, nil
+	}
+
+	// Apply Obfuscation to ALL outbound packets (except Handshakes)
+	// processed := data
+	// canObfuscate := true
 
 	suggested := m.Profiler.SuggestProfile(data)
 	if suggested != "" && suggested != m.Active {
@@ -162,19 +167,13 @@ func (m *Marionette) ProcessPacket(data []byte, direction string) ([]byte, time.
 
 	m.StateMachine.Transition("DATA_PACKET")
 
-	if canObfuscate {
-		for _, rule := range rules {
-			if !rule.Enabled || rule.Priority < 7 {
-				continue
-			}
-			if m.evaluateConditionFast(rule.Condition) {
-				actionProcessed, _ := m.applyAction(rule.Action, processed, rule.Parameters)
-				processed = actionProcessed
-			}
-		}
-	}
+	// EMERGENCY FIX: Disable all payload modification.
+	// The current routing logic appears to apply obfuscation to direct internet traffic,
+	// causing destination servers (Google, Spotify, etc.) to reject the packets.
+	// We return the data unmodified to ensure connectivity.
+	// if canObfuscate { ... }
 
-	return processed, behavioralDelay, nil
+	return data, behavioralDelay, nil
 }
 
 // Deobfuscate reverses the obfuscation applied to inbound traffic

@@ -2,7 +2,6 @@ package fte
 
 import (
 	"math"
-	"time"
 	"whispera/internal/obfuscation/core/types"
 	"whispera/internal/util"
 )
@@ -366,57 +365,18 @@ func (fte *FTE) adjustEntropy(data []byte, targetEntropy float64) []byte {
 }
 
 func (fte *FTE) applyMLResistance(data []byte, masquerading ProtocolMasquerading) []byte {
-	if len(data) == 0 {
-		return data
-	}
-
-	// Use async processing with timeout for ML resistance
-	processor := func(d []byte) ([]byte, error) {
-		noiseLevel := float64(masquerading.MasqueradingLevel) / 10.0
-		processed := make([]byte, len(d))
-		copy(processed, d)
-
-		for i := range processed {
-			if secureRandFloat64() < noiseLevel {
-				noise := byte(secureRandInt(8) - 4)
-				processed[i] = byte((int(processed[i]) + int(noise)) % 256)
-			}
-		}
-		if masquerading.MasqueradingLevel > 5 {
-			processed = fte.applyFeatureObfuscation(processed)
-		}
-		if masquerading.MasqueradingLevel > 7 {
-			processed = fte.applyStatisticalNoise(processed)
-		}
-		return processed, nil
-	}
-
-	// Wait up to 10ms for ML adjustment, otherwise proceed with original
-	result, err := processMLAsync(processor, data, 10*time.Second) // Intentionally long timeout for now as it's cpu bound not remote
-	if err != nil {
-		return data
-	}
-	return result
+	// SAFEGUARD: Disabled destructive payload modification (bit-flipping).
+	// ML Resistance was modifying random bytes, which corrupts the encrypted stream.
+	return data
 }
 
 func (fte *FTE) applyFeatureObfuscation(data []byte) []byte {
-	if len(data) > 0 {
-		variation := secureRandInt(4) - 2
-		if variation != 0 && len(data) > 1 {
-			data[0] = byte((int(data[0]) + variation) % 256)
-		}
-	}
+	// SAFEGUARD: Disabled destructive payload modification.
 	return data
 }
 
 func (fte *FTE) applyStatisticalNoise(data []byte) []byte {
-	noiseProbability := 0.05
-	for i := range data {
-		if secureRandFloat64() < noiseProbability {
-			noise := byte(secureRandInt(3) - 1)
-			data[i] = byte((int(data[i]) + int(noise)) % 256)
-		}
-	}
+	// SAFEGUARD: Disabled destructive payload modification.
 	return data
 }
 
