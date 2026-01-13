@@ -147,18 +147,22 @@ func NewIntegrationManagerWithOptions(enableML, enableFTE bool) *IntegrationMana
 // ProcessTraffic processes traffic through the integrated system
 // Order: FTE -> Marionette -> ML (if enabled, with optimization)
 func (im *IntegrationManager) ProcessTraffic(data []byte, direction string) ([]byte, time.Duration, error) {
-	// CRITICAL FIX: Disable active obfuscation logic until De-Obfuscation is implemented.
-	// Currently, the system applies transformations (FTE/Marionette) but lacks the corresponding
-	// reverse logic on the receiving end, causing data corruption and connection resets.
-	// We pass through traffic unmodified to ensure connectivity.
-	_ = direction // Prevent unused parameter error
+	// Re-enable Encryption (Marionette) but keep dangerous Obfuscation (FTE) optional/disabled for stability
+	// This ensures traffic is encrypted (preventing RSTs on cleartext) but avoids corruption from complex FTE rules.
 
-	// Increment processed counter (atomic via mutex)
+	// Step 1: Marionette (Encryption/Encoding)
+	// We skip FTE Transform for now to isolate the "RST" issue to just lack of encryption.
+	processed, delay, err := im.adapter.ProcessPacket(data, direction)
+	if err != nil {
+		return data, 0, err
+	}
+
+	// Increment processed counter
 	im.mu.Lock()
 	im.metrics.PacketsProcessed++
 	im.mu.Unlock()
 
-	return data, 0, nil
+	return processed, delay, nil
 }
 
 // updateNetworkStabilityLocked adjusts sampling rate based on packet timing variance

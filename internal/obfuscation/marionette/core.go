@@ -126,38 +126,19 @@ func (m *Marionette) ProcessPacket(data []byte, direction string) ([]byte, time.
 		return data, 0, nil
 	}
 
-	// CRITICAL: Never modify TLS handshake packets!
-	// This would corrupt the ClientHello/ServerHello and cause RST from the server
-	// Only allow obfuscation of TLS application data (which is already encrypted)
-	if isTLSHandshake(data) {
-		// Track TLS handshakes for statistics but don't modify
-		m.Mutex.Lock()
-		m.Metrics.PacketsProcessed++
-		m.updateStateInProcess(data, direction)
-		m.Mutex.Unlock()
-		return data, 0, nil
+	// Handle Inbound Traffic (De-obfuscation)
+	if direction == "inbound" {
+		return m.Deobfuscate(data)
 	}
+
+	// Handle Outbound Traffic (Obfuscation)
 
 	// Calculate behavioral delay if engine is active
 	var behavioralDelay time.Duration
 	if behaviorEngine != nil {
 		behavioralDelay = behaviorEngine.NextPacketDelay()
-
-		// Transition state machine based on traffic direction
-		if direction == "outbound" {
-			behaviorEngine.TransitionState()
-		}
+		behaviorEngine.TransitionState()
 	}
-
-	// Check if this is TLS application data (can be obfuscated)
-	canObfuscate := isTLSApplicationData(data)
-
-	suggested := m.Profiler.SuggestProfile(data)
-	if suggested != "" && suggested != m.Active {
-		// Log suggestion
-	}
-
-	m.StateMachine.Transition("DATA_PACKET")
 
 	m.Mutex.Lock()
 	m.updateStateInProcess(data, direction)
@@ -170,9 +151,17 @@ func (m *Marionette) ProcessPacket(data []byte, direction string) ([]byte, time.
 		m.triggerAsyncAnalysis()
 	}
 
+	// Apply Obfuscation to ALL outbound packets (including Handshakes to hide SNI)
 	processed := data
+	canObfuscate := true
 
-	// Only apply obfuscation rules to TLS application data
+	suggested := m.Profiler.SuggestProfile(data)
+	if suggested != "" && suggested != m.Active {
+		// Log suggestion
+	}
+
+	m.StateMachine.Transition("DATA_PACKET")
+
 	if canObfuscate {
 		for _, rule := range rules {
 			if !rule.Enabled || rule.Priority < 7 {
@@ -186,6 +175,29 @@ func (m *Marionette) ProcessPacket(data []byte, direction string) ([]byte, time.
 	}
 
 	return processed, behavioralDelay, nil
+}
+
+// Deobfuscate reverses the obfuscation applied to inbound traffic
+func (m *Marionette) Deobfuscate(data []byte) ([]byte, time.Duration, error) {
+	// Basic HTTP Header Stripping (for vk, yandex, etc. profiles)
+	// We look for the double CRLF (\r\n\r\n) which separates headers from body
+	// This assumes the inner protocol is NOT HTTP-like enough to have this preamble
+	// or that the obfuscation always prepends headers.
+
+	// Fast scan for \r\n\r\n
+	if len(data) > 16 { // Minimal HTTP header check
+		for i := 0; i < len(data)-3; i++ {
+			if data[i] == '\r' && data[i+1] == '\n' && data[i+2] == '\r' && data[i+3] == '\n' {
+				// Found header separator.
+				// The payload is everything after.
+				return data[i+4:], 0, nil
+			}
+		}
+	}
+
+	// If no header found, return data as is (might be raw or different obfuscation)
+	// Or maybe it's just a small packet not wrapped.
+	return data, 0, nil
 }
 
 func (m *Marionette) updateStateInProcess(data []byte, direction string) {
