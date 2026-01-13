@@ -127,15 +127,20 @@ func (fte *FTE) addApplicationSpecificHeaders(data []byte, obfuscation TrafficOb
 }
 
 func (fte *FTE) applyBehavioralMimicry(data []byte, masq ProtocolMasquerading) []byte {
-	if masq.MasqueradingLevel > 3 {
-		data = fte.applyHumanLikePatterns(data)
-	}
-	if masq.MasqueradingLevel > 5 {
-		data = fte.applySessionBehavior(data)
-	}
-	if masq.MasqueradingLevel > 7 {
-		data = fte.applyDeviceBehavior(data)
-	}
+	// SAFEGUARD: Disabled destructive payload modification.
+	// These functions were modifying data[0], data[1], data[2] directly,
+	// which corrupts the encrypt/transport headers and causes RST.
+	/*
+		if masq.MasqueradingLevel > 3 {
+			data = fte.applyHumanLikePatterns(data)
+		}
+		if masq.MasqueradingLevel > 5 {
+			data = fte.applySessionBehavior(data)
+		}
+		if masq.MasqueradingLevel > 7 {
+			data = fte.applyDeviceBehavior(data)
+		}
+	*/
 	return data
 }
 
@@ -569,15 +574,19 @@ func (fte *FTE) generateRealisticTiming(baseDelay int, variance float64) time.Du
 }
 
 func (fte *FTE) applyTimingMimicry(data []byte, masq ProtocolMasquerading) []byte {
-	if masq.MasqueradingLevel > 3 {
-		data = fte.applyTimingVariations(data)
-	}
-	if masq.MasqueradingLevel > 5 {
-		data = fte.applyBurstPatterns(data)
-	}
-	if masq.MasqueradingLevel > 7 {
-		data = fte.applySessionTiming(data)
-	}
+	// SAFEGUARD: Disabled destructive payload modification.
+	// These functions were modifying data[3], data[4], data[5] directly.
+	/*
+		if masq.MasqueradingLevel > 3 {
+			data = fte.applyTimingVariations(data)
+		}
+		if masq.MasqueradingLevel > 5 {
+			data = fte.applyBurstPatterns(data)
+		}
+		if masq.MasqueradingLevel > 7 {
+			data = fte.applySessionTiming(data)
+		}
+	*/
 	return data
 }
 
