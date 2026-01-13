@@ -26,12 +26,22 @@ func NewChaffGenerator() *ChaffGenerator {
 	return &ChaffGenerator{
 		Enabled: true,
 		Targets: []string{
+			// Global
 			"www.google.com:443",
 			"www.microsoft.com:443",
-			"ya.ru:443",
+			"www.twitch.tv:443",
+
+			// Russian
 			"vk.com:443",
 			"dzen.ru:443",
-			"www.cloudflare.com:443",
+			"www.ozon.ru:443",
+			"www.wildberries.ru:443",
+			"rutube.ru:443",
+			"yandex.ru:443",
+			"mail.ru:443",
+			"disk.yandex.ru:443",
+			"ok.ru:443",
+			"www.gosuslugi.ru:443",
 		},
 		Interval:    5 * time.Second, // Slower interval to be less annoying
 		Variance:    3 * time.Second,
