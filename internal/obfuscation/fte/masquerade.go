@@ -25,7 +25,11 @@ func (fte *FTE) ApplyProtocolMasquerading(data []byte) []byte {
 		return data
 	}
 	masq := profile.Fingerprint.ProtocolMasquerading
-	if masq.HeaderSpoofing {
+
+	// CRITICAL FIX: Do not apply header spoofing to TLS handshakes!
+	isTLS := isTLSHandshake(data)
+
+	if masq.HeaderSpoofing && !isTLS {
 		data = fte.applyHeaderSpoofing(data, masq)
 	}
 	if masq.BehavioralMimicry {
@@ -41,6 +45,22 @@ func (fte *FTE) ApplyProtocolMasquerading(data []byte) []byte {
 		data = fte.applyMLResistance(data, masq)
 	}
 	return data
+}
+
+// isTLSHandshake checks if the data is a TLS handshake packet
+func isTLSHandshake(data []byte) bool {
+	if len(data) < 5 {
+		return false
+	}
+	// Content Type 0x16 = Handshake
+	if data[0] != 0x16 {
+		return false
+	}
+	// Version 0x0301 (TLS 1.0) - 0x0304 (TLS 1.3)
+	if data[1] != 0x03 {
+		return false
+	}
+	return true
 }
 
 func (fte *FTE) applyProtocolMasquerading(data []byte, obfuscation TrafficObfuscation) []byte {
