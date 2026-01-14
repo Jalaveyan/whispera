@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="ru">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -7,6 +8,7 @@
     <link rel="stylesheet" href="css/style.css">
     <link rel="stylesheet" href="css/fontawesome/all.min.css">
 </head>
+
 <body>
     <!-- Логин форма (показывается сначала) -->
     <div id="loginScreen" class="login-screen">
@@ -237,7 +239,8 @@
                     <div class="page-header">
                         <h2>Статистика и трафик</h2>
                         <div style="display: flex; gap: 0.5rem;">
-                            <select id="statsPeriod" class="form-control" style="width: auto;" onchange="app.loadTrafficStats()">
+                            <select id="statsPeriod" class="form-control" style="width: auto;"
+                                onchange="app.loadTrafficStats()">
                                 <option value="1h">Последний час</option>
                                 <option value="24h" selected>Последние 24 часа</option>
                                 <option value="7d">Последние 7 дней</option>
@@ -343,18 +346,19 @@
                                     <label>
                                         <i class="fas fa-network-wired"></i>
                                         IP адрес сервера
-                                        <span class="tooltip" title="Автоматически определяется из текущего подключения">
+                                        <span class="tooltip"
+                                            title="Автоматически определяется из текущего подключения">
                                             <i class="fas fa-info-circle"></i>
                                         </span>
                                     </label>
-                                    <input type="text" id="settingsServerIP" class="form-control" 
-                                           placeholder="Автоматически определяется...">
+                                    <input type="text" id="settingsServerIP" class="form-control"
+                                        placeholder="Автоматически определяется...">
                                     <small class="form-help">Оставьте пустым для автоматического определения</small>
                                 </div>
                                 <div class="form-group">
                                     <label><i class="fas fa-key"></i> Публичный ключ сервера</label>
-                                    <input type="text" id="settingsServerPub" class="form-control" 
-                                           readonly style="font-family: monospace;">
+                                    <input type="text" id="settingsServerPub" class="form-control" readonly
+                                        style="font-family: monospace;">
                                     <small class="form-help">Генерируется автоматически при запуске сервера</small>
                                 </div>
                             </div>
@@ -369,9 +373,9 @@
                                         UDP порт (основной)
                                     </label>
                                     <div style="position: relative;">
-                                        <input type="number" id="settingsUdpPort" class="form-control" 
-                                               value="51820" min="1024" max="65535"
-                                               onblur="app.checkPortAvailability('settingsUdpPort', 'udp')">
+                                        <input type="number" id="settingsUdpPort" class="form-control" value="51820"
+                                            min="1024" max="65535"
+                                            onblur="app.checkPortAvailability('settingsUdpPort', 'udp')">
                                         <span id="udpPortStatus" class="port-status"></span>
                                     </div>
                                     <small class="form-help" id="udpPortHelp">Основной порт для UDP соединений</small>
@@ -382,9 +386,9 @@
                                         TCP порт (fallback)
                                     </label>
                                     <div style="position: relative;">
-                                        <input type="number" id="settingsTcpPort" class="form-control" 
-                                               value="4443" min="1024" max="65535"
-                                               onblur="app.checkPortAvailability('settingsTcpPort', 'tcp')">
+                                        <input type="number" id="settingsTcpPort" class="form-control" value="4443"
+                                            min="1024" max="65535"
+                                            onblur="app.checkPortAvailability('settingsTcpPort', 'tcp')">
                                         <span id="tcpPortStatus" class="port-status"></span>
                                     </div>
                                     <small class="form-help" id="tcpPortHelp">Резервный порт для TCP соединений</small>
@@ -395,9 +399,9 @@
                                         WebSocket порт
                                     </label>
                                     <div style="position: relative;">
-                                        <input type="number" id="settingsWsPort" class="form-control" 
-                                               value="8080" min="1024" max="65535"
-                                               onblur="app.checkPortAvailability('settingsWsPort', 'tcp')">
+                                        <input type="number" id="settingsWsPort" class="form-control" value="8080"
+                                            min="1024" max="65535"
+                                            onblur="app.checkPortAvailability('settingsWsPort', 'tcp')">
                                         <span id="wsPortStatus" class="port-status"></span>
                                     </div>
                                     <small class="form-help" id="wsPortHelp">Порт для WebSocket соединений</small>
@@ -408,14 +412,16 @@
                                         WebSocket Secure порт
                                     </label>
                                     <div style="position: relative;">
-                                        <input type="number" id="settingsWs2Port" class="form-control" 
-                                               value="8443" min="1024" max="65535"
-                                               onblur="app.checkPortAvailability('settingsWs2Port', 'tcp')">
+                                        <input type="number" id="settingsWs2Port" class="form-control" value="8443"
+                                            min="1024" max="65535"
+                                            onblur="app.checkPortAvailability('settingsWs2Port', 'tcp')">
                                         <span id="ws2PortStatus" class="port-status"></span>
                                     </div>
-                                    <small class="form-help" id="ws2PortHelp">Порт для безопасных WebSocket соединений (WSS)</small>
+                                    <small class="form-help" id="ws2PortHelp">Порт для безопасных WebSocket соединений
+                                        (WSS)</small>
                                 </div>
-                                <button type="button" class="btn btn-secondary" onclick="app.checkAllPorts()" style="margin-top: 0.5rem;">
+                                <button type="button" class="btn btn-secondary" onclick="app.checkAllPorts()"
+                                    style="margin-top: 0.5rem;">
                                     <i class="fas fa-search"></i>
                                     Проверить все порты
                                 </button>
@@ -430,7 +436,8 @@
                                     При сохранении настроек автоматически добавить порты в firewall (UFW/iptables)
                                 </small>
                             </div>
-                            <button type="button" class="btn btn-secondary" onclick="app.configureFirewallNow()" style="margin-top: 0.5rem;">
+                            <button type="button" class="btn btn-secondary" onclick="app.configureFirewallNow()"
+                                style="margin-top: 0.5rem;">
                                 <i class="fas fa-fire"></i>
                                 Настроить firewall сейчас
                             </button>
@@ -453,8 +460,8 @@
                                         <i class="fas fa-globe"></i>
                                         Домен для Let's Encrypt
                                     </label>
-                                    <input type="text" id="letsencryptDomain" class="form-control" 
-                                           placeholder="example.com">
+                                    <input type="text" id="letsencryptDomain" class="form-control"
+                                        placeholder="example.com">
                                     <small class="form-help">Домен должен указывать на IP этого сервера</small>
                                 </div>
                                 <div class="form-group">
@@ -462,20 +469,24 @@
                                         <i class="fas fa-envelope"></i>
                                         Email для уведомлений
                                     </label>
-                                    <input type="email" id="letsencryptEmail" class="form-control" 
-                                           placeholder="admin@example.com">
+                                    <input type="email" id="letsencryptEmail" class="form-control"
+                                        placeholder="admin@example.com">
                                     <small class="form-help">Email для уведомлений от Let's Encrypt</small>
                                 </div>
-                                <div class="form-group" style="grid-column: 1 / -1; display: flex; gap: 0.5rem; flex-wrap: wrap;">
-                                    <button type="button" class="btn btn-primary" onclick="window.app.obtainLetsEncryptCert()">
+                                <div class="form-group"
+                                    style="grid-column: 1 / -1; display: flex; gap: 0.5rem; flex-wrap: wrap;">
+                                    <button type="button" class="btn btn-primary"
+                                        onclick="window.app.obtainLetsEncryptCert()">
                                         <i class="fas fa-certificate"></i>
                                         Получить Let's Encrypt сертификат
                                     </button>
-                                    <button type="button" class="btn btn-secondary" onclick="window.app.renewLetsEncryptCert()">
+                                    <button type="button" class="btn btn-secondary"
+                                        onclick="window.app.renewLetsEncryptCert()">
                                         <i class="fas fa-sync"></i>
                                         Обновить сертификат
                                     </button>
-                                    <button type="button" class="btn btn-secondary" onclick="window.app.checkCertificateStatus()">
+                                    <button type="button" class="btn btn-secondary"
+                                        onclick="window.app.checkCertificateStatus()">
                                         <i class="fas fa-refresh"></i>
                                         Обновить статус
                                     </button>
@@ -488,7 +499,8 @@
                                             <li>DNS A запись должна указывать на IP этого сервера</li>
                                             <li>Порты 80 и 443 должны быть открыты</li>
                                             <li>Сервер должен быть доступен из интернета</li>
-                                            <li>Certbot должен быть установлен (устанавливается автоматически через install.sh)</li>
+                                            <li>Certbot должен быть установлен (устанавливается автоматически через
+                                                install.sh)</li>
                                         </ul>
                                     </div>
                                 </div>
@@ -565,7 +577,7 @@
                         <div class="info-box">
                             <i class="fas fa-info-circle"></i>
                             <div>
-                                <strong>Совет:</strong> Все настройки автоматически применяются к новым пользователям. 
+                                <strong>Совет:</strong> Все настройки автоматически применяются к новым пользователям.
                                 Для существующих пользователей изменения не применяются автоматически.
                             </div>
                         </div>
@@ -658,7 +670,8 @@
                                         <input type="checkbox" id="adblockMLEnabled" checked>
                                         <span><strong>ML обнаружение рекламы</strong></span>
                                     </label>
-                                    <small class="form-help">Использование машинного обучения для обнаружения рекламы</small>
+                                    <small class="form-help">Использование машинного обучения для обнаружения
+                                        рекламы</small>
                                 </div>
                             </div>
                         </div>
@@ -754,11 +767,13 @@
                     <div class="page-header">
                         <h2><i class="fas fa-rss"></i> Подписки на серверы</h2>
                         <div style="display: flex; gap: 0.5rem;">
-                            <button id="updateAllSubscriptionsBtn" class="btn btn-primary" onclick="app.updateAllSubscriptions()">
+                            <button id="updateAllSubscriptionsBtn" class="btn btn-primary"
+                                onclick="app.updateAllSubscriptions()">
                                 <i class="fas fa-sync"></i>
                                 Обновить все
                             </button>
-                            <button id="addSubscriptionBtn" class="btn btn-secondary" onclick="app.showAddSubscriptionModal()">
+                            <button id="addSubscriptionBtn" class="btn btn-secondary"
+                                onclick="app.showAddSubscriptionModal()">
                                 <i class="fas fa-plus"></i>
                                 Добавить подписку
                             </button>
@@ -895,7 +910,8 @@
                             <div class="settings-grid">
                                 <div class="form-group">
                                     <label class="checkbox-label">
-                                        <input type="checkbox" id="geoAutoUpdateEnabled" onchange="app.updateGeoSettings()">
+                                        <input type="checkbox" id="geoAutoUpdateEnabled"
+                                            onchange="app.updateGeoSettings()">
                                         <span><strong>Автоматическое обновление</strong></span>
                                     </label>
                                     <small class="form-help">
@@ -953,13 +969,13 @@
                         <label>
                             <i class="fas fa-user"></i>
                             Имя пользователя
-                            <span class="tooltip" title="Уникальное имя для идентификации пользователя. Используйте латинские буквы, цифры и подчеркивания">
+                            <span class="tooltip"
+                                title="Уникальное имя для идентификации пользователя. Используйте латинские буквы, цифры и подчеркивания">
                                 <i class="fas fa-question-circle"></i>
                             </span>
                         </label>
-                        <input type="text" name="username" id="addUserUsername" required 
-                               placeholder="user1" pattern="[a-zA-Z0-9_]+" 
-                               title="Только латинские буквы, цифры и подчеркивание">
+                        <input type="text" name="username" id="addUserUsername" required placeholder="user1"
+                            pattern="[a-zA-Z0-9_]+" title="Только латинские буквы, цифры и подчеркивание">
                         <small class="form-help">
                             <i class="fas fa-info-circle"></i>
                             Только латинские буквы, цифры и подчеркивание. Пример: user1, client_123
@@ -973,8 +989,7 @@
                                 <i class="fas fa-question-circle"></i>
                             </span>
                         </label>
-                        <input type="email" name="email" id="addUserEmail" 
-                               placeholder="user@example.com">
+                        <input type="email" name="email" id="addUserEmail" placeholder="user@example.com">
                         <small class="form-help">Используется для уведомлений и восстановления доступа</small>
                     </div>
                 </div>
@@ -992,8 +1007,10 @@
                         </label>
                         <select name="obfsProfile" id="addUserObfsProfile" class="form-control">
                             <option value="quic">QUIC - Быстрый протокол, рекомендуемый для большинства случаев</option>
-                            <option value="http2" selected>HTTP/2 - Стабильный протокол, хорош для проблемных сетей</option>
-                            <option value="websocket">WebSocket - Универсальный протокол, работает через большинство прокси</option>
+                            <option value="http2" selected>HTTP/2 - Стабильный протокол, хорош для проблемных сетей
+                            </option>
+                            <option value="websocket">WebSocket - Универсальный протокол, работает через большинство
+                                прокси</option>
                         </select>
                         <small class="form-help">
                             <strong>QUIC:</strong> Быстрый и эффективный, рекомендуется для большинства случаев<br>
@@ -1017,7 +1034,8 @@
                         </select>
                         <small class="form-help">
                             <strong>Browser:</strong> Универсальный профиль, подходит для всех случаев<br>
-                            <strong>VK/Yandex/Mail.ru:</strong> Специализированные профили для обхода блокировок в России
+                            <strong>VK/Yandex/Mail.ru:</strong> Специализированные профили для обхода блокировок в
+                            России
                         </small>
                     </div>
                     <div class="form-group">
@@ -1027,7 +1045,8 @@
                         </label>
                         <small class="form-help">
                             <i class="fas fa-check-circle"></i>
-                            Система автоматически выберет оптимальный профиль для каждого подключения на основе сетевых условий и типа блокировки
+                            Система автоматически выберет оптимальный профиль для каждого подключения на основе сетевых
+                            условий и типа блокировки
                         </small>
                     </div>
                 </div>
@@ -1039,15 +1058,16 @@
                         <label>
                             <i class="fas fa-tachometer-alt"></i>
                             Лимит трафика (GB)
-                            <span class="tooltip" title="Максимальный объем трафика, который может использовать пользователь">
+                            <span class="tooltip"
+                                title="Максимальный объем трафика, который может использовать пользователь">
                                 <i class="fas fa-question-circle"></i>
                             </span>
                         </label>
-                        <input type="number" name="trafficLimit" id="addUserTrafficLimit" 
-                               min="0" step="0.1" value="0" class="form-control">
+                        <input type="number" name="trafficLimit" id="addUserTrafficLimit" min="0" step="0.1" value="0"
+                            class="form-control">
                         <small class="form-help">
                             <i class="fas fa-infinity"></i>
-                            <strong>0 = безлимит</strong>. Укажите число в GB (например: 10, 50, 100). 
+                            <strong>0 = безлимит</strong>. Укажите число в GB (например: 10, 50, 100).
                             После достижения лимита доступ будет заблокирован.
                         </small>
                     </div>
@@ -1061,7 +1081,8 @@
                         </label>
                         <input type="date" name="expiryDate" id="addUserExpiryDate" class="form-control">
                         <small class="form-help">
-                            Оставьте пустым для бессрочного доступа. После указанной даты пользователь не сможет подключиться.
+                            Оставьте пустым для бессрочного доступа. После указанной даты пользователь не сможет
+                            подключиться.
                         </small>
                     </div>
                 </div>
@@ -1074,7 +1095,8 @@
                             <label>Приватный ключ клиента (x25519)</label>
                             <div class="key-display">
                                 <code id="previewPrivateKey" class="key-code">Будет сгенерирован при создании</code>
-                                <button type="button" class="btn btn-sm btn-secondary" onclick="copyPreviewKey('private')">
+                                <button type="button" class="btn btn-sm btn-secondary"
+                                    onclick="copyPreviewKey('private')">
                                     <i class="fas fa-copy"></i>
                                 </button>
                             </div>
@@ -1083,7 +1105,8 @@
                             <label>Публичный ключ клиента (x25519)</label>
                             <div class="key-display">
                                 <code id="previewPublicKey" class="key-code">Будет вычислен автоматически</code>
-                                <button type="button" class="btn btn-sm btn-secondary" onclick="copyPreviewKey('public')">
+                                <button type="button" class="btn btn-sm btn-secondary"
+                                    onclick="copyPreviewKey('public')">
                                     <i class="fas fa-copy"></i>
                                 </button>
                             </div>
@@ -1091,8 +1114,10 @@
                         <div class="info-box info-success">
                             <i class="fas fa-shield-alt"></i>
                             <div>
-                                <strong>Безопасность:</strong> Ключи шифрования будут сгенерированы автоматически при создании пользователя. 
-                                Приватный ключ хранится только на сервере и у клиента. Публичный ключ можно передавать открыто.
+                                <strong>Безопасность:</strong> Ключи шифрования будут сгенерированы автоматически при
+                                создании пользователя.
+                                Приватный ключ хранится только на сервере и у клиента. Публичный ключ можно передавать
+                                открыто.
                             </div>
                         </div>
                     </div>
@@ -1120,15 +1145,16 @@
                 <div class="info-box info-success" style="margin-bottom: 1.5rem;">
                     <i class="fas fa-info-circle"></i>
                     <div>
-                        <strong>Быстрое подключение:</strong> Скопируйте ключ ниже и используйте его в клиенте Whispera для автоматической настройки подключения.
+                        <strong>Быстрое подключение:</strong> Скопируйте ключ ниже и используйте его в клиенте Whispera
+                        для автоматической настройки подключения.
                     </div>
                 </div>
-                
+
                 <div class="form-group">
                     <label><i class="fas fa-key"></i> Приватный ключ (x25519)</label>
                     <div style="display: flex; gap: 0.5rem; align-items: center;">
-                        <input type="text" id="quickConnectPrivateKey" readonly 
-                               style="flex: 1; font-family: 'Courier New', monospace; font-size: 0.9rem; padding: 0.75rem; background: #f9fafb; border: 2px solid #e5e7eb; border-radius: 8px; word-break: break-all;">
+                        <input type="text" id="quickConnectPrivateKey" readonly
+                            style="flex: 1; font-family: 'Courier New', monospace; font-size: 0.9rem; padding: 0.75rem; background: #f9fafb; border: 2px solid #e5e7eb; border-radius: 8px; word-break: break-all;">
                         <button type="button" class="btn btn-primary" onclick="app.copyQuickConnectKeyFromModal()">
                             <i class="fas fa-copy"></i> Копировать
                         </button>
@@ -1139,8 +1165,8 @@
                 <div class="form-group">
                     <label><i class="fas fa-server"></i> URL сервера</label>
                     <div style="display: flex; gap: 0.5rem; align-items: center;">
-                        <input type="text" id="quickConnectServerUrl" readonly 
-                               style="flex: 1; font-family: 'Courier New', monospace; font-size: 0.9rem; padding: 0.75rem; background: #f9fafb; border: 2px solid #e5e7eb; border-radius: 8px;">
+                        <input type="text" id="quickConnectServerUrl" readonly
+                            style="flex: 1; font-family: 'Courier New', monospace; font-size: 0.9rem; padding: 0.75rem; background: #f9fafb; border: 2px solid #e5e7eb; border-radius: 8px;">
                         <button type="button" class="btn btn-secondary" onclick="app.copyServerUrl()">
                             <i class="fas fa-copy"></i> Копировать
                         </button>
@@ -1151,13 +1177,14 @@
                 <div class="form-group">
                     <label><i class="fas fa-link"></i> Полная строка подключения (Quick Connect)</label>
                     <div style="display: flex; gap: 0.5rem; align-items: center;">
-                        <input type="text" id="quickConnectFullUrl" readonly 
-                               style="flex: 1; font-family: 'Courier New', monospace; font-size: 0.85rem; padding: 0.75rem; background: #eff6ff; border: 2px solid #3b82f6; border-radius: 8px; word-break: break-all; color: #1e40af;">
+                        <input type="text" id="quickConnectFullUrl" readonly
+                            style="flex: 1; font-family: 'Courier New', monospace; font-size: 0.85rem; padding: 0.75rem; background: #eff6ff; border: 2px solid #3b82f6; border-radius: 8px; word-break: break-all; color: #1e40af;">
                         <button type="button" class="btn btn-primary" onclick="app.copyQuickConnectFullUrl()">
                             <i class="fas fa-copy"></i> Копировать всё
                         </button>
                     </div>
-                    <small class="form-help">Скопируйте эту строку целиком и вставьте в поле Quick Connect в клиенте</small>
+                    <small class="form-help">Скопируйте эту строку целиком и вставьте в поле Quick Connect в
+                        клиенте</small>
                 </div>
 
                 <div class="info-box" style="margin-top: 1.5rem; background: #fef3c7; border-color: #f59e0b;">
@@ -1168,7 +1195,8 @@
                             <li>Откройте Whispera Client (Tauri)</li>
                             <li>Перейдите на главную страницу</li>
                             <li>Найдите поле "Быстрое подключение"</li>
-                            <li>Вставьте скопированную строку в формате <code>whispera://server:port?pub=...&key=...</code></li>
+                            <li>Вставьте скопированную строку в формате
+                                <code>whispera://server:port?pub=...&key=...</code></li>
                             <li>Нажмите "Подключиться по ключу"</li>
                             <li>Все настройки загрузятся автоматически через API!</li>
                         </ol>
@@ -1193,14 +1221,16 @@
                     <label>Имя пользователя</label>
                     <input type="text" id="configUsername" readonly>
                 </div>
-                
+
                 <div class="form-group">
                     <label>Формат конфигурации</label>
                     <div class="config-format-selector">
-                        <button type="button" class="btn btn-sm format-btn active" data-format="yaml" onclick="app.switchConfigFormat('yaml')">
+                        <button type="button" class="btn btn-sm format-btn active" data-format="yaml"
+                            onclick="app.switchConfigFormat('yaml')">
                             <i class="fas fa-file-code"></i> YAML (Go клиент)
                         </button>
-                        <button type="button" class="btn btn-sm format-btn" data-format="json" onclick="app.switchConfigFormat('json')">
+                        <button type="button" class="btn btn-sm format-btn" data-format="json"
+                            onclick="app.switchConfigFormat('json')">
                             <i class="fas fa-file-code"></i> JSON (C# клиент)
                         </button>
                     </div>
@@ -1210,11 +1240,15 @@
                 <div class="form-group">
                     <label>Приватный ключ клиента (x25519)</label>
                     <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
-                        <input type="text" id="clientPrivateKey" readonly style="flex: 1; min-width: 200px; font-family: monospace; font-size: 11px; word-break: break-all;" maxlength="128">
-                        <button type="button" class="btn btn-secondary" onclick="copyToClipboard('clientPrivateKey')" title="Копировать">
+                        <input type="text" id="clientPrivateKey" readonly
+                            style="flex: 1; min-width: 200px; font-family: monospace; font-size: 11px; word-break: break-all;"
+                            maxlength="128">
+                        <button type="button" class="btn btn-secondary" onclick="copyToClipboard('clientPrivateKey')"
+                            title="Копировать">
                             <i class="fas fa-copy"></i>
                         </button>
-                        <button type="button" class="btn btn-primary" onclick="app.generateClientKeys()" title="Сгенерировать новый ключ">
+                        <button type="button" class="btn btn-primary" onclick="app.generateClientKeys()"
+                            title="Сгенерировать новый ключ">
                             <i class="fas fa-key"></i>
                             Генерировать
                         </button>
@@ -1225,14 +1259,16 @@
                     <label>Публичный ключ клиента (x25519)</label>
                     <div style="display: flex; gap: 0.5rem;">
                         <input type="text" id="clientPublicKey" readonly style="flex: 1; font-family: monospace;">
-                        <button type="button" class="btn btn-secondary" onclick="copyToClipboard('clientPublicKey')" title="Копировать">
+                        <button type="button" class="btn btn-secondary" onclick="copyToClipboard('clientPublicKey')"
+                            title="Копировать">
                             <i class="fas fa-copy"></i>
                         </button>
                     </div>
                     <small class="form-help">Публичный ключ вычисляется автоматически из приватного</small>
                 </div>
-                
-                <div class="form-group" style="background: #f0f9ff; border: 1px solid #2196F3; border-radius: 8px; padding: 1rem; margin: 1rem 0;">
+
+                <div class="form-group"
+                    style="background: #f0f9ff; border: 1px solid #2196F3; border-radius: 8px; padding: 1rem; margin: 1rem 0;">
                     <h4 style="margin: 0 0 0.5rem 0; color: #1976D2;">
                         <i class="fas fa-bolt"></i> Быстрое подключение (Quick Connect)
                     </h4>
@@ -1240,16 +1276,19 @@
                         Скопируйте приватный ключ и используйте его в клиенте для автоматической настройки
                     </p>
                     <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
-                        <button type="button" class="btn btn-primary" onclick="app.copyQuickConnectKey()" title="Копировать ключ для быстрого подключения">
+                        <button type="button" class="btn btn-primary" onclick="app.copyQuickConnectKey()"
+                            title="Копировать ключ для быстрого подключения">
                             <i class="fas fa-copy"></i>
                             Копировать ключ для Quick Connect
                         </button>
-                        <button type="button" class="btn btn-secondary" onclick="app.showQuickConnectInstructions()" title="Инструкции">
+                        <button type="button" class="btn btn-secondary" onclick="app.showQuickConnectInstructions()"
+                            title="Инструкции">
                             <i class="fas fa-info-circle"></i>
                             Инструкции
                         </button>
                     </div>
-                    <div id="quickConnectInfo" style="margin-top: 0.5rem; padding: 0.5rem; background: #e3f2fd; border-radius: 4px; display: none;">
+                    <div id="quickConnectInfo"
+                        style="margin-top: 0.5rem; padding: 0.5rem; background: #e3f2fd; border-radius: 4px; display: none;">
                         <small style="color: #1976D2;">
                             <strong>Сервер URL:</strong> <span id="quickConnectServerUrl"></span><br>
                             <strong>Приватный ключ:</strong> Скопирован в буфер обмена
@@ -1259,11 +1298,14 @@
                 <div class="form-group">
                     <label>Публичный ключ сервера (x25519)</label>
                     <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
-                        <input type="text" id="serverPublicKey" readonly style="flex: 1; min-width: 200px; font-family: monospace;">
-                        <button type="button" class="btn btn-secondary" onclick="copyToClipboard('serverPublicKey')" title="Копировать">
+                        <input type="text" id="serverPublicKey" readonly
+                            style="flex: 1; min-width: 200px; font-family: monospace;">
+                        <button type="button" class="btn btn-secondary" onclick="copyToClipboard('serverPublicKey')"
+                            title="Копировать">
                             <i class="fas fa-copy"></i>
                         </button>
-                        <button type="button" class="btn btn-primary" onclick="app.generateServerKeys()" title="Сгенерировать новый ключ сервера">
+                        <button type="button" class="btn btn-primary" onclick="app.generateServerKeys()"
+                            title="Сгенерировать новый ключ сервера">
                             <i class="fas fa-key"></i>
                             Генерировать
                         </button>
@@ -1274,10 +1316,11 @@
                     <label>IP адрес сервера</label>
                     <input type="text" id="serverIP" placeholder="YOUR_SERVER_IP">
                 </div>
-                
+
                 <div class="form-group" id="configFormatGroup">
                     <label id="configFormatLabel">YAML конфигурация</label>
-                    <textarea id="clientConfigYAML" readonly rows="20" style="width: 100%; font-family: monospace; font-size: 0.9rem;"></textarea>
+                    <textarea id="clientConfigYAML" readonly rows="20"
+                        style="width: 100%; font-family: monospace; font-size: 0.9rem;"></textarea>
                     <div class="config-actions" style="margin-top: 0.5rem; display: flex; gap: 0.5rem;">
                         <button type="button" class="btn btn-primary" onclick="app.downloadConfig()">
                             <i class="fas fa-download"></i>
@@ -1293,7 +1336,8 @@
                 <div class="info-box" id="clientInfoBox">
                     <i class="fas fa-info-circle"></i>
                     <div id="clientInfoText">
-                        <strong>Go клиент:</strong> Используйте YAML конфигурацию. Скопируйте содержимое в файл <code>client_config.yaml</code>
+                        <strong>Go клиент:</strong> Используйте YAML конфигурацию. Скопируйте содержимое в файл
+                        <code>client_config.yaml</code>
                     </div>
                 </div>
 
@@ -1307,14 +1351,14 @@
     <script src="js/api.js"></script>
     <script src="js/config-manager.js"></script>
     <script src="js/config-wizard.js"></script>
-    <script src="js/app.js"></script>
+    <script src="js/app.js?v=2"></script>
     <script>
         // Функция для копирования ключей из превью
         function copyPreviewKey(type) {
-            const keyElement = type === 'private' 
+            const keyElement = type === 'private'
                 ? document.getElementById('previewPrivateKey')
                 : document.getElementById('previewPublicKey');
-            
+
             if (keyElement && keyElement.textContent) {
                 navigator.clipboard.writeText(keyElement.textContent).then(() => {
                     // Визуальная обратная связь
@@ -1334,5 +1378,5 @@
         }
     </script>
 </body>
-</html>
 
+</html>
