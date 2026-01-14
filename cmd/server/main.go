@@ -386,21 +386,12 @@ func createModules(manager *lifecycle.Manager) error {
 
 	// 11. Phantom Handler (SNI masquerading / TLS proxy)
 	if serverConfig.Phantom.Enabled {
-		var privateKey []byte
-		if serverConfig.Phantom.PrivateKey != "" {
-			var err error
-			privateKey, err = hex.DecodeString(serverConfig.Phantom.PrivateKey)
-			if err != nil {
-				log.Printf("⚠ Warning: Invalid Phantom private key: %v", err)
-			}
-		}
-
 		phantomHandler, err := phantom.New(&phantom.Config{
 			Enabled:     true,
 			ListenAddr:  serverConfig.Server.ListenAddr, // Use same port as main server
 			Dest:        serverConfig.Phantom.Dest,
 			ServerNames: serverConfig.Phantom.ServerNames,
-			PrivateKey:  privateKey,
+			PrivateKey:  serverConfig.Phantom.PrivateKey,
 			ShortIds:    serverConfig.Phantom.ShortIds,
 			MaxTimeDiff: serverConfig.Phantom.MaxTimeDiff,
 			Fingerprint: serverConfig.Phantom.Fingerprint,

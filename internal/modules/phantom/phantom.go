@@ -57,41 +57,41 @@ var log = logger.Module("phantom")
 // Config holds Phantom module configuration
 type Config struct {
 	// Enabled enables Phantom protocol
-	Enabled bool
+	Enabled bool `yaml:"enabled"`
 
 	// ListenAddr is the address to listen on (e.g., ":443")
-	ListenAddr string
+	ListenAddr string `yaml:"listen_addr"`
 
 	// Dest is the target server to proxy TLS to for non-authenticated clients
-	Dest string
+	Dest string `yaml:"dest"`
 
 	// ServerNames are the allowed SNI values
-	ServerNames []string
+	ServerNames []string `yaml:"server_names"`
 
-	// PrivateKey is the x25519 private key (32 bytes)
-	PrivateKey []byte
+	// PrivateKey is the x25519 private key (hex string)
+	PrivateKey string `yaml:"private_key"`
 
 	// PublicKey is derived from PrivateKey
-	PublicKey []byte
+	PublicKey []byte `yaml:"-"`
 
 	// ShortIds are allowed client identifiers
-	ShortIds []string
+	ShortIds []string `yaml:"short_ids"`
 
 	// MaxTimeDiff is the max allowed time difference (ms)
-	MaxTimeDiff int
+	MaxTimeDiff int `yaml:"max_time_diff"`
 
 	// Fingerprint is the browser fingerprint for outbound
-	Fingerprint string
+	Fingerprint string `yaml:"fingerprint"`
 
 	// OnAuthenticated is called when a client authenticates successfully
-	OnAuthenticated func(conn net.Conn, clientID string)
+	OnAuthenticated func(conn net.Conn, clientID string) `yaml:"-"`
 }
 
 // DefaultConfig returns default Phantom configuration
 func DefaultConfig() *Config {
 	return &Config{
 		Enabled:     false,
-		ListenAddr:  ":443",
+		ListenAddr:  ":8443",
 		Dest:        "cloudflare.com:443",
 		ServerNames: []string{"cloudflare.com"},
 		ShortIds:    []string{""},
@@ -105,6 +105,9 @@ type Handler struct {
 	*base.Module
 	config   *Config
 	listener net.Listener
+
+	// Keys
+	privateKey []byte
 
 	// Connection tracking
 	mu          sync.RWMutex
@@ -135,13 +138,22 @@ func New(cfg *Config) (*Handler, error) {
 		activeConns: make(map[string]net.Conn),
 	}
 
-	// Derive public key from private key if provided
-	if len(cfg.PrivateKey) == 32 {
-		pubKey, err := curve25519.X25519(cfg.PrivateKey, curve25519.Basepoint)
-		if err != nil {
-			return nil, fmt.Errorf("failed to derive public key: %w", err)
+	// Decode and set private key from hex string
+	if len(cfg.PrivateKey) > 0 {
+		keyBytes, err := hex.DecodeString(cfg.PrivateKey)
+		if err == nil && len(keyBytes) == 32 {
+			h.privateKey = keyBytes
+			// Derive public key for verification/logging
+			pubKey, err := curve25519.X25519(h.privateKey, curve25519.Basepoint)
+			if err == nil {
+				cfg.PublicKey = pubKey
+				log.Printf("Phantom: Loaded Private Key (PubKey: %x)", pubKey)
+			}
+		} else {
+			log.Printf("Phantom: Invalid Private Key format (must be 32 bytes hex)")
 		}
-		cfg.PublicKey = pubKey
+	} else {
+		log.Printf("Phantom: No Private Key configured - RUNNING IN OPEN/DEV MODE (Accepting all Whispera Traffic)")
 	}
 
 	return h, nil
@@ -264,8 +276,8 @@ func (h *Handler) handleConnection(conn net.Conn) {
 
 	// Try to authenticate as Whispera client
 	clientID, ok := h.authenticateClient(clientRandom, sessionID)
-	// Fallback to legacy extension check if REALITY check fails
-	if !ok && len(authData) > 0 {
+	// Fallback to legacy extension check if REALITY check fails (and keys were present)
+	if !ok && len(authData) > 0 && len(h.privateKey) > 0 {
 		clientID, ok = h.authenticateClientLegacy(authData)
 	}
 
@@ -283,7 +295,7 @@ func (h *Handler) handleConnection(conn net.Conn) {
 	// REALITY-like: Perform minimal handshake with real destination to satisfy DPI
 	// This sends ClientHello -> Dest, and forwards Dest's ServerHello -> Client
 	// The client (Marionette) must consume this data before starting VPN stream.
-	if err := h.sendFakeHandshake(conn, clientHello); err != nil {
+	if err := h.sendFakeHandshake(conn, clientHello, sni); err != nil {
 		log.Printf("Warning: Failed to send fake handshake: %v", err)
 		// Proceed anyway, might fail DPI check but connection is valid
 	}
@@ -295,11 +307,26 @@ func (h *Handler) handleConnection(conn net.Conn) {
 }
 
 // sendFakeHandshake mimics server response by proxying real server's hello
-func (h *Handler) sendFakeHandshake(clientConn net.Conn, clientHello []byte) error {
-	// Connect to destination
-	destConn, err := h.dialDestination()
+func (h *Handler) sendFakeHandshake(clientConn net.Conn, clientHello []byte, sni string) error {
+	// Connect to destination (Use SNI if available to match expectation, otherwise default Dest)
+	target := h.config.Dest
+	if sni != "" {
+		// Append port 443 if missing
+		if _, _, err := net.SplitHostPort(sni); err != nil {
+			target = sni + ":443"
+		} else {
+			target = sni
+		}
+	}
+
+	destConn, err := net.DialTimeout("tcp", target, 5*time.Second)
 	if err != nil {
-		return err
+		// Fallback to default dest if SNI dial fails
+		log.Printf("Failed to dial SNI %s: %v, falling back to %s", target, err, h.config.Dest)
+		destConn, err = net.DialTimeout("tcp", h.config.Dest, 5*time.Second)
+		if err != nil {
+			return err
+		}
 	}
 	defer destConn.Close()
 
@@ -503,33 +530,7 @@ func (h *Handler) authenticateClient(clientRandom, sessionID []byte) (string, bo
 		return "", false
 	}
 
-	// auth: Verify if SessionID == HMAC(SharedSecret, "whispera-session-id")
-	// We treat ClientRandom as the Client's Ephemeral Public Key (X25519)
-	
-	privKey := h.config.PrivateKey
-	if len(privKey) != 32 {
-		return "", false
-	}
 
-	// Compute shared secret: X25519(ServerPriv, ClientPub)
-	// ClientPub is clientRandom
-	sharedSecret, err := curve25519.X25519(privKey, clientRandom)
-	if err != nil {
-		return "", false
-	}
-
-	// Calculate expected SessionID
-	mac := hmac.New(sha256.New, sharedSecret)
-	mac.Write([]byte("whispera-session-id"))
-	expected := mac.Sum(nil)
-
-	// Use constant time comparison
-	if hmac.Equal(sessionID, expected[:32]) {
-		return "default", true
-	}
-
-	return "", false
-}
 
 // authenticateClientLegacy validates legacy Phantom auth extension data
 func (h *Handler) authenticateClientLegacy(authData []byte) (string, bool) {
