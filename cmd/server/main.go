@@ -6,10 +6,12 @@ import (
 	"encoding/hex"
 	"flag"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	_ "net/http/pprof" // Register pprof handlers
 	"os"
+	"time"
 
 	"golang.org/x/crypto/curve25519"
 
@@ -385,6 +387,32 @@ func createModules(manager *lifecycle.Manager) error {
 	}
 
 	// 11. Phantom Handler (SNI masquerading / TLS proxy)
+	// Auto-generate keys if missing (Critical for REALITY authentication)
+	if serverConfig.Phantom.PrivateKey == "" {
+		log.Println("Phantom: No Private Key found. Auto-generating new X25519 key pair...")
+		privKey, pubKey, err := phantom.GenerateKeyPair()
+		if err != nil {
+			log.Printf("Error generating keys: %v", err)
+		} else {
+			// Save to config
+			updateErr := configProvider.Update(func(cfg *modconfig.ServerConfig) {
+				cfg.Phantom.PrivateKey = hex.EncodeToString(privKey)
+				// Also ensure it is enabled if we are generating keys, implying intent to use?
+				// Better to leave enabled state as is, but defaults are often false.
+			})
+			if updateErr != nil {
+				log.Printf("Error saving generated key to config: %v", updateErr)
+			} else {
+				log.Printf("✓ Phantom Keys Generated and Saved to config.yaml")
+				log.Printf("  PRIVATE KEY: %s", hex.EncodeToString(privKey))
+				log.Printf("================================================================")
+				log.Printf("  PUBLIC KEY:  %s", hex.EncodeToString(pubKey))
+				log.Printf("  (COPY THIS KEY to your CLIENT configuration!)")
+				log.Printf("================================================================")
+			}
+		}
+	}
+
 	if serverConfig.Phantom.Enabled {
 		phantomHandler, err := phantom.New(&phantom.Config{
 			Enabled:     true,
@@ -398,7 +426,31 @@ func createModules(manager *lifecycle.Manager) error {
 			OnAuthenticated: func(conn net.Conn, clientID string) {
 				// Handle authenticated Whispera client
 				log.Printf("Phantom: Authenticated client %s from %s", clientID, conn.RemoteAddr())
-				// TODO: Hand off to VPN tunnel handler
+
+				// Keep connection alive and drain buffer to prevent blocking/RST
+				// This ensures the handshake success is verified and connection stays stable
+				go func() {
+					defer conn.Close()
+					buf := make([]byte, 16384) // 16KB buffer
+					for {
+						// Set generous timeout
+						conn.SetReadDeadline(time.Now().Add(10 * time.Minute))
+						n, err := conn.Read(buf)
+						if err != nil {
+							if err != io.EOF {
+								log.Printf("Phantom: Connection closed for %s: %v", clientID, err)
+							} else {
+								log.Printf("Phantom: Client %s disconnected", clientID)
+							}
+							return
+						}
+						// Log reception implies successful channel
+						// TODO: Inject 'buf[:n]' into globalDataPlane/Relay once TCP framing is defined
+						if *debug {
+							log.Printf("Phantom: Received %d bytes from %s (Data Plane pending)", n, clientID)
+						}
+					}
+				}()
 			},
 		})
 		if err != nil {

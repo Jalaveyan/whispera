@@ -143,6 +143,9 @@ func (c *ClientAuth) GenerateSessionID() (clientRandom, sessionID []byte, err er
 	mac.Write([]byte("whispera-session-id"))
 	sessionIDHash := mac.Sum(nil) // 32 bytes
 
+	// fmt.Printf("[DEBUG] Client Generated: Random(Pub)=%x SessionID=%x\n", ephemeralPub, sessionIDHash)
+	// fmt.Printf("[DEBUG] Using Server PubKey: %x\n", serverPub)
+
 	// clientRandom IS the Ephemeral Public Key
 	return ephemeralPub, sessionIDHash, nil
 }

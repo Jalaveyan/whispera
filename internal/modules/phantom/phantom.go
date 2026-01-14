@@ -538,23 +538,31 @@ func (h *Handler) authenticateClient(clientRandom, sessionID []byte) (string, bo
 	// auth: Verify if SessionID == HMAC(SharedSecret, "whispera-session-id")
 	// We treat ClientRandom as the Client's Ephemeral Public Key (X25519)
 
+	log.Printf("[DEBUG] Authenticating Client: Random=%x SessionID=%x", clientRandom, sessionID)
+
 	// Compute shared secret: X25519(ServerPriv, ClientPub)
 	// ClientPub is clientRandom
 	sharedSecret, err := curve25519.X25519(h.privateKey, clientRandom)
 	if err != nil {
+		log.Printf("[DEBUG] Shared Secret Derivation Failed: %v", err)
 		return "", false
 	}
+	// log.Printf("[DEBUG] Shared Secret: %x", sharedSecret)
 
 	// Calculate expected SessionID
 	mac := hmac.New(sha256.New, sharedSecret)
 	mac.Write([]byte("whispera-session-id"))
 	expected := mac.Sum(nil)
 
+	// log.Printf("[DEBUG] Expected SessionID (HMAC): %x", expected[:32])
+
 	// Use constant time comparison
 	if hmac.Equal(sessionID, expected[:32]) {
+		log.Printf("[DEBUG] Authentication SUCCESS")
 		return "default", true
 	}
 
+	log.Printf("[DEBUG] Authentication FAILED: SessionID mismatch")
 	return "", false
 }
 

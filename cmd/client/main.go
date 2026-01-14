@@ -42,6 +42,7 @@ var (
 	tlsFingerprint   = flag.String("tls-fingerprint", "chrome", "TLS fingerprint for ASN bypass: chrome, firefox, safari, ios, android")
 	enableKillSwitch = flag.Bool("kill-switch", true, "Enable kill switch to prevent traffic leaks")
 	allowLAN         = flag.Bool("allow-lan", true, "Allow LAN traffic when kill switch is enabled")
+	phantomKey       = flag.String("phantom-key", "", "Phantom Server Public Key (hex) for REALITY authentication")
 )
 
 func main() {
@@ -191,6 +192,15 @@ func main() {
 		// Auto-enable Phantom when ASN bypass is enabled for better DPI evasion
 		phantomEnabled = true
 		stdlog.Printf("Auto-enabling Phantom protocol for enhanced DPI evasion")
+	}
+
+	// Override with flag if provided
+	if *phantomKey != "" {
+		phantomServerPubKey = *phantomKey
+		if !phantomEnabled {
+			phantomEnabled = true
+			stdlog.Printf("Force-enabling Phantom protocol due to -phantom-key flag")
+		}
 	}
 
 	tunnelMod, _ := tunnel.New(&tunnel.Config{
