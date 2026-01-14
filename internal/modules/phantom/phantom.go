@@ -503,24 +503,29 @@ func (h *Handler) authenticateClient(clientRandom, sessionID []byte) (string, bo
 		return "", false
 	}
 
-	// REALITY-like auth: Verify if SessionID == HMAC(ClientRandom, PrivateKey)
-	// We check against all configured ShortIds as potential keys/salts + PrivateKey
-
-	// Use PrivateKey as the primary secret
-	key := h.config.PrivateKey
-	if len(key) == 0 {
-		key = []byte("whispera-phantom-secret")
+	// auth: Verify if SessionID == HMAC(SharedSecret, "whispera-session-id")
+	// We treat ClientRandom as the Client's Ephemeral Public Key (X25519)
+	
+	privKey := h.config.PrivateKey
+	if len(privKey) != 32 {
+		return "", false
 	}
 
-	if len(key) > 0 {
-		mac := hmac.New(sha256.New, key)
-		mac.Write(clientRandom)
-		expected := mac.Sum(nil)
+	// Compute shared secret: X25519(ServerPriv, ClientPub)
+	// ClientPub is clientRandom
+	sharedSecret, err := curve25519.X25519(privKey, clientRandom)
+	if err != nil {
+		return "", false
+	}
 
-		// Use constant time comparison
-		if hmac.Equal(sessionID, expected[:32]) { // SHA256 is 32 bytes, SessionID is 32 bytes
-			return "default", true
-		}
+	// Calculate expected SessionID
+	mac := hmac.New(sha256.New, sharedSecret)
+	mac.Write([]byte("whispera-session-id"))
+	expected := mac.Sum(nil)
+
+	// Use constant time comparison
+	if hmac.Equal(sessionID, expected[:32]) {
+		return "default", true
 	}
 
 	return "", false

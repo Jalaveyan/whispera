@@ -2,8 +2,12 @@
 package phantom
 
 import (
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
+	"fmt"
 	"time"
 
 	"golang.org/x/crypto/curve25519"
@@ -103,4 +107,42 @@ func ValidateServerPublicKey(hexKey string) bool {
 	}
 	_, err := hex.DecodeString(hexKey)
 	return err == nil
+}
+
+// GenerateSessionID generates a Client Random (Ephemeral Public Key) and SessionID (HMAC)
+// ensuring the Server can authenticate the connection via ECDH.
+func (c *ClientAuth) GenerateSessionID() (clientRandom, sessionID []byte, err error) {
+	if c.config.ServerPublicKey == "" {
+		return nil, nil, fmt.Errorf("server public key required")
+	}
+
+	serverPub, err := hex.DecodeString(c.config.ServerPublicKey)
+	if err != nil || len(serverPub) != 32 {
+		return nil, nil, fmt.Errorf("invalid server public key")
+	}
+
+	// Generate Ephemeral Keypair
+	ephemeralPriv := make([]byte, 32)
+	if _, err := rand.Read(ephemeralPriv); err != nil {
+		return nil, nil, err
+	}
+
+	ephemeralPub, err := curve25519.X25519(ephemeralPriv, curve25519.Basepoint)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// Compute Shared Secret: X25519(EphPriv, ServerPub)
+	sharedSecret, err := curve25519.X25519(ephemeralPriv, serverPub)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// Compute SessionID: HMAC(SharedSecret, "whispera-session-id")
+	mac := hmac.New(sha256.New, sharedSecret)
+	mac.Write([]byte("whispera-session-id"))
+	sessionIDHash := mac.Sum(nil) // 32 bytes
+
+	// clientRandom IS the Ephemeral Public Key
+	return ephemeralPub, sessionIDHash, nil
 }

@@ -120,6 +120,7 @@ type Dialer struct {
 // PhantomAuthProvider generates auth data for ClientHello extension
 type PhantomAuthProvider interface {
 	GenerateAuthData() ([]byte, error)
+	GenerateSessionID() ([]byte, []byte, error)
 }
 
 // NewDialer creates a new ASN bypass dialer
@@ -236,6 +237,25 @@ func (d *Dialer) dialTLSMasquerade(ctx context.Context, network, addr string) (n
 		if err := d.randomizeJA3(uconn); err != nil {
 			tcpConn.Close()
 			return nil, fmt.Errorf("ja3 randomization failed: %w", err)
+		}
+	}
+
+	// Apply Phantom /  auth if configured
+	if d.phantomAuth != nil {
+		clientRandom, sessionID, err := d.phantomAuth.GenerateSessionID()
+		if err == nil {
+			// Ensure handshake state is built (idempotent)
+			if err := uconn.BuildHandshakeState(); err == nil {
+				// Inject Random (Client Ephemeral PubKey)
+				if len(clientRandom) == 32 {
+					copy(uconn.HandshakeState.Hello.Random[:], clientRandom)
+				}
+				// Inject SessionID (HMAC)
+				uconn.HandshakeState.Hello.SessionId = sessionID
+			}
+		} else {
+			// Log warning but continue (might use extension auth)
+			fmt.Printf("Phantom auth generation failed: %v\n", err)
 		}
 	}
 
