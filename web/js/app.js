@@ -300,11 +300,19 @@ class WhisperaApp {
                 }
             }
 
-            // Проверка на дубликаты
-            const portValues = ports.map(p => p.value).filter(v => v);
-            const duplicates = portValues.filter((v, i) => portValues.indexOf(v) !== i);
-            if (duplicates.length > 0) {
-                alert(`Порты не могут дублироваться! Найдены дубликаты: ${duplicates.join(', ')}`);
+            // Проверка на дубликаты (раздельно по протоколам)
+            const udpPorts = ports.filter(p => p.protocol === 'udp').map(p => p.value).filter(v => v);
+            const tcpPorts = ports.filter(p => p.protocol === 'tcp').map(p => p.value).filter(v => v);
+
+            const udpDuplicates = udpPorts.filter((v, i) => udpPorts.indexOf(v) !== i);
+            const tcpDuplicates = tcpPorts.filter((v, i) => tcpPorts.indexOf(v) !== i);
+
+            if (udpDuplicates.length > 0) {
+                alert(`UDP порты не могут дублироваться! Найдены дубликаты: ${udpDuplicates.join(', ')}`);
+                return;
+            }
+            if (tcpDuplicates.length > 0) {
+                alert(`TCP порты не могут дублироваться! Найдены дубликаты: ${tcpDuplicates.join(', ')}`);
                 return;
             }
 
