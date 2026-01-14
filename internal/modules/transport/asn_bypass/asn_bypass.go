@@ -207,6 +207,13 @@ func NewDialer(cfg *Config) *Dialer {
 	}
 }
 
+// SetPhantomAuth sets the Phantom authentication provider
+func (d *Dialer) SetPhantomAuth(auth PhantomAuthProvider) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.phantomAuth = auth
+}
+
 // DialContext connects to the address using the configured bypass strategy
 func (d *Dialer) DialContext(ctx context.Context, network, addr string) (net.Conn, error) {
 	// Check burst limit
@@ -373,14 +380,23 @@ func (d *Dialer) dialTLSMasquerade(ctx context.Context, network, addr string) (n
 
 	// Read ServerHello (Phantom proxies it from real dest)
 	// We consume it to clear the socket buffer for the actual protocol
-	// It usually consists of ServerHello, ChangeCipherSpec, EncryptedExtensions, etc.
-	// We just read a chunk and assume it's done enough for us to proceed.
-	// Parse ServerHello? We just read a chunk and assume it's done enough for us to proceed.
+	// We read effectively until the server stops sending the fake handshake.
 	buf := make([]byte, 16*1024)
 	tcpConn.SetReadDeadline(time.Now().Add(5 * time.Second))
 	if _, err := tcpConn.Read(buf); err != nil {
 		tcpConn.Close()
 		return nil, fmt.Errorf("failed to read ServerHello (timeout/error): %w", err)
+	}
+
+	// Drain any remaining data (TCP fragmentation) with a short timeout
+	// The server sends a single write (up to 4KB), but it might arrive in multiple packets.
+	tcpConn.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
+	for {
+		_, err := tcpConn.Read(buf)
+		if err != nil {
+			// Expected timeout (silence) or error, stop draining
+			break
+		}
 	}
 	// We ignore the content of ServerHello (it is encrypted/real TLS we can't speak)
 

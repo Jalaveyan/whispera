@@ -160,6 +160,7 @@ func (ck *ConnectionKey) ToClientConfig() *ClientConfig {
 		PSK:        ck.PSK,
 		ServerPub:  ck.ServerPub,
 		ObfsPreset: ck.ObfsPreset,
+		AppProfile: ck.ObfsProfile, // Map application profile
 	}
 
 	// Set transport preference
@@ -168,6 +169,30 @@ func (ck *ConnectionKey) ToClientConfig() *ClientConfig {
 		cfg.UDPOnly = false
 	case "udp":
 		cfg.UDPOnly = true
+	}
+
+	// Map Phantom Configuration
+	if ck.PhantomEnabled {
+		cfg.Phantom = &ClientPhantomConfig{
+			Enabled:         true,
+			SNI:             ck.PhantomSNI,
+			ShortId:         ck.PhantomShortID,
+			ServerPublicKey: ck.ServerPub, // Use the server public key for Phantom
+		}
+	}
+
+	// Map ASN Bypass Configuration
+	if ck.EnableASNBypass {
+		cfg.ASNBypass = &ClientASNBypassConfig{
+			Enabled:         true,
+			Strategy:        "tls_masquerade", // Default to TLS masquerade
+			TLSFingerprint:  ck.TLSFingerprint,
+			DomainFrontHost: ck.DomainFrontHost,
+		}
+		// If domain fronting host is set, prefer that strategy
+		if ck.DomainFrontHost != "" {
+			cfg.ASNBypass.Strategy = "domain_fronting"
+		}
 	}
 
 	return cfg

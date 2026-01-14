@@ -2,10 +2,15 @@ package marionette
 
 import (
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
+	"encoding/hex"
 	"math"
-	"math/rand"
+	mrand "math/rand"
 	"time"
+
+	"golang.org/x/crypto/curve25519"
+
 	"whispera/internal/obfuscation/core/types"
 )
 
@@ -82,31 +87,45 @@ func (m *Marionette) applyProtocolObfuscation(data []byte, profile *TrafficObfus
 
 		// Check for custom SNI in profile
 		sni := profile.SNI
+		realityKey := profile.RealityPublicKey
 
-		if sni == "" {
-			snis := []string{
-				// Global high-reputation (CDNs & Big Tech)
-				"www.microsoft.com",
-				"www.google.com",
-				"www.samsung.com",
-				"www.apple.com",
-				"code.jquery.com",
-				"www.twitch.tv",
-				"ajax.googleapis.com",
+		if sni == "" || sni == "random_ru" || sni == "random" {
+			var snis []string
 
-				// Russian services (Popular & High Bandwidth)
-				"vk.com",
-				"dzen.ru",
-				"www.ozon.ru",
-				"www.wildberries.ru",
-				"rutube.ru",
-				"yandex.ru",
-				"disk.yandex.ru",
+			if sni == "random_ru" {
+				snis = []string{
+					"vk.com",
+					"dzen.ru",
+					"www.ozon.ru",
+					"www.wildberries.ru",
+					"rutube.ru",
+					"yandex.ru",
+					"disk.yandex.ru",
+					"mail.ru",
+					"ok.ru",
+				}
+			} else {
+				// Global Mix
+				snis = []string{
+					// Global high-reputation
+					"www.microsoft.com",
+					"www.google.com",
+					"www.samsung.com",
+					"www.apple.com",
+					"code.jquery.com",
+					"www.twitch.tv",
+					"ajax.googleapis.com",
+					// Russian High-Reputation
+					"vk.com",
+					"dzen.ru",
+					"rutube.ru",
+					"yandex.ru",
+				}
 			}
 			sni = snis[m.Rand.Intn(len(snis))]
 		}
 		// This header mimics a standard Chrome Client Hello
-		fakeHello := m.generateFakeClientHello(sni)
+		fakeHello := m.generateFakeClientHello(sni, realityKey)
 
 		// Create a new buffer: [Fake Hello] + [Real Data (already wrapped in AppData)]
 		res := make([]byte, len(fakeHello)+len(data))
@@ -476,7 +495,7 @@ func (m *Marionette) applySequenceObfuscationTraffic(data []byte, _ *TrafficObfu
 
 // --- HTTPS Masquerade Helpers ---
 
-func (m *Marionette) generateFakeClientHello(sni string) []byte {
+func (m *Marionette) generateFakeClientHello(sni string, realityPubKeyHex string) []byte {
 	// Construct a realistic TLS 1.3 Client Hello (Simulating Chrome)
 	// Structure:
 	// 1. Handshake Header
@@ -487,6 +506,61 @@ func (m *Marionette) generateFakeClientHello(sni string) []byte {
 	//    - Cipher Suites (Modern 1.3 + 1.2 Fallback)
 	//    - Compression (0x00)
 	//    - Extensions (SNI, SupportedVersions, KeyShare, SigAlgs, etc.)
+
+	// Default Public Key
+	// This matches the server's public key provided in the connection string
+	// Provided by user: 6c4b5a0a561f56792270ef886245bc8e3c66bc3bd1e685d13b89a3a3a875772a
+	defaultPubKey := "6c4b5a0a561f56792270ef886245bc8e3c66bc3bd1e685d13b89a3a3a875772a"
+
+	// Use provided key or fallback to default
+	targetKeyHex := realityPubKeyHex
+	if targetKeyHex == "" {
+		targetKeyHex = defaultPubKey
+	}
+
+	// --- Authentication (REALITY) ---
+	// Start with secure random for ClientRandom placeholder
+	clientRandom := make([]byte, 32)
+	// Use crypto/rand for secure random
+	if _, err := rand.Read(clientRandom); err != nil {
+		m.Rand.Read(clientRandom)
+	}
+
+	var sessionID []byte
+
+	// Perform X25519-based Auth
+	if len(targetKeyHex) == 64 { // Expecting 32 bytes hex
+		pubKeyBytes, err := hex.DecodeString(targetKeyHex)
+		if err == nil {
+			// Generate Ephemeral Private Key
+			priv := make([]byte, 32)
+			if _, err := rand.Read(priv); err == nil {
+				// Derive Ephemeral Public Key (Client's Public Key)
+				myPub, err := curve25519.X25519(priv, curve25519.Basepoint)
+				if err == nil {
+					// 1. ClientRandom BECOMES the Client's Ephemeral Public Key
+					copy(clientRandom, myPub)
+
+					// 2. Calculate Shared Secret: X25519(ClientPriv, ServerPub)
+					sharedSecret, err := curve25519.X25519(priv, pubKeyBytes)
+					if err == nil {
+						// 3. Calculate Auth Tag: HMAC-SHA256(SharedSecret, "whispera-session-id")
+						mac := hmac.New(sha256.New, sharedSecret)
+						mac.Write([]byte("whispera-session-id"))
+						sessionID = mac.Sum(nil)[:32]
+					}
+				}
+			}
+		}
+	}
+
+	// Recovery: If sessionID is still nil (Key decode failed or crypto error), generate random one
+	// This will likely fail server auth, but ensures valid TLS structure.
+	if sessionID == nil {
+		sessionID = make([]byte, 32)
+		// Use a fixed fallback pattern or random
+		m.Rand.Read(sessionID)
+	}
 
 	// --- Extensions Construction ---
 
@@ -552,20 +626,7 @@ func (m *Marionette) generateFakeClientHello(sni string) []byte {
 	extensions = append(extensions, ksExt...)
 
 	// Handshake Body
-	random := make([]byte, 32)
-	m.Rand.Read(random)
-
-	// REALITY-like Session ID: HMAC(Secret, Random)
-	// This allows the server to verify us without custom extensions
-	// usage: SessionID = HMAC-SHA256(Key, ClientRandom)
-	// For production, this key must match the server's PrivateKey
-	// We use a default key if not provided in profile, but ideally it comes from config
-	secretKey := []byte("whispera-phantom-secret") // Placeholder default
-	// TODO: Pass actual config key here when available via profile
-
-	mac := hmac.New(sha256.New, secretKey)
-	mac.Write(random)
-	sessionID := mac.Sum(nil)[:32] // Take first 32 bytes
+	// NOTE: ClientRandom is already set above (used for Public Key transport in REALITY)
 
 	// Modern Ciphers (TLS 1.3 + GCM)
 	ciphers := []byte{
@@ -589,7 +650,7 @@ func (m *Marionette) generateFakeClientHello(sni string) []byte {
 	idx = 4
 	handshake[idx], handshake[idx+1] = 0x03, 0x03 // Legacy Version (TLS 1.2)
 	idx += 2
-	copy(handshake[idx:], random)
+	copy(handshake[idx:], clientRandom)
 	idx += 32
 	handshake[idx] = 32 // Session ID Len
 	idx++
@@ -618,7 +679,7 @@ func (m *Marionette) generateFakeClientHello(sni string) []byte {
 
 // --- Padding Logic (formerly marionette_padding.go) ---
 
-func (m *Marionette) generateVKJSONPadding(padding []byte, r *rand.Rand) {
+func (m *Marionette) generateVKJSONPadding(padding []byte, r *mrand.Rand) {
 	for i := range padding {
 		switch i % 3 {
 		case 0:
@@ -631,7 +692,7 @@ func (m *Marionette) generateVKJSONPadding(padding []byte, r *rand.Rand) {
 	}
 }
 
-func (m *Marionette) generateYandexSearchPadding(padding []byte, r *rand.Rand) {
+func (m *Marionette) generateYandexSearchPadding(padding []byte, r *mrand.Rand) {
 	for i := range padding {
 		switch i % 4 {
 		case 0:
@@ -646,7 +707,7 @@ func (m *Marionette) generateYandexSearchPadding(padding []byte, r *rand.Rand) {
 	}
 }
 
-func (m *Marionette) generateMailruEmailPadding(padding []byte, r *rand.Rand) {
+func (m *Marionette) generateMailruEmailPadding(padding []byte, r *mrand.Rand) {
 	for i := range padding {
 		switch i % 5 {
 		case 0:
@@ -663,13 +724,13 @@ func (m *Marionette) generateMailruEmailPadding(padding []byte, r *rand.Rand) {
 	}
 }
 
-func (m *Marionette) generateRutubeVideoPadding(padding []byte, r *rand.Rand) {
+func (m *Marionette) generateRutubeVideoPadding(padding []byte, r *mrand.Rand) {
 	for i := range padding {
 		padding[i] = byte(r.Intn(256))
 	}
 }
 
-func (m *Marionette) generateOzonProductPadding(padding []byte, r *rand.Rand) {
+func (m *Marionette) generateOzonProductPadding(padding []byte, r *mrand.Rand) {
 	for i := range padding {
 		switch i % 6 {
 		case 0:
@@ -688,7 +749,7 @@ func (m *Marionette) generateOzonProductPadding(padding []byte, r *rand.Rand) {
 	}
 }
 
-func (m *Marionette) generateDefaultHTTPPadding(padding []byte, r *rand.Rand) {
+func (m *Marionette) generateDefaultHTTPPadding(padding []byte, r *mrand.Rand) {
 	for i := range padding {
 		padding[i] = byte(r.Intn(256))
 	}
@@ -734,6 +795,9 @@ func (m *Marionette) applyAction(action types.Action, data []byte, params map[st
 
 		if sni, ok := params["sni"].(string); ok {
 			prof.SNI = sni
+		}
+		if pubKey, ok := params["reality_public_key"].(string); ok {
+			prof.RealityPublicKey = pubKey
 		}
 
 		// Map Active profile to TargetService if needed (simple fallback)

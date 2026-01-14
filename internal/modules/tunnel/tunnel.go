@@ -231,6 +231,12 @@ func New(cfg *Config) (*Manager, error) {
 			ServerPublicKey: cfg.PhantomServerPubKey,
 			ShortId:         shortId,
 		})
+
+		// Inject Phantom Auth into ASN Bypass Dialer
+		if m.asnBypassDialer != nil {
+			m.asnBypassDialer.SetPhantomAuth(m.phantomAuth)
+		}
+
 		log.Info("Phantom protocol enabled (SNI: %s)", cfg.PhantomSNI)
 	}
 

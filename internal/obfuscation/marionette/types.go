@@ -92,6 +92,7 @@ type TrafficObfuscationProfile struct {
 	SizeRandomization   bool   `json:"size_randomization"`
 	TargetService       string `json:"target_service"`
 	SNI                 string `json:"sni"`
+	RealityPublicKey    string `json:"reality_public_key"`
 }
 
 // SystemMetrics alias
