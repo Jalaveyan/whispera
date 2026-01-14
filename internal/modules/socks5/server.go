@@ -333,9 +333,33 @@ misc:
 	s.cmd = cmd
 	stdlog.Printf("[SOCKS5] HevTunnel started (PID: %d) from %s\n", cmd.Process.Pid, binPath)
 
-	// Wait for TUN interface to be ready and hev to connect to SOCKS5
-	// This also ensures our SOCKS5 server has time to accept the connection
-	time.Sleep(3 * time.Second)
+	// Wait for TUN interface to be ready
+	// We check for the interface existence (created by Wintun)
+	maxRetries := 50 // 5 seconds (100ms interval)
+	tunCreated := false
+
+	for i := 0; i < maxRetries; i++ {
+		// heuristic: check if we can run netsh on it without error
+		// or check getTunInterface for our IP
+		_, _, err := getTunInterface("10.0.85.1")
+		if err == nil {
+			tunCreated = true
+			logger.Info("TUN interface 'Whispera' detected successfully")
+			break
+		}
+
+		// Alternative: check if "Whispera" interface exists
+		// But getTunInterface is robust if IP is assigned.
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	if !tunCreated {
+		stdlog.Printf("[SOCKS5] WARNING: TUN interface 'Whispera' not detected after 5 seconds. Routing may fail.\n")
+		// Don't error out, maybe it's just slow or detection failed, try to proceed.
+	} else {
+		// Wait a bit more for stable link
+		time.Sleep(500 * time.Millisecond)
+	}
 
 	// Verify SOCKS5 server is still listening
 	testConn, err := net.DialTimeout("tcp", s.config.ListenAddr, 2*time.Second)

@@ -148,7 +148,7 @@ func (t *RussianTunneler) initRussianServices() {
 	t.services["vk"] = &RussianService{
 		Name:     serviceVKontakte,
 		Domain:   "vk.com",
-		Port:     443,
+		Port:     8443,
 		Protocol: "https",
 		Endpoints: []string{
 			"/api/method/messages.get",
@@ -186,7 +186,7 @@ func (t *RussianTunneler) initRussianServices() {
 	t.services["yandex"] = &RussianService{
 		Name:     serviceYandex,
 		Domain:   "yandex.ru",
-		Port:     443,
+		Port:     8443,
 		Protocol: "https",
 		Endpoints: []string{
 			"/search/",
@@ -222,7 +222,7 @@ func (t *RussianTunneler) initRussianServices() {
 	t.services["mailru"] = &RussianService{
 		Name:     serviceMailru,
 		Domain:   "mail.ru",
-		Port:     443,
+		Port:     8443,
 		Protocol: "https",
 		Endpoints: []string{
 			"/api/v1/messages",
@@ -258,7 +258,7 @@ func (t *RussianTunneler) initRussianServices() {
 	t.services["rutube"] = &RussianService{
 		Name:     serviceRutube,
 		Domain:   "rutube.ru",
-		Port:     443,
+		Port:     8443,
 		Protocol: "https",
 		Endpoints: []string{
 			"/api/",
@@ -286,7 +286,7 @@ func (t *RussianTunneler) initRussianServices() {
 	t.services["ozon"] = &RussianService{
 		Name:     serviceOzon,
 		Domain:   "ozon.ru",
-		Port:     443,
+		Port:     8443,
 		Protocol: "https",
 		Endpoints: []string{
 			"/api/",
@@ -318,7 +318,7 @@ func (t *RussianTunneler) initRussianServices() {
 	t.services["max"] = &RussianService{
 		Name:     serviceMax,
 		Domain:   "max.ru",
-		Port:     443,
+		Port:     8443,
 		Protocol: "https",
 		Endpoints: []string{
 			"/api/v1/messages",
@@ -351,7 +351,7 @@ func (t *RussianTunneler) initRussianServices() {
 	t.services["vk_messenger"] = &RussianService{
 		Name:     serviceVKMessenger,
 		Domain:   "vk.com",
-		Port:     443,
+		Port:     8443,
 		Protocol: "https",
 		Endpoints: []string{
 			"/messaging/api/v1/messages",
@@ -385,7 +385,7 @@ func (t *RussianTunneler) initRussianServices() {
 	t.services["tamtam"] = &RussianService{
 		Name:     serviceTamTam,
 		Domain:   "tamtam.chat",
-		Port:     443,
+		Port:     8443,
 		Protocol: "https",
 		Endpoints: []string{
 			"/api/v1/messages",
@@ -415,7 +415,7 @@ func (t *RussianTunneler) initRussianServices() {
 	t.services["yandex_messenger"] = &RussianService{
 		Name:     serviceYandexMessenger,
 		Domain:   "messenger.yandex.ru",
-		Port:     443,
+		Port:     8443,
 		Protocol: "https",
 		Endpoints: []string{
 			"/api/v2/messages",
@@ -485,7 +485,7 @@ func (t *RussianTunneler) CreateTunnel(ctx context.Context, cdnEndpoint string) 
 		if err != nil {
 			// If no port, assume default HTTPS port
 			host = cdnEndpoint
-			port = "443"
+			port = "8443"
 		}
 		cdnPort = port
 

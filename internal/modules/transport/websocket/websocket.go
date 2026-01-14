@@ -41,7 +41,7 @@ type Config struct {
 // DefaultConfig returns default WebSocket configuration
 func DefaultConfig() *Config {
 	return &Config{
-		ListenAddr:   ":443",
+		ListenAddr:   ":8443",
 		Path:         "/ws",
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 30 * time.Second,

@@ -40,7 +40,7 @@ type Config struct {
 // DefaultConfig returns default gRPC configuration
 func DefaultConfig() *Config {
 	return &Config{
-		ListenAddr:  ":443",
+		ListenAddr:  ":8443",
 		ServiceName: "TunnelService",
 		UseTLS:      true,
 		MaxConns:    10000,

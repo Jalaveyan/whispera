@@ -38,7 +38,7 @@ type Config struct {
 // DefaultConfig returns default configuration
 func DefaultConfig() *Config {
 	return &Config{
-		ListenAddr: ":443",
+		ListenAddr: ":8443",
 		Path:       "/tunnel",
 		UseTLS:     true,
 		MaxConns:   10000,
