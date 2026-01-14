@@ -1,6 +1,8 @@
 package marionette
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
 	"math"
 	"math/rand"
 	"time"
@@ -552,8 +554,18 @@ func (m *Marionette) generateFakeClientHello(sni string) []byte {
 	// Handshake Body
 	random := make([]byte, 32)
 	m.Rand.Read(random)
-	sessionID := make([]byte, 32)
-	m.Rand.Read(sessionID) // For REALITY, this ID often contains the auth tag
+
+	// REALITY-like Session ID: HMAC(Secret, Random)
+	// This allows the server to verify us without custom extensions
+	// usage: SessionID = HMAC-SHA256(Key, ClientRandom)
+	// For production, this key must match the server's PrivateKey
+	// We use a default key if not provided in profile, but ideally it comes from config
+	secretKey := []byte("whispera-phantom-secret") // Placeholder default
+	// TODO: Pass actual config key here when available via profile
+
+	mac := hmac.New(sha256.New, secretKey)
+	mac.Write(random)
+	sessionID := mac.Sum(nil)[:32] // Take first 32 bytes
 
 	// Modern Ciphers (TLS 1.3 + GCM)
 	ciphers := []byte{

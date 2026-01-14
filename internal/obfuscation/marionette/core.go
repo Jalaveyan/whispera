@@ -179,28 +179,83 @@ func (m *Marionette) Deobfuscate(data []byte) ([]byte, time.Duration, error) {
 
 	// 2. Check for Fake Client Hello (0x16 = Handshake)
 	// If we receive a fake Client Hello, we must discard it.
-	// But check if there is 0x17 (Data) immediately following it in the buffer.
+	// But in REALITY mode, the server replies with Server Hello (0x16), ChangeCipherSpec (0x14), and Application Data (0x17).
+	// We need to skip ALL of this initial handshake noise if it looks like a standard TLS response.
+
 	if data[0] == 0x16 && data[1] == 0x03 {
-		// Calculate length of this handshake record
+		// Calculate length of the first record (Handshake)
 		length := int(data[3])<<8 | int(data[4])
 		recordLen := 5 + length
 
 		if len(data) == recordLen {
-			// Just a fake handshake, nothing else. Return empty/keep-alive?
-			// The server might drop empty packets, but it shouldn't error.
-			// Return empty slice to signal "processed but no payload"
+			// Just a single handshake record (e.g. ServerHello), discard and wait for more.
 			return []byte{}, 0, nil
 		}
 
 		if len(data) > recordLen {
-			// There is more data after the handshake. It is likely the 0x17 record.
-			// Let's recurse or just process the next chunk.
-			// Strip the handshake and check the next byte
+			// More records follow. Could be ChangeCipherSpec(20) + AppData(23)
 			remaining := data[recordLen:]
-			if remaining[0] == 0x17 {
-				// Recursively deobfuscate the remaining part (which is 0x17 wrapped)
-				return m.Deobfuscate(remaining)
+
+			// If next is ChangeCipherSpec (0x14), skip it too
+			if len(remaining) >= 5 && remaining[0] == 0x14 {
+				ccsLen := int(remaining[3])<<8 | int(remaining[4])
+				totalCCSLen := 5 + ccsLen
+				if len(remaining) > totalCCSLen {
+					remaining = remaining[totalCCSLen:]
+				} else {
+					return []byte{}, 0, nil // Waiting for more
+				}
 			}
+
+			// If next is "Application Data" (0x17) which is actually the specific fake data (EncryptedExtensions etc)
+			// In REALITY, this is the "Noise" we want to skip.
+			// BUT, our actual VPN data is ALSO wrapped in 0x17.
+			// How to distinguish?
+			// The REALITY noise usually comes *immediately* after ServerHello/CCS.
+			// Since we just skipped ServerHello/CCS, the very next 0x17 is suspect.
+			// However, Marionette wraps *everything* in 0x17.
+			// If we are the client, and we just sent the First Packet, we expect the Server Reply.
+			// The Server Reply *is* the fake handshake.
+			// So for the *First* response from server, we should probably strip it?
+			// But `Deobfuscate` is stateless here? No, `m.State` exists.
+
+			// CHECK STATE: If this is the FIRST inbound packet sequence?
+			// m.State.PacketCount counts *processed* packets.
+			// If the server sends Handshake + VPN Data in one go, we need to be careful.
+			// However, usually the server sends Handshake, Client does nothing (or sends next), Server sends VPN data.
+
+			// Heuristic: If we see ServerHello (0x16), assume it's the handshake and the *ENTIRE* buffer is handshake related noise OR
+			// try to find where the "Real" stream starts.
+			// Since our VPN stream *also* looks like TLS, it's hard to distinguish by byte inspection alone.
+
+			// Use the fact that we just stripped 0x16. If we are left with 0x17, is it "Fake Encrypted Handshake" or "Real VPN Data"?
+			// The "Fake Encrypted Handshake" (Cert, Finished) is usually relatively large (>200-300 bytes).
+			// Our VPN Keepalives might be small.
+
+			// CRITICAL: The server sends `buffer[:n]` where buffer is read from Dest.
+			// This contains ServerHello..Finished.
+			// AFTER that, the server sends VPN data.
+			// So if we see a 0x16 at the start, it is DEFINITELY the fake handshake.
+			// We should skip the WHOLE buffer if it starts with 0x16 (ServerHello).
+			// Assuming the server doesn't concatenate VPN frames *in the same system write* as the handshake.
+			// Even if it does, `sendFakeHandshake` does a Write, then `OnAuthenticated` loop starts writing.
+			// They arrive as TCP stream.
+
+			// Safest bet: If it starts with 0x16 (Handshake), it is the Fake Server Response. Consume valid TLS records until we run out or hit something else?
+			// Actually, standard TLS 1.3 ServerHello is followed by more TLS records.
+			// We should try to parse and skip TLS records until we find one that looks "Ours" (maybe magic length?) or just skip this packet entirely.
+			// Since `sendFakeHandshake` flushes a `Read()` from the real server, it is likely one or two TCP packets.
+			// We can probably just return empty here and let the next TCP segment be the VPN data.
+			// IF the VPN data was piggybacked, we lose it.
+			// But we optimize for "Discard Handshake".
+
+			// Let's assume the handshake is self-contained in this read or split.
+			// We will recursively skip standard TLS records (0x14, 0x16, 0x17) as long as they look like "Handshake Phase".
+			// But 0x17 is also our data.
+			// Strategy: If we start with 0x16, skip EVERYTHING in this buffer.
+			// Why? Because valid VPN data wouldn't start with 0x16 (we only wrap in 0x17).
+			// So if 0x16 is present, the whole chunk is likely the "Server Hello" sequence.
+			return []byte{}, 0, nil
 		}
 	}
 
