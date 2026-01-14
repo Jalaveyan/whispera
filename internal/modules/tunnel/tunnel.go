@@ -321,7 +321,7 @@ func (m *Manager) Connect(ctx context.Context) error {
 			// Fall through to UDP
 		} else {
 			log.Info("ASN bypass connection established successfully")
-			m.isTransportSecure = true
+			// m.isTransportSecure = true
 		}
 	}
 

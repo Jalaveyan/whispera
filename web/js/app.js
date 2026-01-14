@@ -2024,7 +2024,7 @@ whispera://IP_СЕРВЕРА:ПОРТ?pub=ПУБЛИЧНЫЙ_КЛЮЧ&key=ПРИ
 
         // Получаем информацию о сервере из API
         let serverIP = 'YOUR_SERVER_IP';
-        let serverPort = 51820;
+        let serverPort = 8443;
         let serverPubKey = '';
 
         try {
@@ -2087,6 +2087,13 @@ whispera://IP_СЕРВЕРА:ПОРТ?pub=ПУБЛИЧНЫЙ_КЛЮЧ&key=ПРИ
         if (privateKey) {
             params.set('key', privateKey);
         }
+
+        // Add default parameters for better connectivity and evasion
+        params.set('transport', 'tcp');
+        params.set('phantom', '1');
+        params.set('sni', 'random_ru');
+        params.set('asn', '1');
+        params.set('tls', 'chrome');
 
         // Формируем URL в формате whispera://server:port?pub=...&key=...
         const url = `whispera://${serverIP}:${serverPort}?${params.toString()}`;

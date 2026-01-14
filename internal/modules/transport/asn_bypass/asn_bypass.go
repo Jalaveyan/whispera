@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/rand"
 	"net"
 	"net/http"
 	"sync"
@@ -43,6 +44,77 @@ const (
 	// StrategyGRPC - Use gRPC over HTTP/2 which some filters don't inspect
 	StrategyGRPC
 )
+
+// RuDomains is a list of popular Russian domains for SNI rotation
+// SNICategory defines a category of domains with specific connection duration rules
+type SNICategory struct {
+	Name        string
+	Domains     []string
+	MinDuration time.Duration
+	MaxDuration time.Duration
+}
+
+// SNICategories defines the behavioral patterns for SNI rotation
+var SNICategories = []SNICategory{
+	{
+		Name:        "Banking",
+		Domains:     []string{"sberbank.ru", "tinkoff.ru"},
+		MinDuration: 2 * time.Minute,
+		MaxDuration: 5 * time.Minute,
+	},
+	{
+		Name:        "Search",
+		Domains:     []string{"yandex.ru", "google.ru", "mail.ru", "rambler.ru", "ya.ru"},
+		MinDuration: 5 * time.Minute,
+		MaxDuration: 10 * time.Minute,
+	},
+	{
+		Name:        "Video",
+		Domains:     []string{"rutube.ru", "kinopoisk.ru", "kion.ru", "ivi.ru", "pladform.ru", "ntv.ru", "1tv.ru"},
+		MinDuration: 30 * time.Minute, // User mentioned ~2 hours, adjusted for practical VPN tunnel stability
+		MaxDuration: 120 * time.Minute,
+	},
+	{
+		Name:        "Social/Other",
+		Domains:     []string{"vk.com", "ok.ru", "gosuslugi.ru", "avito.ru", "wildberries.ru", "ozon.ru", "dzen.ru", "telegram.org", "whatsapp.com", "hh.ru", "rbc.ru"},
+		MinDuration: 20 * time.Minute,
+		MaxDuration: 40 * time.Minute,
+	},
+}
+
+// pickRandomSNI selects a domain and duration based on behavioral profile
+func pickRandomSNI() (string, time.Duration) {
+	// Weighted random selection: Social(40%), Video(30%), Search(20%), Banking(10%)
+	r := rand.Float64()
+	var cat SNICategory
+
+	if r < 0.10 {
+		cat = SNICategories[0] // Banking
+	} else if r < 0.30 {
+		cat = SNICategories[1] // Search
+	} else if r < 0.60 {
+		cat = SNICategories[2] // Video
+	} else {
+		cat = SNICategories[3] // Social/Other
+	}
+
+	// Pick random domain from category
+	domain := cat.Domains[rand.Intn(len(cat.Domains))]
+
+	// Calculate random duration within range
+	minD := float64(cat.MinDuration)
+	maxD := float64(cat.MaxDuration)
+	duration := time.Duration(minD + rand.Float64()*(maxD-minD))
+
+	// "Sudden switch" behavior (human mimicry)
+	// 15% chance user gets bored/switches immediately (e.g., closed tab)
+	if rand.Float64() < 0.15 {
+		// Short duration: 10s to 60s
+		duration = time.Duration(10+rand.Intn(50)) * time.Second
+	}
+
+	return domain, duration
+}
 
 // Config holds ASN bypass configuration
 type Config struct {
@@ -227,8 +299,18 @@ func (d *Dialer) dialTLSMasquerade(ctx context.Context, network, addr string) (n
 	}
 
 	// Apply SNI masking if configured
-	if d.config.EnableSNIMask && d.config.FrontDomain != "" {
-		tlsConfig.ServerName = d.config.FrontDomain
+	var connectionDuration time.Duration = 0
+
+	if d.config.EnableSNIMask {
+		if d.config.FrontDomain == "random" || d.config.FrontDomain == "random_ru" {
+			// Behavioral SNI rotation
+			var sni string
+			sni, connectionDuration = pickRandomSNI()
+			tlsConfig.ServerName = sni
+			// Log checking strategy (optional, requires logger import which we might not have here, so skipping)
+		} else if d.config.FrontDomain != "" {
+			tlsConfig.ServerName = d.config.FrontDomain
+		}
 	}
 
 	// --- "Hello-Only" Strategy Implementation ---
@@ -307,6 +389,12 @@ func (d *Dialer) dialTLSMasquerade(ctx context.Context, network, addr string) (n
 
 	// Return the raw TCP connection, which is now "Authenticated" by Phantom
 	// and ready for our VPN frames.
+
+	// If behavioral rotation is active, wrap connection to auto-close after duration
+	if connectionDuration > 0 {
+		return NewTimedConn(tcpConn, connectionDuration), nil
+	}
+
 	return tcpConn, nil
 }
 
@@ -800,4 +888,30 @@ func (ic *interceptorConn) WaitForBytes(timeout time.Duration) ([]byte, error) {
 	}
 
 	return ic.buf.Bytes(), nil
+}
+
+// TimedConn wraps a net.Conn and closes it after a specific duration
+type TimedConn struct {
+	net.Conn
+	closeTimer *time.Timer
+}
+
+// NewTimedConn creates a connection that auto-closes after d
+func NewTimedConn(conn net.Conn, d time.Duration) *TimedConn {
+	tc := &TimedConn{
+		Conn: conn,
+	}
+	// Start timer to close connection
+	tc.closeTimer = time.AfterFunc(d, func() {
+		conn.Close()
+	})
+	return tc
+}
+
+// Close closes the connection and stops the timer
+func (c *TimedConn) Close() error {
+	if c.closeTimer != nil {
+		c.closeTimer.Stop()
+	}
+	return c.Conn.Close()
 }

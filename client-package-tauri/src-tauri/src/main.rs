@@ -381,28 +381,29 @@ fn connect(key: String) -> Result<ConnectResult, String> {
     
     println!("Whispera: Starting Go client...");
     
-    // Create log file for Go client output
-    let log_path = bin_dir.join("whispera-client.log");
-    let log_file = fs::File::create(&log_path)
-        .map_err(|e| format!("Failed to create log file: {}", e))?;
-    let log_file_err = log_file.try_clone()
-        .map_err(|e| format!("Failed to clone log file: {}", e))?;
-    
-    // Start Go client with logs going to file
+    // Start Go client with logs going to console (Stdio::inherit)
+    // We let Go manage its own log file to avoid conflicts
     let go_client = Command::new(&go_client_path)
         .args(&["-config", config_path.to_str().unwrap(), "-key", &key])
         .current_dir(&bin_dir)
-        .stdout(log_file)
-        .stderr(log_file_err)
+        .stdout(Stdio::inherit()) 
+        .stderr(Stdio::inherit())
         .spawn()
         .map_err(|e| format!("Failed to start Go client: {}", e))?;
     
     println!("Whispera: Go client started with PID: {}", go_client.id());
-    println!("Whispera: Logs saved to: {:?}", log_path);
+    // println!("Whispera: Logs saved to: {:?}", log_path);
     
     // Wait a bit for client to initialize
-    std::thread::sleep(std::time::Duration::from_secs(2));
+    // std::thread::sleep(std::time::Duration::from_secs(2));
     
+    // DISABLE Rust-side HevTunnel management.
+    // The Go client will start HevTunnel internally once valid VPN connection is established.
+    // This prevents routing loops and race conditions.
+    println!("Whispera: Delegating HevTunnel management to Go client...");
+    let socks_tunnel = None; 
+
+    /* 
     // Start hev-socks5-tunnel if it exists (for TUN mode)
     let socks_tunnel = if hev_tunnel_path.exists() {
         println!("Whispera: Starting hev-socks5-tunnel...");
@@ -428,6 +429,7 @@ fn connect(key: String) -> Result<ConnectResult, String> {
         println!("Whispera: hev-socks5-tunnel not found, using SOCKS5 proxy mode only");
         None
     };
+    */
     
     // Store state
     let mut state = VPN_STATE.lock().unwrap();
