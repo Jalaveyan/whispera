@@ -254,13 +254,36 @@ func (m *Module) handleConnection(clientConn net.Conn, targetAddr string, target
 	tunnel := m.tunnel
 	m.mu.RUnlock()
 
-	// If no tunnel or not connected, reject connection (Kill Switch logic)
-	// We disable direct fallback to prevent traffic leaks when VPN is down.
-	if tunnel == nil || !tunnel.IsConnected() {
-		// Log always, not just debug, because this is a blocked connection attempt
-		stdlog.Printf("[SOCKS5] Tunnel down/not ready. Blocking direct connection to %s:%d (SOCKS Kill Switch)", targetAddr, targetPort)
-		return fmt.Errorf("tunnel not connected")
+	// Wait for tunnel to become ready (Kill Switch)
+	// Strategy: We wait a bit. If tunnel comes up, great.
+	// If it doesn't, we DO NOT fail the connection (returning error causes browsers/Mihomo to fallback to DIRECT -> LEAK).
+	// Instead, we proceed, but the data transfer loop will block until tunnel is ready.
+	timeout := time.After(5 * time.Second) // Short wait for fast start
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+
+Loop:
+	for {
+		m.mu.RLock()
+		tunnel = m.tunnel
+		m.mu.RUnlock()
+
+		if tunnel != nil && tunnel.IsConnected() {
+			break Loop
+		}
+
+		select {
+		case <-timeout:
+			stdlog.Printf("[SOCKS5] Tunnel (still) not ready after 5s. Proceeding in Blocking Mode (Kill Switch active)")
+			break Loop // Break, don't return error
+		case <-ticker.C:
+			continue
+		}
 	}
+
+	// Note: We deliberately do NOT return error here if tunnel is down.
+	// We let the logic proceed to 'handleConnection' body which sets up the stream.
+	// The actual data transfer loop (goroutine) will check tunnel status before sending.
 
 	// Create stream
 	streamID := m.nextStreamID()
@@ -303,8 +326,19 @@ func (m *Module) handleConnection(clientConn net.Conn, targetAddr string, target
 		return fmt.Errorf("failed to encode CONNECT frame: %v", err)
 	}
 
-	if err := tunnel.Send(frameData); err != nil {
-		return fmt.Errorf("failed to send CONNECT frame: %v", err)
+	// Kill Switch Blocking Loop for Initial Connect
+	// We must block here too, otherwise the connection drops before data transfer starts.
+	for {
+		if err := tunnel.Send(frameData); err != nil {
+			// Check if we should retry
+			if !tunnel.IsConnected() {
+				time.Sleep(500 * time.Millisecond)
+				continue
+			}
+			stdlog.Printf("[SOCKS5] Handler failed: failed to send CONNECT frame: %v", err)
+			return fmt.Errorf("failed to send CONNECT frame: %w", err)
+		}
+		break
 	}
 
 	// Wait for CONNECT_OK or timeout
@@ -351,9 +385,20 @@ func (m *Module) handleConnection(clientConn net.Conn, targetAddr string, target
 
 			dataFrame := relay.NewDataFrame(streamID, buf[:n])
 			frameData, _ := dataFrame.Encode()
-			if err := tunnel.Send(frameData); err != nil {
-				errChan <- err
-				return
+
+			// Kill Switch Blocking Loop for Send
+			// If Send fails because tunnel is down, we wait.
+			for {
+				if err := tunnel.Send(frameData); err != nil {
+					// Check if we should retry
+					if !tunnel.IsConnected() {
+						time.Sleep(500 * time.Millisecond)
+						continue
+					}
+					errChan <- err
+					return
+				}
+				break
 			}
 		}
 	}()

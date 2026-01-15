@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"io"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -305,6 +306,10 @@ func (m *Manager) Start() error {
 	}
 	m.SetHealthy(true, "tunnel manager running")
 	m.PublishEvent(events.EventTypeModuleStarted, nil)
+
+	// Initiate connection automatically in background
+	go m.Reconnect(context.Background())
+
 	return nil
 }
 
@@ -348,19 +353,28 @@ func (m *Manager) Connect(ctx context.Context) error {
 
 // connectInternal establishes a connection. If isRotation is true, it preserves old connections.
 func (m *Manager) connectInternal(ctx context.Context, isRotation bool) error {
+	op := "Connect"
+	if isRotation {
+		op = "Rotate"
+	}
+	log.Info("[%s] Initiating connection sequence...", op)
+
 	if !isRotation {
 		m.setState(StateConnecting)
 	} else {
 		m.setState(StateRotating)
 	}
 
+	start := time.Now()
 	conn, err := m.dial(ctx)
 	if err != nil {
+		log.Error("[%s] Dial phase failed after %v: %v", op, time.Since(start), err)
 		if !isRotation {
 			m.setError(fmt.Errorf("connection attempts failed: %v", err))
 		}
 		return err
 	}
+	log.Info("[%s] Dial successful to %s (Latency: %v)", op, conn.RemoteAddr(), time.Since(start))
 
 	// Create managed connection
 	mc := &managedConn{
@@ -372,14 +386,21 @@ func (m *Manager) connectInternal(ctx context.Context, isRotation bool) error {
 
 	// Perform handshake on this new connection
 	if m.handshake != nil {
+		log.Info("[%s] Starting Protocol Handshake...", op)
+		hsStart := time.Now()
 		session, err := m.handshake.InitiateHandshake(ctx, mc, conn.RemoteAddr())
 		if err != nil {
+			log.Error("[%s] Handshake failed after %v: %v", op, time.Since(hsStart), err)
 			conn.Close()
 			return fmt.Errorf("handshake failed: %w", err)
 		}
+		log.Info("[%s] Handshake complete (Latency: %v). SessionID: %d", op, time.Since(hsStart), session.ID())
+
 		if session != nil {
 			m.sessionID = session.ID()
 		}
+	} else {
+		log.Warn("[%s] No Handshake handler configured - proceeding with raw connection", op)
 	}
 
 	// Activate Kill Switch (only on fresh connect or if IP changes)
@@ -393,7 +414,7 @@ func (m *Manager) connectInternal(ctx context.Context, isRotation bool) error {
 	if isRotation && m.activeConn != nil {
 		// Move current active to draining
 		m.drainingConns = append(m.drainingConns, m.activeConn)
-		log.Info("Rotated SNI. Old connection moved to draining (Total draining: %d)", len(m.drainingConns))
+		log.Info("[%s] Old connection moved to draining (Total draining: %d)", op, len(m.drainingConns))
 		// Schedule cleanup for draining conn
 		go m.monitorDrainingConn(m.activeConn)
 	}
@@ -415,12 +436,14 @@ func (m *Manager) connectInternal(ctx context.Context, isRotation bool) error {
 			"server":     m.config.ServerAddr,
 			"session_id": m.sessionID,
 		})
+		log.Info("[%s] Tunnel fully established and Ready.", op)
 	} else {
 		// Just notify about rotation
 		m.setState(StateConnected) // Back to connected
 		m.PublishEvent("tunnel.rotated", map[string]interface{}{
 			"id": mc.id,
 		})
+		log.Info("[%s] Rotation complete.", op)
 	}
 
 	return nil
@@ -593,10 +616,12 @@ func (m *Manager) RotateSNI() {
 	}
 }
 
-// readLoop reads from a specific connection and pumps to readCh
+// readLoop reads frames from a specific connection
 func (m *Manager) readLoop(mc *managedConn) {
-	buf := make([]byte, 65535)
 	defer mc.Close()
+
+	// Buffer for header
+	header := make([]byte, FrameHeaderSize)
 
 	for {
 		select {
@@ -605,47 +630,59 @@ func (m *Manager) readLoop(mc *managedConn) {
 		default:
 		}
 
-		mc.SetReadDeadline(time.Now().Add(5 * time.Second))
-		n, err := mc.Read(buf)
+		// 1. Read Header
+		// Use io.ReadFull to ensure we got all 8 bytes of header
+		// Set deadline to keepalive * 2
+		mc.SetReadDeadline(time.Now().Add(m.config.KeepaliveInterval * 2))
+		if _, err := io.ReadFull(mc, header); err != nil {
+			m.handleReadError(mc, err)
+			return
+		}
 
-		if n > 0 {
-			// Copy data to new buffer
-			packet := make([]byte, n)
-			copy(packet, buf[:n])
+		// 2. Parse Payload Length
+		// Format: [StreamID:2][Type:1][Flags:1][Length:4]
+		payloadLen := binary.BigEndian.Uint32(header[4:8])
 
-			// Queue for processing
-			// Non-blocking send? No, we want to block backpressure if channel full
-			// But check closing again
-			select {
-			case m.readCh <- packet:
-				atomic.AddUint64(&m.bytesDown, uint64(n))
-				m.UpdateActivity()
-			case <-mc.closing:
+		// Safety check for huge frames (max 65KB payload as per protocol)
+		if payloadLen > 65535 {
+			log.Warn("Frame too large (%d bytes), closing connection", payloadLen)
+			return
+		}
+
+		// 3. Read Payload
+		frameData := make([]byte, FrameHeaderSize+int(payloadLen))
+		copy(frameData, header)
+
+		if payloadLen > 0 {
+			if _, err := io.ReadFull(mc, frameData[FrameHeaderSize:]); err != nil {
+				m.handleReadError(mc, err)
 				return
 			}
 		}
 
-		if err != nil {
-			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-				continue
-			}
-			// If active connection dies, trigger error/reconnect
-			m.connMu.RLock()
-			isActive := (mc == m.activeConn)
-			m.connMu.RUnlock()
-
-			if isActive {
-				log.Warn("Active connection read error: %v", err)
-				if m.GetState() == StateConnected {
-					// We should probably trigger reconnect, but we can't call Reconnect (blocking) here easily.
-					// Usually upper layer or Keepalive handles this.
-					m.lastError = err
-				}
-			} else {
-				log.Debug("Draining connection ended: %v", err)
-			}
+		// 4. Send atomic frame
+		select {
+		case m.readCh <- frameData:
+			atomic.AddUint64(&m.bytesDown, uint64(len(frameData)))
+			m.UpdateActivity()
+		case <-mc.closing:
 			return
 		}
+	}
+}
+
+func (m *Manager) handleReadError(mc *managedConn, err error) {
+	if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+		return
+	}
+
+	m.connMu.RLock()
+	isActive := (mc == m.activeConn)
+	m.connMu.RUnlock()
+
+	if isActive && m.GetState() == StateConnected {
+		log.Warn("Active connection read error: %v", err)
+		m.lastError = err
 	}
 }
 
@@ -665,15 +702,6 @@ func (m *Manager) Receive(buf []byte) (int, error) {
 	}
 
 	copy(buf, packet) // Raw encrypted/obfuscated data?
-
-	// De-obfuscate
-	// If transport is TLS, data is cleartext relative to obfuscator.
-	// If UDP, it's obfuscated.
-	// But wait, our `readLoop` reads raw bytes from Conn.
-	// If m.obfuscator is present and !Secure, we need to deobfuscate.
-	// BUT: `m.obfuscator` might have state?
-	// If we support Rotation with Obfuscator, we need per-conn Obfuscator.
-	// For now, we reuse global logic.
 
 	n := len(packet)
 
@@ -893,15 +921,7 @@ func (m *Manager) stopKeepalive() {
 
 // sendKeepalive sends a keepalive packet
 func (m *Manager) sendKeepalive() {
-	// Simple keepalive packet - Ping frame?
-	// If Relay is used, we should use FramePing.
-	// 0x00 0x00 (Stream 0) 0x06 (Ping)
-	// But simpler: just empty byte?
-	// Existing code used 0x00. Let's stick to it,
-	// but if we are in Relay mode, 0x00 is header start (StreamID 0).
-	// If header is 8 bytes, 0x00 is not enough.
-	// But `socks5` handles Ping?
-
+	// Simple keepalive packet
 	// Assuming `socks5` module sends Pings via `Send`.
 	// Here we keep dummy keepalive.
 	keepalive := []byte{0x00}

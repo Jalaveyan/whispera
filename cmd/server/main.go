@@ -628,6 +628,27 @@ func handleTCPConnection(conn net.Conn) {
 
 		data := buf[:n]
 
+		// [FIX] Try handshake first (Raw, non-obfuscated)
+		// This is required because client sends raw handshake packet and waits for response.
+		// UDP handler has this, but TCP handler was missing it.
+		if len(data) >= 32 && len(data) <= 96 && globalHandshake != nil {
+			sess, err := globalHandshake.HandleHandshake(context.Background(), data, addr)
+			if err == nil && sess != nil {
+				if *debug {
+					log.Printf("[TCP] Handshake completed for %v", addr)
+				}
+				// Send response back
+				if response := globalHandshake.BuildResponse(sess); response != nil {
+					if _, err := conn.Write(response); err != nil {
+						if *debug {
+							log.Printf("[TCP] Failed to send handshake response: %v", err)
+						}
+					}
+				}
+				continue
+			}
+		}
+
 		// 1. De-obfuscate
 		payload := data
 		if globalObfuscator != nil {
