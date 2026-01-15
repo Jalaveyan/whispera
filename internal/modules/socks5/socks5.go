@@ -254,12 +254,12 @@ func (m *Module) handleConnection(clientConn net.Conn, targetAddr string, target
 	tunnel := m.tunnel
 	m.mu.RUnlock()
 
-	// If no tunnel or not connected, fallback to direct connection
+	// If no tunnel or not connected, reject connection (Kill Switch logic)
+	// We disable direct fallback to prevent traffic leaks when VPN is down.
 	if tunnel == nil || !tunnel.IsConnected() {
-		if m.config.Debug {
-			stdlog.Printf("[SOCKS5] No tunnel, direct connection to %s:%d", targetAddr, targetPort)
-		}
-		return m.handleDirectConnection(clientConn, targetAddr, targetPort)
+		// Log always, not just debug, because this is a blocked connection attempt
+		stdlog.Printf("[SOCKS5] Tunnel down/not ready. Blocking direct connection to %s:%d (SOCKS Kill Switch)", targetAddr, targetPort)
+		return fmt.Errorf("tunnel not connected")
 	}
 
 	// Create stream

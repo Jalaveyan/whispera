@@ -7,7 +7,6 @@ import (
 	"io"
 	"net"
 	"sync"
-	"time"
 
 	"whispera/internal/logger"
 )
@@ -72,14 +71,18 @@ func mapErrorToReplyCode(err error) byte {
 
 // SOCKS5Server представляет SOCKS5 прокси сервер
 type SOCKS5Server struct {
-	listenAddr  string
-	handler     func(net.Conn, string, uint16) error
-	authHandler AuthHandler  // Обработчик аутентификации (nil = NoAuth)
-	udpConn     *net.UDPConn // UDP соединение для UDP ASSOCIATE
-	udpAddr     *net.UDPAddr // Адрес UDP сервера
-	mu          sync.RWMutex
-	log         *logger.Logger
+	listenAddr    string
+	handler       func(net.Conn, string, uint16) error
+	authHandler   AuthHandler   // Обработчик аутентификации (nil = NoAuth)
+	packetHandler PacketHandler // Обработчик UDP пакетов (nil = Drop)
+	udpConn       *net.UDPConn  // UDP соединение для UDP ASSOCIATE
+	udpAddr       *net.UDPAddr  // Адрес UDP сервера
+	mu            sync.RWMutex
+	log           *logger.Logger
 }
+
+// PacketHandler handles raw UDP packets from SOCKS5 clients
+type PacketHandler func(data []byte, from net.Addr) error
 
 // NewSOCKS5Server создает новый SOCKS5 сервер
 func NewSOCKS5Server(addr string, handler func(net.Conn, string, uint16) error) *SOCKS5Server {
@@ -100,6 +103,11 @@ func (s *SOCKS5Server) SetUDPAddr(addr *net.UDPAddr) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.udpAddr = addr
+}
+
+// SetPacketHandler sets the handler for UDP packets
+func (s *SOCKS5Server) SetPacketHandler(h PacketHandler) {
+	s.packetHandler = h
 }
 
 // ListenAndServe запускает SOCKS5 сервер
@@ -545,93 +553,17 @@ func (s *SOCKS5Server) handleUDPRelay(udpListener *net.UDPConn, tcpConn net.Conn
 			continue
 		}
 
-		atyp := buf[3]
-		var dstAddr string
-		var dstPort uint16
-		var headerLen int
-
-		switch atyp {
-		case socks5ATYPIPv4:
-			if n < 10 {
-				continue
+		// Check for custom handler
+		if s.packetHandler != nil {
+			if err := s.packetHandler(buf[:n], addr); err != nil {
+				s.log.Debug("Packet handler error: %v", err)
 			}
-			dstAddr = net.IP(buf[4:8]).String()
-			dstPort = uint16(buf[8])<<8 | uint16(buf[9])
-			headerLen = 10
-
-		case socks5ATYPIPv6:
-			if n < 22 {
-				continue
-			}
-			dstAddr = net.IP(buf[4:20]).String()
-			dstPort = uint16(buf[20])<<8 | uint16(buf[21])
-			headerLen = 22
-
-		case socks5ATYPDomain:
-			domainLen := int(buf[4])
-			if n < 7+domainLen {
-				continue
-			}
-			dstAddr = string(buf[5 : 5+domainLen])
-			dstPort = uint16(buf[5+domainLen])<<8 | uint16(buf[6+domainLen])
-			headerLen = 7 + domainLen
-
-		default:
 			continue
 		}
 
-		// Get the actual data
-		data := buf[headerLen:n]
-
-		// Resolve and send to destination
-		target := fmt.Sprintf("%s:%d", dstAddr, dstPort)
-		dstUDPAddr, err := net.ResolveUDPAddr("udp", target)
-		if err != nil {
-			s.log.Debug("UDP relay: failed to resolve %s: %v", target, err)
-			continue
-		}
-
-		// Send to destination
-		targetConn, err := net.DialUDP("udp", nil, dstUDPAddr)
-		if err != nil {
-			s.log.Debug("UDP relay: failed to dial %s: %v", target, err)
-			continue
-		}
-
-		_, err = targetConn.Write(data)
-		if err != nil {
-			targetConn.Close()
-			continue
-		}
-
-		// Receive response (with timeout)
-		targetConn.SetReadDeadline(time.Now().Add(5 * time.Second))
-		respBuf := make([]byte, 65535)
-		respN, err := targetConn.Read(respBuf)
-		targetConn.Close()
-
-		if err != nil {
-			continue
-		}
-
-		// Build SOCKS5 UDP response header
-		respHeader := []byte{0, 0, 0} // RSV + FRAG
-		respHeader = append(respHeader, atyp)
-
-		switch atyp {
-		case socks5ATYPIPv4:
-			respHeader = append(respHeader, buf[4:8]...)
-			respHeader = append(respHeader, buf[8:10]...)
-		case socks5ATYPIPv6:
-			respHeader = append(respHeader, buf[4:20]...)
-			respHeader = append(respHeader, buf[20:22]...)
-		case socks5ATYPDomain:
-			domainLen := int(buf[4])
-			respHeader = append(respHeader, buf[4:7+domainLen]...)
-		}
-
-		// Send response back to client
-		response := append(respHeader, respBuf[:respN]...)
-		udpListener.WriteToUDP(response, clientAddr)
+		// SECURITY: Block direct UDP relay to prevent leaks.
+		// If no packet handler is set (e.g. tunneling), we drop the packet.
+		// Original direct dial logic removed.
+		s.log.Debug("Dropped UDP packet from %s (direct relay disabled)", addr)
 	}
 }
