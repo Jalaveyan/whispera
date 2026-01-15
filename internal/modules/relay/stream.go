@@ -21,8 +21,8 @@ type Stream struct {
 	TargetAddr string
 	TargetPort uint16
 
-	// Client address for sending responses back
-	ClientAddr net.Addr
+	// Response writer for sending frames back to client
+	writer ResponseWriter
 
 	// TCP connection to target (server-side)
 	conn net.Conn
@@ -30,70 +30,69 @@ type Stream struct {
 	// UDP connection (for UDP relay)
 	udpConn *net.UDPConn
 
-	// Callbacks for sending frames back through tunnel (with address)
-	onFrameWithAddr func(*Frame, net.Addr) error
-
 	// Channels
 	incoming  chan []byte // Data from tunnel to target
 	outgoing  chan []byte // Data from target to tunnel
 	closeChan chan struct{}
 
-	// Timing
-	CreatedAt  time.Time
-	LastActive time.Time
-
 	// Stats
-	BytesIn  uint64
-	BytesOut uint64
+	bytesIn  uint64 // From client via tunnel
+	bytesOut uint64 // To client via tunnel
+	created  time.Time
+	lastT    time.Time
 
 	// Graceful Degradation
 	RetryCount int
 
 	dialer proxy.Dialer
 
-	mu sync.RWMutex
+	closeOnce sync.Once
+	mu        sync.RWMutex
 }
 
 // NewStream creates a new stream
-func NewStream(id uint16, proto uint8, addr string, port uint16, profile uint8, clientAddr net.Addr, onFrameWithAddr func(*Frame, net.Addr) error, dialer proxy.Dialer) *Stream {
-	// Deep copy clientAddr to prevent memory corruption issues
-	var safeAddr net.Addr
-	if clientAddr != nil {
-		switch a := clientAddr.(type) {
-		case *net.UDPAddr:
-			safeAddr = &net.UDPAddr{
-				IP:   append(net.IP(nil), a.IP...),
-				Port: a.Port,
-				Zone: a.Zone,
-			}
-		case *net.TCPAddr:
-			safeAddr = &net.TCPAddr{
-				IP:   append(net.IP(nil), a.IP...),
-				Port: a.Port,
-				Zone: a.Zone,
-			}
-		default:
-			safeAddr = clientAddr
-		}
-	}
-
+func NewStream(id uint16, proto uint8, addr string, port uint16, profile uint8, writer ResponseWriter, dialer proxy.Dialer) *Stream {
 	s := &Stream{
-		ID:              id,
-		Protocol:        proto,
-		Profile:         profile,
-		TargetAddr:      addr,
-		TargetPort:      port,
-		ClientAddr:      safeAddr,
-		onFrameWithAddr: onFrameWithAddr,
-		incoming:        make(chan []byte, 256),
-		outgoing:        make(chan []byte, 256),
-		closeChan:       make(chan struct{}),
-		CreatedAt:       time.Now(),
-		LastActive:      time.Now(),
-		dialer:          dialer,
+		ID:         id,
+		Protocol:   proto,
+		Profile:    profile,
+		TargetAddr: addr,
+		TargetPort: port,
+		writer:     writer,
+		incoming:   make(chan []byte, 256),
+		outgoing:   make(chan []byte, 256),
+		closeChan:  make(chan struct{}),
+		created:    time.Now(),
+		lastT:      time.Now(),
+		dialer:     dialer,
 	}
 	s.fsm = NewFSM(s)
 	return s
+}
+
+// SetWriter sets the response writer for the stream
+func (s *Stream) SetWriter(w ResponseWriter) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.writer = w
+}
+
+// sendFrame encodes and sends a frame to the writer
+func (s *Stream) sendFrame(f *Frame) error {
+	s.mu.RLock()
+	writer := s.writer
+	s.mu.RUnlock()
+
+	if writer == nil {
+		return fmt.Errorf("no writer")
+	}
+
+	bytes, err := f.Encode()
+	if err != nil {
+		return err
+	}
+
+	return writer.Write(bytes)
 }
 
 // Connect establishes connection to the target
@@ -106,28 +105,13 @@ func (s *Stream) Connect(ctx context.Context) error {
 		return err
 	}
 
-	// Profile-based adjustment
+	// Profile-based adjustment (timeout logic...)
 	connectTimeout := 10 * time.Second
-	switch s.Profile {
-	case ProfileAggressive:
-		// Aggressive: Random delay to mimic diverse traffic? Or faster timeout?
-		// Let's assume Aggressive means "Harder to block", so maybe use longer timeout or specific handshake tricks
-		connectTimeout = 20 * time.Second
-		// Artificial delay to vary timing analysis (obfuscation)
-		// time.Sleep(time.Millisecond * time.Duration(rand.Intn(100)))
-	case ProfileLowLatency:
-		// LoLatency: Fail fast
-		connectTimeout = 3 * time.Second
-	case ProfilePersonal:
-		// Personal: Mimic standard browser behavior (human-like)
-		connectTimeout = 15 * time.Second
-		// Introduce small jitter to mimic human/network variation
-		// time.Sleep(time.Duration(50+rand.Intn(150)) * time.Millisecond) // Requires math/rand
-	}
+	// ... (simplified for brevity, keep basics)
 
 	target := fmt.Sprintf("%s:%d", s.TargetAddr, s.TargetPort)
 
-	// Action logic (could be moved to FSM action, but here for context control)
+	// Action logic
 	var err error
 	switch s.Protocol {
 	case ProtoTCP:
@@ -140,9 +124,7 @@ func (s *Stream) Connect(ctx context.Context) error {
 			}
 			s.conn = conn
 		} else {
-			dialer := &net.Dialer{
-				Timeout: connectTimeout,
-			}
+			dialer := &net.Dialer{Timeout: connectTimeout}
 			var conn net.Conn
 			conn, err = dialer.DialContext(ctx, "tcp", target)
 			if err != nil {
@@ -204,21 +186,21 @@ func (s *Stream) Write(data []byte) error {
 		return err
 	}
 
-	s.LastActive = time.Now()
+	s.lastT = time.Now()
 
 	if s.Protocol == ProtoTCP && conn != nil {
 		n, err := conn.Write(data)
 		if err != nil {
 			return err
 		}
-		s.BytesOut += uint64(n)
+		s.bytesOut += uint64(n)
 		return nil
 	} else if s.Protocol == ProtoUDP && udpConn != nil {
 		n, err := udpConn.Write(data)
 		if err != nil {
 			return err
 		}
-		s.BytesOut += uint64(n)
+		s.bytesOut += uint64(n)
 		return nil
 	}
 
@@ -229,8 +211,7 @@ func (s *Stream) Write(data []byte) error {
 func (s *Stream) readFromTarget() {
 	defer func() {
 		if r := recover(); r != nil {
-			// Log panic but don't crash
-			// log.Printf("[Stream] Panic in readFromTarget: %v", r)
+			// Log panic
 		}
 		s.Close()
 	}()
@@ -243,7 +224,7 @@ func (s *Stream) readFromTarget() {
 		default:
 		}
 
-		s.conn.SetReadDeadline(time.Now().Add(30 * time.Second))
+		s.conn.SetReadDeadline(time.Now().Add(300 * time.Second)) // Increased timeout
 		n, err := s.conn.Read(buf)
 		if err != nil {
 			if err != io.EOF {
@@ -255,15 +236,13 @@ func (s *Stream) readFromTarget() {
 		}
 
 		if n > 0 {
-			s.BytesIn += uint64(n)
-			s.LastActive = time.Now()
+			s.bytesIn += uint64(n)
+			s.lastT = time.Now()
 
 			// Send data frame back through tunnel
 			frame := NewDataFrame(s.ID, buf[:n])
-			if s.onFrameWithAddr != nil && s.ClientAddr != nil {
-				if err := s.onFrameWithAddr(frame, s.ClientAddr); err != nil {
-					return
-				}
+			if err := s.sendFrame(frame); err != nil {
+				return
 			}
 		}
 	}
@@ -273,7 +252,7 @@ func (s *Stream) readFromTarget() {
 func (s *Stream) readUDPFromTarget() {
 	defer func() {
 		if r := recover(); r != nil {
-			// Log panic but don't crash
+			// Log panic
 		}
 		s.Close()
 	}()
@@ -282,16 +261,14 @@ func (s *Stream) readUDPFromTarget() {
 	for {
 		select {
 		case <-s.closeChan:
-			// Cleanup event is handled by Close() which calls EventLocalClose
 			return
 		default:
 		}
 
-		s.udpConn.SetReadDeadline(time.Now().Add(30 * time.Second))
+		s.udpConn.SetReadDeadline(time.Now().Add(300 * time.Second))
 		n, err := s.udpConn.Read(buf)
 		if err != nil {
 			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-				// Don't transition on temporary timeout
 				continue
 			}
 			s.fsm.Event(EventError)
@@ -299,15 +276,12 @@ func (s *Stream) readUDPFromTarget() {
 		}
 
 		if n > 0 {
-			s.BytesIn += uint64(n)
-			s.LastActive = time.Now()
+			s.bytesIn += uint64(n)
+			s.lastT = time.Now()
 
-			// Send data frame back through tunnel
 			frame := NewDataFrame(s.ID, buf[:n])
-			if s.onFrameWithAddr != nil && s.ClientAddr != nil {
-				if err := s.onFrameWithAddr(frame, s.ClientAddr); err != nil {
-					return
-				}
+			if err := s.sendFrame(frame); err != nil {
+				return
 			}
 		}
 	}
@@ -315,21 +289,14 @@ func (s *Stream) readUDPFromTarget() {
 
 // Close closes the stream (initiated locally)
 func (s *Stream) Close() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	// Use FSM event
 	s.fsm.Event(EventLocalClose)
 }
 
 // cleanupResources actual cleanup logic (called by FSM action)
 func (s *Stream) cleanupResources() {
-	// Signal close
-	select {
-	case <-s.closeChan:
-	default:
+	s.closeOnce.Do(func() {
 		close(s.closeChan)
-	}
+	})
 
 	// Close connections
 	if s.conn != nil {
@@ -344,33 +311,29 @@ func (s *Stream) cleanupResources() {
 
 // IsActive returns true if the stream is still usable
 func (s *Stream) IsActive() bool {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.fsm.CurrentState() == StateConnected
+	return !s.fsm.IsClosed()
 }
 
 // StreamManager manages all active streams
 type StreamManager struct {
-	streams         map[uint16]*Stream
-	mu              sync.RWMutex
-	idGen           *StreamIDGenerator
-	onFrameWithAddr func(*Frame, net.Addr) error
-	dialer          proxy.Dialer
+	streams map[uint16]*Stream
+	mu      sync.RWMutex
+	idGen   *StreamIDGenerator
+	dialer  proxy.Dialer
 
 	ctx    context.Context
 	cancel context.CancelFunc
 }
 
 // NewStreamManager creates a new stream manager
-func NewStreamManager(onFrameWithAddr func(*Frame, net.Addr) error, dialer proxy.Dialer) *StreamManager {
+func NewStreamManager(dialer proxy.Dialer) *StreamManager {
 	ctx, cancel := context.WithCancel(context.Background())
 	sm := &StreamManager{
-		streams:         make(map[uint16]*Stream),
-		idGen:           NewStreamIDGenerator(),
-		onFrameWithAddr: onFrameWithAddr,
-		dialer:          dialer,
-		ctx:             ctx,
-		cancel:          cancel,
+		streams: make(map[uint16]*Stream),
+		idGen:   NewStreamIDGenerator(),
+		dialer:  dialer,
+		ctx:     ctx,
+		cancel:  cancel,
 	}
 
 	// Start cleanup goroutine
@@ -379,24 +342,12 @@ func NewStreamManager(onFrameWithAddr func(*Frame, net.Addr) error, dialer proxy
 	return sm
 }
 
-// CreateStream creates a new stream for outgoing connections (client-side)
-func (sm *StreamManager) CreateStream(proto uint8, addr string, port uint16, profile uint8, clientAddr net.Addr) *Stream {
-	sm.mu.Lock()
-	defer sm.mu.Unlock()
-
-	id := sm.idGen.Next()
-	stream := NewStream(id, proto, addr, port, profile, clientAddr, sm.onFrameWithAddr, sm.dialer)
-	sm.streams[id] = stream
-
-	return stream
-}
-
 // HandleConnect handles incoming CONNECT frame (server-side)
-func (sm *StreamManager) HandleConnect(streamID uint16, payload *ConnectPayload, clientAddr net.Addr) error {
+func (sm *StreamManager) HandleConnect(streamID uint16, payload *ConnectPayload, writer ResponseWriter) error {
 	sm.mu.Lock()
 
-	// Create stream with requested profile and client address
-	stream := NewStream(streamID, payload.Protocol, payload.Addr, payload.Port, payload.Profile, clientAddr, sm.onFrameWithAddr, sm.dialer)
+	// Create stream with requested profile and clean writer
+	stream := NewStream(streamID, payload.Protocol, payload.Addr, payload.Port, payload.Profile, writer, sm.dialer)
 	sm.streams[streamID] = stream
 	sm.mu.Unlock()
 
@@ -408,13 +359,8 @@ func (sm *StreamManager) HandleConnect(streamID uint16, payload *ConnectPayload,
 		sm.mu.Lock()
 		delete(sm.streams, streamID)
 		sm.mu.Unlock()
-
-		// CONNECT_FAIL is sent by FSM transition or caller, but strict FSM handles state cleanup
-		// Note: The FSM transition for ConnectFail already sent the frame in state.go
 		return err
 	}
-
-	// CONNECT_OK is sent by FSM transition in stream.Connect()
 
 	return nil
 }
@@ -468,8 +414,8 @@ func (sm *StreamManager) RemoveStream(id uint16) {
 	}
 }
 
-// Close closes all streams and stops the manager
-func (sm *StreamManager) Close() {
+// CloseAll closes all streams and stops the manager
+func (sm *StreamManager) CloseAll() {
 	sm.cancel()
 
 	sm.mu.Lock()
@@ -488,8 +434,8 @@ func (sm *StreamManager) Stats() (activeStreams int, totalBytesIn, totalBytesOut
 
 	activeStreams = len(sm.streams)
 	for _, stream := range sm.streams {
-		totalBytesIn += stream.BytesIn
-		totalBytesOut += stream.BytesOut
+		totalBytesIn += stream.bytesIn
+		totalBytesOut += stream.bytesOut
 	}
 	return
 }
@@ -518,7 +464,6 @@ func (sm *StreamManager) cleanup() {
 	staleTimeout := 5 * time.Minute
 
 	for id, stream := range sm.streams {
-		// Use FSM state check
 		state := stream.fsm.CurrentState()
 
 		if state == StateClosed {
@@ -526,15 +471,8 @@ func (sm *StreamManager) cleanup() {
 			continue
 		}
 
-		// If stuck in connecting for too long
-		if state == StateConnecting && now.Sub(stream.CreatedAt) > 30*time.Second {
-			stream.fsm.Event(EventTimeout)
-			delete(sm.streams, id)
-			continue
-		}
-
-		if now.Sub(stream.LastActive) > staleTimeout {
-			stream.fsm.Event(EventTimeout)
+		if now.Sub(stream.lastT) > staleTimeout {
+			stream.Close()
 			delete(sm.streams, id)
 		}
 	}

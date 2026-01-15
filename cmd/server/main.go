@@ -11,6 +11,7 @@ import (
 	"net/http"
 	_ "net/http/pprof" // Register pprof handlers
 	"os"
+	"strconv"
 	"sync"
 	"time"
 
@@ -33,6 +34,7 @@ import (
 	"whispera/internal/modules/relay"
 	"whispera/internal/modules/router"
 	"whispera/internal/modules/session"
+	"whispera/internal/modules/transport/tcp"
 	"whispera/internal/modules/transport/udp"
 )
 
@@ -49,7 +51,7 @@ var (
 // Command line flags
 var (
 	configFile     = flag.String("config", "", "Path to configuration file")
-	listenAddr     = flag.String("listen", "", "UDP listen address (default from config)")
+	listenAddr     = flag.String("listen", "", "UDP/TCP listen address (default from config)")
 	apiAddr        = flag.String("api", ":8080", "API server listen address")
 	metricsAddr    = flag.String("metrics", ":9090", "Metrics server listen address")
 	debug          = flag.Bool("debug", false, "Enable debug logging")
@@ -64,6 +66,7 @@ var (
 	globalDataPlane    *dataplane.Processor
 	globalSessionMgr   *session.Manager
 	globalUDPTransport *udp.Transport
+	globalTCPTransport *tcp.Transport
 	globalRelay        *relay.Server
 	globalObfuscator   interfaces.Obfuscator
 )
@@ -317,7 +320,44 @@ func createModules(manager *lifecycle.Manager) error {
 		return err
 	}
 
-	// 8.5. Relay Server (for client traffic relay to internet)
+	// 8.1. TCP Transport
+	tcpTransport, err := tcp.New(&tcp.Config{
+		ListenAddr:   serverConfig.Transport.UDP.ListenAddr, // Reuse same address/port
+		ReadTimeout:  30 * time.Second,
+		WriteTimeout: 30 * time.Second,
+		KeepAlive:    30 * time.Second,
+		MaxConns:     10000,
+		BufferSize:   32 * 1024,
+	})
+	if err != nil {
+		return err
+	}
+	globalTCPTransport = tcpTransport
+	if err := manager.Register(tcpTransport); err != nil {
+		return err
+	}
+
+	// Start accepting TCP connections in background
+	go func() {
+		// Wait for start
+		time.Sleep(1 * time.Second)
+		log.Printf("[TCP] Starting accept loop on %s", serverConfig.Transport.UDP.ListenAddr)
+
+		for {
+			conn, err := tcpTransport.Accept()
+			if err != nil {
+				if serverConfig.Relay.Debug {
+					log.Printf("[TCP] Accept error: %v", err)
+				}
+				time.Sleep(100 * time.Millisecond)
+				continue
+			}
+
+			// Handle connection in new goroutine
+			go handleTCPConnection(conn)
+		}
+	}()
+
 	// 8.5. Relay Server (for client traffic relay to internet)
 	relayServer, err := relay.New(&relay.Config{
 		MaxStreams:    serverConfig.Relay.MaxStreams,
@@ -330,7 +370,6 @@ func createModules(manager *lifecycle.Manager) error {
 		return err
 	}
 	// Set transport callback so relay can send responses back to clients
-	// Set transport callback so relay can send responses back to clients
 	relayServer.SetTransport(func(data []byte, addr net.Addr) error {
 		// Apply obfuscation if enabled (CRITICAL FIX: Client expects obfuscated traffic)
 		payload := data
@@ -340,6 +379,17 @@ func createModules(manager *lifecycle.Manager) error {
 				return fmt.Errorf("failed to obfuscate relay frame: %w", err)
 			}
 			payload = obfuscated
+			if *debug {
+				fmt.Printf("[Relay] Obfuscated response %d -> %d bytes for %v\n", len(data), len(payload), addr)
+			}
+		}
+
+		// Check address type to determine transport
+		if _, ok := addr.(*net.TCPAddr); ok && globalTCPTransport != nil {
+			// Find connection by remote address is hard without tracking map
+			// For now relay server doesn't track TCP connections well
+			// TODO: Implement better TCP connection tracking
+			return fmt.Errorf("TCP response not implemented yet")
 		}
 
 		if globalUDPTransport != nil {
@@ -486,7 +536,7 @@ func createModules(manager *lifecycle.Manager) error {
 							continue
 						}
 
-						target := fmt.Sprintf("%s:%d", payload.Addr, payload.Port)
+						target := net.JoinHostPort(payload.Addr, strconv.Itoa(int(payload.Port)))
 						network := "tcp"
 						if payload.Protocol == relay.ProtoUDP {
 							network = "udp"
@@ -646,35 +696,35 @@ func handlePacket(data []byte, addr net.Addr) {
 		return
 	}
 
-	// Check if this is a relay protocol frame (min 8 bytes header)
-	// Relay frames have: [StreamID:2][Type:1][Flags:1][Length:4][Payload:N]
-
 	// Try deobfuscation first if obfuscator is active
 	payload := data
 	if globalObfuscator != nil {
 		deobfuscated, _, err := globalObfuscator.Process(data, interfaces.DirectionInbound)
 		if err == nil && len(deobfuscated) > 0 {
 			payload = deobfuscated
-			fmt.Printf("[Packet] Deobfuscated %d -> %d bytes\n", len(data), len(payload))
+			// fmt.Printf("[Packet] Deobfuscated %d -> %d bytes\n", len(data), len(payload))
 		}
 	}
 
 	if len(payload) >= 8 && globalRelay != nil {
 		// Check if frame type is valid relay protocol (0x01-0x08)
 		frameType := payload[2]
-		// Stricter check to avoid collision with TLS/VPN traffic
-		// Relay frames: [StreamID:2][Type:1][Flags:1][Length:4][Payload...]
-		// We verify that the Length field matches the remaining data size
 		if frameType >= 0x01 && frameType <= 0x08 {
 			dataLen := uint32(payload[4])<<24 | uint32(payload[5])<<16 | uint32(payload[6])<<8 | uint32(payload[7])
-			// Allow some buffer, but if claimed length is way larger than packet, it's likely not a relay frame
 			if int(dataLen) <= len(payload)-8 {
-				fmt.Printf("[Packet] RELAY frame detected: type=%d streamID=%d len=%d from %v\n",
-					frameType, uint16(payload[0])<<8|uint16(payload[1]), dataLen, addr)
-				// Process through relay server - this handles CONNECT, DATA, etc.
-				// Note: We pass the DEOBFUSCATED payload
-				if err := globalRelay.ProcessFrame(payload, sess, addr); err != nil {
-					fmt.Printf("[Packet] Relay error: %v\n", err)
+				// Create writer
+				writer := &UDPResponseWriter{
+					transport:  globalUDPTransport,
+					addr:       addr,
+					obfuscator: globalObfuscator,
+					debug:      *debug,
+				}
+
+				// Process through relay server
+				if err := globalRelay.ProcessFrame(payload, sess, writer); err != nil {
+					if *debug {
+						log.Printf("[Packet] Relay error: %v", err)
+					}
 				}
 				return
 			}
@@ -688,13 +738,132 @@ func handlePacket(data []byte, addr net.Addr) {
 			Payload:   payload,
 			SrcAddr:   addr,
 		}
-		if err := globalDataPlane.ProcessInbound(ctx, packet, sess); err != nil {
+		if err := globalDataPlane.ProcessInbound(context.Background(), packet, sess); err != nil {
 			if *debug {
 				log.Printf("[Packet] Data plane error: %v", err)
 			}
 		}
 	}
 }
+
+// handleTCPConnection processes an incoming TCP connection
+func handleTCPConnection(conn net.Conn) {
+	defer conn.Close()
+
+	addr := conn.RemoteAddr()
+	if *debug {
+		log.Printf("[TCP] New connection from %v", addr)
+	}
+
+	// Create writer
+	writer := &TCPResponseWriter{
+		conn:       conn,
+		obfuscator: globalObfuscator,
+		debug:      *debug,
+	}
+
+	// Buffer for reading
+	buf := make([]byte, 32*1024)
+
+	for {
+		// Set read deadline
+		conn.SetReadDeadline(time.Now().Add(300 * time.Second))
+
+		n, err := conn.Read(buf)
+		if err != nil {
+			if err != io.EOF {
+				if *debug {
+					log.Printf("[TCP] Read error from %v: %v", addr, err)
+				}
+			}
+			return
+		}
+
+		data := buf[:n]
+
+		// 1. De-obfuscate
+		payload := data
+		if globalObfuscator != nil {
+			deobfuscated, _, err := globalObfuscator.Process(data, interfaces.DirectionInbound)
+			if err == nil && len(deobfuscated) > 0 {
+				payload = deobfuscated
+				if *debug {
+					fmt.Printf("[TCP] Deobfuscated %d -> %d bytes from %v\n", len(data), len(payload), addr)
+				}
+			} else {
+				// Failed to deobfuscate - packet might be garbage or attack
+				// But maybe obfuscator expects frame alignment?
+				// For TCP stream, obfuscator needs state.
+				// globalObfuscator is likely stateless (XOR/ChaCha packet based).
+				continue
+			}
+		}
+
+		// 2. Process Relay Frame
+		// Check for Relay Frame
+		if len(payload) >= 8 && globalRelay != nil {
+			// Try to process one or more frames in the buffer
+			// TCP stream might contain multiple frames or partial frames
+			// For simplicity assume message framing matches (client sends packet = frame)
+			// TODO: Implement proper framing buffer for TCP
+
+			if err := globalRelay.ProcessFrame(payload, nil, writer); err != nil {
+				if *debug {
+					log.Printf("[TCP] Relay process error: %v", err)
+				}
+			}
+		}
+	}
+}
+
+// UDP Response Writer
+type UDPResponseWriter struct {
+	transport  *udp.Transport
+	addr       net.Addr
+	obfuscator interfaces.Obfuscator
+	debug      bool
+}
+
+func (w *UDPResponseWriter) Write(data []byte) error {
+	payload := data
+	if w.obfuscator != nil {
+		obfuscated, _, err := w.obfuscator.Process(data, interfaces.DirectionOutbound)
+		if err != nil {
+			return fmt.Errorf("obfuscation failed: %w", err)
+		}
+		payload = obfuscated
+	}
+	// Verify transport is available
+	if w.transport == nil {
+		return fmt.Errorf("UDP transport not available")
+	}
+	_, err := w.transport.WriteTo(payload, w.addr)
+	return err
+}
+
+func (w *UDPResponseWriter) RemoteAddr() net.Addr { return w.addr }
+
+// TCP Response Writer
+type TCPResponseWriter struct {
+	conn       net.Conn
+	obfuscator interfaces.Obfuscator
+	debug      bool
+}
+
+func (w *TCPResponseWriter) Write(data []byte) error {
+	payload := data
+	if w.obfuscator != nil {
+		obfuscated, _, err := w.obfuscator.Process(data, interfaces.DirectionOutbound)
+		if err != nil {
+			return fmt.Errorf("obfuscation failed: %w", err)
+		}
+		payload = obfuscated
+	}
+	_, err := w.conn.Write(payload)
+	return err
+}
+
+func (w *TCPResponseWriter) RemoteAddr() net.Addr { return w.conn.RemoteAddr() }
 
 func setupEventHandlers(manager *lifecycle.Manager) {
 	eventBus := manager.Events()

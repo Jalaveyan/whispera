@@ -113,27 +113,20 @@ func (f *FSM) initTransitions() {
 	// Connecting -> Connected
 	f.addTransition(StateConnecting, EventConnectOK, StateConnected, func(s *Stream) error {
 		// Action: Send CONNECT_OK frame
-		if s.onFrameWithAddr != nil && s.ClientAddr != nil {
-			return s.onFrameWithAddr(NewConnectOKFrame(s.ID), s.ClientAddr)
-		}
-		return nil
+		return s.sendFrame(NewConnectOKFrame(s.ID))
 	})
 
 	// Connecting -> Closed (Fail)
 	f.addTransition(StateConnecting, EventConnectFail, StateClosed, func(s *Stream) error {
 		// Action: Send CONNECT_FAIL frame and cleanup
-		if s.onFrameWithAddr != nil && s.ClientAddr != nil {
-			s.onFrameWithAddr(NewConnectFailFrame(s.ID, "connection failed"), s.ClientAddr)
-		}
+		s.sendFrame(NewConnectFailFrame(s.ID, "connection failed"))
 		s.cleanupResources()
 		return nil
 	})
 
 	// Connecting -> Closed (Timeout)
 	f.addTransition(StateConnecting, EventTimeout, StateClosed, func(s *Stream) error {
-		if s.onFrameWithAddr != nil && s.ClientAddr != nil {
-			s.onFrameWithAddr(NewConnectFailFrame(s.ID, "connection timeout"), s.ClientAddr)
-		}
+		s.sendFrame(NewConnectFailFrame(s.ID, "connection timeout"))
 		s.cleanupResources()
 		return nil
 	})
@@ -144,10 +137,7 @@ func (f *FSM) initTransitions() {
 	// Connected -> HalfClosed (Peer Close)
 	f.addTransition(StateConnected, EventPeerClose, StateHalfClosed, func(s *Stream) error {
 		// Send CLOSE frame
-		if s.onFrameWithAddr != nil && s.ClientAddr != nil {
-			s.onFrameWithAddr(NewCloseFrame(s.ID), s.ClientAddr)
-		}
-		return nil
+		return s.sendFrame(NewCloseFrame(s.ID))
 	})
 
 	// Connected -> Closed (Local Close/Error)
