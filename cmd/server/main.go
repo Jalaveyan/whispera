@@ -34,6 +34,7 @@ import (
 	"whispera/internal/modules/session"
 	"whispera/internal/modules/transport/tcp"
 	"whispera/internal/modules/transport/udp"
+	ws "whispera/internal/modules/transport/websocket"
 )
 
 // log is the module logger
@@ -143,6 +144,7 @@ func main() {
 
 func registerFactories() {
 	registry.GlobalFactoryRegistry.RegisterFactory("transport.udp", udp.Factory)
+	registry.GlobalFactoryRegistry.RegisterFactory("transport.websocket", ws.Factory)
 	registry.GlobalFactoryRegistry.RegisterFactory("session.manager", session.Factory)
 	registry.GlobalFactoryRegistry.RegisterFactory("routing.engine", router.Factory)
 	registry.GlobalFactoryRegistry.RegisterFactory("obfuscation.engine", obfuscator.Factory)
@@ -359,6 +361,43 @@ func createModules(manager *lifecycle.Manager) error {
 		}()
 	} else {
 		log.Printf("[Server] Raw TCP Transport disabled (Phantom Protocol takes precedence on %s)", serverConfig.Transport.UDP.ListenAddr)
+	}
+
+	// 8.2. WebSocket Transport
+	if serverConfig.Transport.WebSocket.Enabled {
+		wsTransport, err := ws.New(&ws.Config{
+			ListenAddr: serverConfig.Transport.WebSocket.ListenAddr,
+			Path:       serverConfig.Transport.WebSocket.Path,
+			MaxConns:   10000,
+		})
+		if err != nil {
+			return err
+		}
+		if err := manager.Register(wsTransport); err != nil {
+			return err
+		}
+
+		// Start accepting WebSocket connections in background
+		go func() {
+			// Wait for start
+			time.Sleep(1 * time.Second)
+			log.Printf("[WS] Starting accept loop on %s%s", serverConfig.Transport.WebSocket.ListenAddr, serverConfig.Transport.WebSocket.Path)
+
+			for {
+				conn, err := wsTransport.Accept()
+				if err != nil {
+					if serverConfig.Relay.Debug {
+						log.Printf("[WS] Accept error: %v", err)
+					}
+					time.Sleep(100 * time.Millisecond)
+					continue
+				}
+
+				// Handle connection in new goroutine using existing TCP handler
+				// WebSocket provides a net.Conn interface that wraps frames, so logic matches
+				go handleTCPConnection(conn)
+			}
+		}()
 	}
 
 	// 8.5. Relay Server (for client traffic relay to internet)

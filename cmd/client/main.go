@@ -151,6 +151,7 @@ func main() {
 		ListenAddr:    *socksAddr,
 		Debug:         true,
 		VPNServerAddr: cfg.Server, // Pass VPN server address for routing
+		MTU:           cfg.MTU,
 	})
 	lc.Register(socksMod)
 

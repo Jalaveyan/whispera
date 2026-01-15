@@ -29,6 +29,7 @@ type Config struct {
 	ListenAddr    string
 	Debug         bool
 	VPNServerAddr string // VPN server address (excluded from routing)
+	MTU           int    // Max packet size for data chunks
 }
 
 // Module implements SOCKS5 proxy module with relay protocol support
@@ -80,6 +81,11 @@ func New(cfg *Config) (*Module, error) {
 		cfg = &Config{
 			ListenAddr: "127.0.0.1:10800",
 		}
+	}
+
+	// Set reasonable default MTU if missing
+	if cfg.MTU <= 0 || cfg.MTU > 65535 {
+		cfg.MTU = 1350 // Default safe MTU for VPN
 	}
 
 	m := &Module{
@@ -428,32 +434,6 @@ Loop:
 	tunnel.Send(frameData)
 
 	return err
-}
-
-// handleDirectConnection handles direct connection without tunnel (fallback)
-func (m *Module) handleDirectConnection(clientConn net.Conn, targetAddr string, targetPort uint16) error {
-	target := net.JoinHostPort(targetAddr, fmt.Sprintf("%d", targetPort))
-
-	serverConn, err := net.DialTimeout("tcp", target, 10*time.Second)
-	if err != nil {
-		return fmt.Errorf("direct connection failed: %v", err)
-	}
-	defer serverConn.Close()
-
-	errChan := make(chan error, 2)
-
-	go func() {
-		_, err := io.Copy(serverConn, clientConn)
-		errChan <- err
-	}()
-
-	go func() {
-		_, err := io.Copy(clientConn, serverConn)
-		errChan <- err
-	}()
-
-	<-errChan
-	return nil
 }
 
 // StartHevTunnel starts HevTunnel for TUN mode (no-op when using Mihomo)
