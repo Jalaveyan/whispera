@@ -48,6 +48,21 @@ var (
 	GitCommit = "unknown"
 )
 
+// prependConn wraps a net.Conn and prepends already-read data to future reads
+type prependConn struct {
+	net.Conn
+	prepend []byte
+}
+
+func (c *prependConn) Read(b []byte) (int, error) {
+	if len(c.prepend) > 0 {
+		n := copy(b, c.prepend)
+		c.prepend = c.prepend[n:]
+		return n, nil
+	}
+	return c.Conn.Read(b)
+}
+
 // Command line flags
 var (
 	configFile     = flag.String("config", "", "Path to configuration file")
@@ -516,6 +531,8 @@ func createModules(manager *lifecycle.Manager) error {
 			MaxTimeDiff: serverConfig.Phantom.MaxTimeDiff,
 			Fingerprint: serverConfig.Phantom.Fingerprint,
 			OnAuthenticated: func(conn net.Conn, clientID string) {
+				log.Printf("Phantom: OnAuthenticated called for %s", clientID)
+
 				if globalRelay == nil {
 					log.Printf("Phantom: Relay server not available, closing connection from %s", clientID)
 					conn.Close()
@@ -523,6 +540,7 @@ func createModules(manager *lifecycle.Manager) error {
 				}
 
 				// Perform protocol handshake first (client sends 64-byte init, expects 48-byte response)
+				log.Printf("Phantom: Waiting for handshake init from %s...", clientID)
 				conn.SetReadDeadline(time.Now().Add(10 * time.Second))
 				initBuf := make([]byte, 128) // Buffer for handshake init
 				n, err := conn.Read(initBuf)
@@ -535,11 +553,17 @@ func createModules(manager *lifecycle.Manager) error {
 				}
 
 				initData := initBuf[:n]
+				log.Printf("Phantom: Received %d bytes from %s: [%02x %02x %02x %02x ...]", n, clientID,
+					initData[0], initData[1], initData[2], initData[3])
 
 				// Validate handshake init (first byte should be 0x01 = HandshakeTypeInit)
 				if len(initData) < 32 || initData[0] != 0x01 {
-					log.Printf("Phantom: Invalid handshake init from %s (size=%d, type=%d)", clientID, len(initData), initData[0])
-					conn.Close()
+					log.Printf("Phantom: Invalid handshake init from %s (size=%d, type=0x%02x), passing to relay anyway",
+						clientID, len(initData), initData[0])
+					// Pass this data + connection to relay
+					// Prepend the data we already read
+					wrappedConn := &prependConn{Conn: conn, prepend: initData}
+					globalRelay.ServeTunnel(wrappedConn, globalObfuscator)
 					return
 				}
 
