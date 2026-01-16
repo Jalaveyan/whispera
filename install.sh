@@ -164,28 +164,77 @@ build_whispera() {
 }
 
 generate_keys() {
-    log_info "Generating keys..."
+    log_info "Generating X25519 keypair..."
     
-    # Ensure keygen tool exists or run from source
     local PRIVATE_KEY=""
     local PUBLIC_KEY=""
     local UUID=$(cat /proc/sys/kernel/random/uuid)
     
-    # Simple X25519 generation using Go one-liner if keygen not built
+    mkdir -p "$CONF_PATH"
+    
+    # Generate X25519 keypair using Go keygen
     if [[ -f "./cmd/keygen/main.go" ]]; then
         OUTPUT=$(/usr/local/go/bin/go run ./cmd/keygen/main.go -mode x25519 2>/dev/null)
         PRIVATE_KEY=$(echo "$OUTPUT" | grep "priv=" | cut -d= -f2 | xargs)
         PUBLIC_KEY=$(echo "$OUTPUT" | grep "pub=" | cut -d= -f2 | xargs)
     fi
     
-    mkdir -p "$CONF_PATH"
+    # Fallback: generate with openssl if Go keygen fails
+    if [[ -z "$PRIVATE_KEY" ]] || [[ -z "$PUBLIC_KEY" ]]; then
+        log_warn "Go keygen failed, using openssl fallback..."
+        PRIVATE_KEY=$(openssl rand -hex 32)
+        # For X25519, we need proper derivation - but openssl doesn't support it directly
+        # So we'll compute it at runtime in the server
+        PUBLIC_KEY="COMPUTED_AT_RUNTIME"
+    fi
     
     # Save keys
     echo "$PRIVATE_KEY" > "$CONF_PATH/server.key"
     echo "$PUBLIC_KEY" > "$CONF_PATH/server.pub"
     echo "$UUID" > "$CONF_PATH/uuid"
     
-    log_success "Keys generated in $CONF_PATH"
+    log_success "Server private key: $CONF_PATH/server.key"
+    log_success "Server public key:  $CONF_PATH/server.pub (for clients)"
+    log_success "Server UUID:        $CONF_PATH/uuid"
+}
+
+generate_connection_key() {
+    log_info "Generating connection key for clients..."
+    
+    local SERVER_IP=$(get_public_ip)
+    local PUBLIC_KEY=$(cat "$CONF_PATH/server.pub" 2>/dev/null)
+    local UUID=$(cat "$CONF_PATH/uuid" 2>/dev/null)
+    
+    if [[ -z "$PUBLIC_KEY" ]] || [[ "$PUBLIC_KEY" == "COMPUTED_AT_RUNTIME" ]]; then
+        # Derive public key from private key
+        local PRIVATE_KEY=$(cat "$CONF_PATH/server.key" 2>/dev/null)
+        if [[ -n "$PRIVATE_KEY" ]] && [[ -f "./cmd/keygen/main.go" ]]; then
+            PUBLIC_KEY=$(/usr/local/go/bin/go run ./cmd/keygen/main.go -mode x25519 -from-priv "$PRIVATE_KEY" 2>/dev/null | grep "pub=" | cut -d= -f2 | xargs)
+            echo "$PUBLIC_KEY" > "$CONF_PATH/server.pub"
+        fi
+    fi
+    
+    if [[ -z "$PUBLIC_KEY" ]]; then
+        log_err "Could not generate public key"
+        return 1
+    fi
+    
+    # Build connection key URL
+    # Format: whispera://SERVER:PORT?key=PUBLIC_KEY&transport=tcp&phantom=1&sni=random_ru&asn=1&tls=chrome
+    local CONNECTION_KEY="whispera://${SERVER_IP}:8443?key=${PUBLIC_KEY}&transport=tcp&phantom=1&sni=random_ru&asn=1&tls=chrome"
+    
+    echo "$CONNECTION_KEY" > "$CONF_PATH/connection.key"
+    
+    log_success "Connection key saved to $CONF_PATH/connection.key"
+    echo ""
+    echo -e "${GREEN}╔══════════════════════════════════════════════════════════════════╗${PLAIN}"
+    echo -e "${GREEN}║                     CONNECTION KEY FOR CLIENTS                    ║${PLAIN}"
+    echo -e "${GREEN}╠══════════════════════════════════════════════════════════════════╣${PLAIN}"
+    echo -e "${GREEN}║${PLAIN} Copy this key and paste it in the Whispera client:              ${GREEN}║${PLAIN}"
+    echo -e "${GREEN}╚══════════════════════════════════════════════════════════════════╝${PLAIN}"
+    echo ""
+    echo -e "${YELLOW}$CONNECTION_KEY${PLAIN}"
+    echo ""
 }
 
 generate_config() {
@@ -469,13 +518,98 @@ main() {
     setup_firewall
     setup_systemd
     
+    # Always generate/show connection key
+    generate_connection_key
+    
     echo ""
     log_success "Whispera installed successfully!"
     echo -e "  Manage command: ${GREEN}whispera-mgmt${PLAIN}"
     echo -e "  Config file:    ${GREEN}$CONF_PATH/config.yaml${PLAIN}"
     local SERVER_IP=$(get_public_ip)
     echo -e "  Web Interface:  ${GREEN}http://${SERVER_IP}:8080${PLAIN}"
-    echo -e "Update dependencies: apt-get update"
+    echo -e "  Connection Key: ${GREEN}$CONF_PATH/connection.key${PLAIN}"
+    echo ""
+    echo -e "${YELLOW}To view connection key anytime: cat $CONF_PATH/connection.key${PLAIN}"
 }
 
-main "$@"
+show_connection_key() {
+    if [[ -f "$CONF_PATH/connection.key" ]]; then
+        echo ""
+        echo -e "${GREEN}╔══════════════════════════════════════════════════════════════════╗${PLAIN}"
+        echo -e "${GREEN}║                     CONNECTION KEY FOR CLIENTS                    ║${PLAIN}"
+        echo -e "${GREEN}╚══════════════════════════════════════════════════════════════════╝${PLAIN}"
+        echo ""
+        cat "$CONF_PATH/connection.key"
+        echo ""
+    else
+        log_err "Connection key not found. Run ./install.sh keygen first."
+    fi
+}
+
+regenerate_keys() {
+    log_info "Regenerating keys..."
+    
+    # Backup old keys
+    if [[ -f "$CONF_PATH/server.key" ]]; then
+        cp "$CONF_PATH/server.key" "$CONF_PATH/server.key.bak"
+        cp "$CONF_PATH/server.pub" "$CONF_PATH/server.pub.bak"
+    fi
+    
+    # Generate new keys
+    generate_keys
+    
+    # Update config with new private key
+    local PRIVATE_KEY=$(cat "$CONF_PATH/server.key")
+    sed -i "s/private_key: \".*\"/private_key: \"$PRIVATE_KEY\"/g" "$CONF_PATH/config.yaml"
+    
+    # Generate new connection key
+    generate_connection_key
+    
+    # Restart service
+    if systemctl is-active --quiet whispera; then
+        systemctl restart whispera
+        log_success "Server restarted with new keys"
+    fi
+}
+
+# --- Entry Point ---
+
+case "${1:-}" in
+    keygen)
+        regenerate_keys
+        ;;
+    showkey|key)
+        show_connection_key
+        ;;
+    update)
+        log_info "Updating Whispera..."
+        cd "$WORK_DIR" && git pull
+        build_whispera
+        systemctl restart whispera
+        log_success "Update complete"
+        ;;
+    restart)
+        systemctl restart whispera
+        log_success "Whispera restarted"
+        ;;
+    status)
+        systemctl status whispera
+        ;;
+    help|--help|-h)
+        echo "Whispera Installer"
+        echo ""
+        echo "Usage: ./install.sh [command]"
+        echo ""
+        echo "Commands:"
+        echo "  (no args)   Full installation"
+        echo "  keygen      Regenerate keys and show new connection key"
+        echo "  showkey     Show current connection key"
+        echo "  update      Pull latest code and rebuild"
+        echo "  restart     Restart Whispera service"
+        echo "  status      Show service status"
+        echo ""
+        ;;
+    *)
+        main "$@"
+        ;;
+esac
