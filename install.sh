@@ -196,20 +196,20 @@ generate_config() {
     
     cat > "$CONF_PATH/config.yaml" <<EOF
 server:
-  listen_addr: "0.0.0.0:443"
+  listen_addr: "0.0.0.0:8443"
   uuid: "$UUID"
   private_key: "$PRIVATE_KEY"
 
 transport:
   udp:
     enabled: true
-    listen_addr: ":443"
+    listen_addr: ":8443"
   tcp:
     enabled: true
-    listen_addr: ":4443"
+    listen_addr: ":8443"
   websocket:
     enabled: true
-    listen_addr: ":8443"
+    listen_addr: ":8080"
 
 obfuscation:
   enabled: true
@@ -372,16 +372,14 @@ setup_firewall() {
         ufw allow 22/tcp
         
         # Whispera Ports
-        ufw allow 443/tcp    # HTTPS / Whispera Fallback
-        ufw allow 443/udp    # Whispera UDP Transport (New)
-        ufw allow 4443/tcp   # Whispera TCP Transport
-        ufw allow 8443/tcp   # Whispera WebSocket
-        ufw allow 8080/tcp   # Whispera API / Web UI
+        ufw allow 8443/tcp   # Whispera TCP Transport
+        ufw allow 8443/udp   # Whispera UDP Transport
+        ufw allow 8080/tcp   # Whispera API / Web UI / WebSocket
 
         # Enable UFW non-interactively
         ufw --force enable
         
-        log_success "Firewall configured: 443, 4443, 8443, 8080 open"
+        log_success "Firewall configured: 8443 (tcp/udp), 8080 open"
     else
         log_warn "Firewall setup currently supports Ubuntu/Debian only. Please configure your firewall manually."
     fi

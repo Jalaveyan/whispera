@@ -531,74 +531,108 @@ func (m *Manager) dial(ctx context.Context) (net.Conn, error) {
 	return nil, fmt.Errorf("all dial attempts failed")
 }
 
-// getRotationSNI picks a random SNI from the Russian list or returns default
-// getRotationSNI picks a random SNI from the Russian list based on dynamic intervals
-func (m *Manager) getRotationSNI() string {
+// getCurrentSNI returns the current SNI without triggering rotation
+// This is used during dial() to get the current stable SNI
+func (m *Manager) getCurrentSNI() string {
+	m.connMu.RLock()
+	defer m.connMu.RUnlock()
+
+	if m.currentSNI != "" {
+		return m.currentSNI
+	}
+	if m.config.PhantomSNI != "" {
+		return m.config.PhantomSNI
+	}
+	// Fallback: pick first Russian SNI if available
+	if len(m.russianSNIs) > 0 {
+		return m.russianSNIs[0]
+	}
+	return ""
+}
+
+// selectNewSNI picks a new random SNI - ONLY called during explicit rotation
+func (m *Manager) selectNewSNI() string {
 	m.connMu.Lock()
 	defer m.connMu.Unlock()
 
 	if len(m.russianSNIs) == 0 {
-		return m.config.PhantomSNI
+		m.currentSNI = m.config.PhantomSNI
+		return m.currentSNI
 	}
 
-	// Calculate interval for current SNI
-	interval := m.getSNIRotationInterval(m.currentSNI)
-
-	// Rotate only if enough time has passed or no SNI selected yet
-	if m.currentSNI == "" || time.Since(m.lastRotation) > interval {
-		// Use crypto/rand for uniform selection
-		idxBig, err := rand.Int(rand.Reader, big.NewInt(int64(len(m.russianSNIs))))
-		if err != nil {
-			m.currentSNI = m.russianSNIs[0]
-		} else {
-			m.currentSNI = m.russianSNIs[idxBig.Int64()]
-		}
-		m.lastRotation = time.Now()
-
-		// Log new interval for debugging
-		newInterval := m.getSNIRotationInterval(m.currentSNI)
-		log.Info("Rotated SNI to: %s (Next rotation in %s)", m.currentSNI, newInterval)
+	// Use crypto/rand for uniform selection
+	idxBig, err := rand.Int(rand.Reader, big.NewInt(int64(len(m.russianSNIs))))
+	if err != nil {
+		m.currentSNI = m.russianSNIs[0]
+	} else {
+		m.currentSNI = m.russianSNIs[idxBig.Int64()]
 	}
+	m.lastRotation = time.Now()
+
+	// Get next rotation interval based on category
+	nextInterval := m.getSNIRotationInterval(m.currentSNI)
+	log.Info("Selected new SNI: %s (Next rotation in %s)", m.currentSNI, nextInterval)
 
 	return m.currentSNI
 }
 
+// getRotationSNI returns current SNI for dial() - does NOT rotate
+// Rotation only happens via explicit RotateSNI() call
+func (m *Manager) getRotationSNI() string {
+	m.connMu.RLock()
+	sni := m.currentSNI
+	m.connMu.RUnlock()
+
+	// If no SNI set yet, initialize with first selection
+	if sni == "" {
+		return m.selectNewSNI()
+	}
+	return sni
+}
+
 // getSNIRotationInterval returns the rotation duration based on SNI category
+// Intervals are designed to mimic realistic user session durations
 func (m *Manager) getSNIRotationInterval(sni string) time.Duration {
 	if sni == "" {
-		return 0
+		return m.config.RotationInterval // Use default from config
 	}
 
-	// Marketplaces (Long sessions) -> 15 min
+	// Marketplaces (Long shopping sessions) -> 20-30 min
 	if strings.Contains(sni, "ozon") ||
 		strings.Contains(sni, "wildberries") ||
 		strings.Contains(sni, "avito") ||
 		strings.Contains(sni, "market") {
-		return 15 * time.Minute
+		return 20 * time.Minute
 	}
 
-	// Search Engines / Portals (Short sessions/Frequent requests) -> 5 sec
+	// Search Engines / Portals (Browse sessions) -> 5-10 min (NOT 5 seconds!)
 	if strings.Contains(sni, "yandex") ||
 		strings.Contains(sni, "ya.ru") ||
 		strings.Contains(sni, "google") ||
 		strings.Contains(sni, "mail.ru") ||
 		strings.Contains(sni, "rambler") ||
 		strings.Contains(sni, "bing") {
-		return 5 * time.Second
+		return 5 * time.Minute // FIXED: Was 5 seconds, now 5 minutes
 	}
 
-	// Video / Streaming (Long sessions) -> 2 hours
+	// Video / Streaming (Long watch sessions) -> 1-2 hours
 	if strings.Contains(sni, "rutube") ||
 		strings.Contains(sni, "vk.com") ||
-		strings.Contains(sni, "vkvideo") || // explicit check if used
-		strings.Contains(sni, "youtube") ||
+		strings.Contains(sni, "vkvideo") ||
 		strings.Contains(sni, "kion") ||
-		strings.Contains(sni, "premier") {
-		return 2 * time.Hour
+		strings.Contains(sni, "premier") ||
+		strings.Contains(sni, "twitch") {
+		return 60 * time.Minute
 	}
 
-	// Default (Social/Messengers/Etc) -> 1 minute
-	return 1 * time.Minute
+	// Social Media (Medium sessions) -> 10-15 min
+	if strings.Contains(sni, "vk.com")  ||
+		strings.Contains(sni, "telegram") {
+		return 10 * time.Minute
+	}
+
+	// Default -> 15 min (stable baseline)
+	return 15 * time.Minute
 }
 
 // enableKillSwitch configures firewall
@@ -696,16 +730,26 @@ func (m *Manager) Reconnect(ctx context.Context) error {
 	}
 }
 
-// RotateSNI performs a seamless rotation
+// RotateSNI performs a seamless rotation by:
+// 1. Selecting a new SNI
+// 2. Establishing a new connection with the new SNI
+// 3. Moving old connection to draining (it keeps serving existing streams)
+// 4. New streams go to the new connection
 func (m *Manager) RotateSNI() {
-	log.Info("Initiating Seamless SNI Rotation...")
+	// First, select a new SNI before connecting
+	newSNI := m.selectNewSNI()
+	log.Info("Initiating Seamless SNI Rotation to: %s", newSNI)
+
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	if err := m.connectInternal(ctx, true); err != nil {
-		log.Error("SNI Rotation failed: %v", err)
-		// Proceed with old connection, don't break anything
+		log.Error("SNI Rotation failed: %v - keeping existing connection", err)
+		// Don't break existing connection on rotation failure
+		return
 	}
+
+	log.Info("SNI Rotation complete. Old connections will drain gracefully.")
 }
 
 // readLoop reads frames from a specific connection
@@ -895,7 +939,7 @@ func (m *Manager) monitorDrainingConn(mc *managedConn) {
 	log.Info("Draining connection closed (Timeout)")
 }
 
-// startRotation starts the rotation ticker
+// startRotation starts the rotation ticker with dynamic interval based on current SNI
 func (m *Manager) startRotation() {
 	m.stopRotation()
 	if !m.config.EnableRotation {
@@ -904,7 +948,15 @@ func (m *Manager) startRotation() {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	m.rotationCancel = cancel
-	m.rotationTicker = time.NewTicker(m.config.RotationInterval)
+
+	// Initial interval from current SNI category, or default
+	initialInterval := m.getSNIRotationInterval(m.currentSNI)
+	if initialInterval < m.config.RotationInterval {
+		initialInterval = m.config.RotationInterval
+	}
+
+	log.Info("Starting SNI rotation timer (initial interval: %s)", initialInterval)
+	m.rotationTicker = time.NewTicker(initialInterval)
 
 	go func() {
 		for {
@@ -913,6 +965,14 @@ func (m *Manager) startRotation() {
 				return
 			case <-m.rotationTicker.C:
 				m.RotateSNI()
+
+				// Update ticker interval based on new SNI category
+				newInterval := m.getSNIRotationInterval(m.currentSNI)
+				if newInterval < m.config.RotationInterval {
+					newInterval = m.config.RotationInterval
+				}
+				m.rotationTicker.Reset(newInterval)
+				log.Debug("Next rotation in %s", newInterval)
 			}
 		}
 	}()

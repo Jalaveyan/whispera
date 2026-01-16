@@ -190,7 +190,10 @@ func main() {
 			phantomSNI = cfg.Phantom.SNI
 		}
 		phantomShortId = cfg.Phantom.ShortId
-		phantomServerPubKey = cfg.Phantom.ServerPublicKey
+		// Only override server pub key if explicitly provided in config
+		if cfg.Phantom.ServerPublicKey != "" {
+			phantomServerPubKey = cfg.Phantom.ServerPublicKey
+		}
 	} else if asnBypassEnabled {
 		// Auto-enable Phantom when ASN bypass is enabled for better DPI evasion
 		phantomEnabled = true

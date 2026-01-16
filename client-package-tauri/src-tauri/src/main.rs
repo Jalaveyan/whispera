@@ -296,6 +296,9 @@ tun:
   device: Whispera
   mtu: 1500
   strict-route: false
+  # CRITICAL: Exclude VPN server from TUN to prevent routing loop
+  inet4-route-exclude-address:
+    - {}/32
 
 # Sniffer
 sniffer:
@@ -359,7 +362,7 @@ rules:
   
   # Everything else through Whispera
   - MATCH,PROXY
-"#, socks_port, server_ip)
+"#, server_ip, socks_port, server_ip)
 }
 
 /// Find binary directory
@@ -474,9 +477,11 @@ fn connect(key: String) -> Result<ConnectResult, String> {
     
     println!("Whispera: Go client started with PID: {}", go_client.id());
     
-    // Wait for Go client to initialize SOCKS5 server
-    println!("Whispera: Waiting for SOCKS5 server to be ready...");
-    std::thread::sleep(std::time::Duration::from_secs(3));
+    // Wait for Go client to initialize SOCKS5 server AND establish VPN connection
+    // This is critical: VPN connection must be established before Mihomo TUN starts
+    // Otherwise TUN will capture the VPN traffic causing a routing loop
+    println!("Whispera: Waiting for VPN tunnel to establish (10s)...");
+    std::thread::sleep(std::time::Duration::from_secs(10));
     
     // STEP 2: Start Mihomo (TUN + routing)
     println!("Whispera: Starting Mihomo TUN...");

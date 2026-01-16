@@ -282,11 +282,15 @@ func (d *Dialer) dialDirect(ctx context.Context, network, addr string) (net.Conn
 
 // dialTLSMasquerade connects using uTLS with browser fingerprint
 func (d *Dialer) dialTLSMasquerade(ctx context.Context, network, addr string) (net.Conn, error) {
+	fmt.Printf("[ASN-BYPASS] dialTLSMasquerade starting for %s\n", addr)
+
 	// Get the base TCP connection
 	tcpConn, err := d.dialDirect(ctx, network, addr)
 	if err != nil {
+		fmt.Printf("[ASN-BYPASS] TCP dial failed: %v\n", err)
 		return nil, fmt.Errorf("tcp dial failed: %w", err)
 	}
+	fmt.Printf("[ASN-BYPASS] TCP connection established to %s\n", addr)
 
 	// CRITICAL: We must ALWAYS connect to the VPN server IP (addr), not the masquerade domain (SNI).
 	// The 'addr' argument comes from tunnel config (ServerAddr) and is the physical destination.
@@ -303,15 +307,12 @@ func (d *Dialer) dialTLSMasquerade(ctx context.Context, network, addr string) (n
 
 	// Apply SNI masking if configured
 	// This overrides the default SNI with the masquerade domain
-	var connectionDuration time.Duration = 0
-
 	if d.config.EnableSNIMask {
 		if d.config.FrontDomain == "random" || d.config.FrontDomain == "random_ru" {
-			// Behavioral SNI rotation
-			var randomSni string
-			randomSni, connectionDuration = pickRandomSNI()
+			// Behavioral SNI rotation - pick random Russian domain
+			// Note: Duration is now managed by tunnel manager, not transport layer
+			randomSni, _ := pickRandomSNI()
 			sniToUse = randomSni
-			// Log checking strategy (optional, skipping due to logger dependency)
 		} else if d.config.FrontDomain != "" {
 			sniToUse = d.config.FrontDomain
 		}
@@ -371,17 +372,22 @@ func (d *Dialer) dialTLSMasquerade(ctx context.Context, network, addr string) (n
 	}()
 
 	// Wait for ClientHello to be written
+	fmt.Printf("[ASN-BYPASS] Waiting for ClientHello generation...\n")
 	clientHello, err := interceptor.WaitForBytes(5 * time.Second)
 	if err != nil {
+		fmt.Printf("[ASN-BYPASS] ClientHello generation failed: %v\n", err)
 		tcpConn.Close()
 		return nil, fmt.Errorf("failed to generate ClientHello: %w", err)
 	}
+	fmt.Printf("[ASN-BYPASS] ClientHello generated (%d bytes), sending to server...\n", len(clientHello))
 
 	// Send ClientHello to real server
 	if _, err := tcpConn.Write(clientHello); err != nil {
+		fmt.Printf("[ASN-BYPASS] Write ClientHello failed: %v\n", err)
 		tcpConn.Close()
 		return nil, fmt.Errorf("write client hello failed: %w", err)
 	}
+	fmt.Printf("[ASN-BYPASS] ClientHello sent, waiting for ServerHello...\n")
 
 	// Read ServerHello (Phantom proxies it from real dest)
 	// We consume it to clear the socket buffer for the actual protocol
@@ -397,14 +403,16 @@ func (d *Dialer) dialTLSMasquerade(ctx context.Context, network, addr string) (n
 	totalRead := 0
 
 	// Phase 1: Wait for initial response (ServerHello)
+	fmt.Printf("[ASN-BYPASS] Waiting for ServerHello (10s timeout)...\n")
 	tcpConn.SetReadDeadline(time.Now().Add(10 * time.Second))
 	n, err := tcpConn.Read(buf)
 	if err != nil {
+		fmt.Printf("[ASN-BYPASS] ServerHello read failed: %v\n", err)
 		tcpConn.Close()
 		return nil, fmt.Errorf("failed to read ServerHello (timeout/error): %w", err)
 	}
 	totalRead += n
-	// fmt.Printf("DEBUG: Received initial ServerHello burst: %d bytes\n", n)
+	fmt.Printf("[ASN-BYPASS] Received initial ServerHello: %d bytes\n", n)
 
 	// Phase 2: Drain remaining handshake (ChangeCipherSpec, EncryptedHandshake, etc.)
 	// We loop with a short timeout. If we read nothing, we assume the server is done.
@@ -436,17 +444,19 @@ func (d *Dialer) dialTLSMasquerade(ctx context.Context, network, addr string) (n
 		}
 	}
 	// We ignore the content of ServerHello (it is encrypted/real TLS we can't speak)
+	fmt.Printf("[ASN-BYPASS] Handshake drain complete, total read: %d bytes\n", totalRead)
 
 	// Reset deadline
 	tcpConn.SetReadDeadline(time.Time{})
 
 	// Return the raw TCP connection, which is now "Authenticated" by Phantom
 	// and ready for our VPN frames.
-
-	// If behavioral rotation is active, wrap connection to auto-close after duration
-	if connectionDuration > 0 {
-		return NewTimedConn(tcpConn, connectionDuration), nil
-	}
+	//
+	// NOTE: We do NOT use TimedConn here anymore!
+	// The tunnel manager handles connection rotation explicitly via RotateSNI().
+	// Auto-closing connections was causing instability (FIN packets breaking streams).
+	// Behavioral SNI rotation is managed at the tunnel layer, not transport layer.
+	fmt.Printf("[ASN-BYPASS] TLS masquerade SUCCESS - connection ready\n")
 
 	return tcpConn, nil
 }
