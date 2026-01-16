@@ -563,7 +563,9 @@ func createModules(manager *lifecycle.Manager) error {
 					// Pass this data + connection to relay
 					// Prepend the data we already read
 					wrappedConn := &prependConn{Conn: conn, prepend: initData}
-					globalRelay.ServeTunnel(wrappedConn, globalObfuscator)
+					// NOTE: Pass nil for obfuscator - Phantom connections use TLS masquerade,
+					// so data is NOT obfuscated by the client (isTransportSecure = true on client side)
+					globalRelay.ServeTunnel(wrappedConn, nil)
 					return
 				}
 
@@ -597,7 +599,11 @@ func createModules(manager *lifecycle.Manager) error {
 				log.Printf("Phantom: Handshake completed for %s, starting relay", clientID)
 
 				// Now pass to relay - client will start sending framed data
-				globalRelay.ServeTunnel(conn, globalObfuscator)
+				// CRITICAL FIX: Pass nil for obfuscator because Phantom connections use TLS masquerade.
+				// The client sets isTransportSecure=true and does NOT obfuscate outbound data.
+				// If we try to deobfuscate non-obfuscated data, it corrupts the frame headers
+				// causing "Frame too large" errors (bytes 4-8 become garbage length values).
+				globalRelay.ServeTunnel(conn, nil)
 			},
 		})
 		if err != nil {
