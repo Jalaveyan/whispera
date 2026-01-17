@@ -353,7 +353,7 @@ func (h *Handler) sendFakeHandshake(clientConn net.Conn, clientHello []byte, sni
 	drainBuf := make([]byte, 8192)
 	totalDrained := 0
 	for {
-		destConn.SetReadDeadline(time.Now().Add(1500 * time.Millisecond))
+		destConn.SetReadDeadline(time.Now().Add(10 * time.Second))
 		dn, derr := destConn.Read(drainBuf)
 		if dn > 0 {
 			totalDrained += dn
@@ -363,8 +363,8 @@ func (h *Handler) sendFakeHandshake(clientConn net.Conn, clientHello []byte, sni
 			// Timeout or EOF - we're done draining
 			break
 		}
-		// Safety: don't drain forever - TLS 1.3 can send lots of post-handshake messages
-		if totalDrained > 256*1024 {
+		// Safety: don't drain forever - Some sites send LOTS of TLS data (e.g. rutube.ru)
+		if totalDrained > 512*1024 {
 			break
 		}
 	}
