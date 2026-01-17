@@ -375,6 +375,17 @@ func (s *Server) ServeTunnel(conn net.Conn, obfuscator interfaces.Obfuscator) {
 	buf := make([]byte, 32*1024)
 	var packetBuf []byte // Accumulator for partial frames
 
+	// Send immediate PONG to break potential deadlock
+	// Client's readLoop is waiting for data, and we're waiting for client data
+	// By sending PONG first, we unblock the client's readLoop
+	welcomeFrame := NewPongFrame()
+	if err := sendFrame(welcomeFrame); err != nil {
+		s.log.Warn("Failed to send welcome PONG: %v", err)
+		// Continue anyway - client might send PING first
+	} else {
+		s.log.Debug("Sent welcome PONG to %s", clientID)
+	}
+
 	for {
 		conn.SetReadDeadline(time.Now().Add(300 * time.Second)) // 5 min idle
 		n, err := conn.Read(buf)
