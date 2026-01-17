@@ -378,9 +378,22 @@ func (m *Manager) SetObfuscator(o interfaces.Obfuscator) {
 
 // Connect connects to the VPN server
 func (m *Manager) Connect(ctx context.Context) error {
-	// If we are already connected, this might be a rotation or reconnect request
-	// But standard Connect implies Fresh Start
-	m.Disconnect() // Clear old state for fresh connect
+	// Prevent duplicate simultaneous connections
+	m.stateMu.Lock()
+	if m.state == StateConnecting || m.state == StateConnected {
+		currentState := m.state
+		m.stateMu.Unlock()
+		if currentState == StateConnected {
+			log.Warn("[Connect] Already connected, ignoring duplicate Connect call")
+		} else {
+			log.Warn("[Connect] Connection already in progress, ignoring duplicate call")
+		}
+		return nil
+	}
+	m.stateMu.Unlock()
+
+	// Clear old state for fresh connect
+	m.Disconnect()
 
 	return m.connectInternal(ctx, false)
 }
@@ -800,19 +813,21 @@ func (m *Manager) readLoop(mc *managedConn) {
 		if header[0] >= 0x14 && header[0] <= 0x17 && header[1] == 0x03 {
 			tlsDrainCount++
 			if tlsDrainCount > maxTLSDrain {
-				log.Error("Too many TLS records (%d), connection may be corrupted", tlsDrainCount)
-				return
+				// Don't close connection - just stop draining and try as normal frame
+				log.Warn("Exceeded TLS drain limit (%d), attempting normal frame processing", tlsDrainCount)
+				// Fall through to normal frame processing
+			} else {
+				// This looks like TLS data, not a relay frame. Drain and skip.
+				tlsLen := int(header[3])<<8 | int(header[4])
+				if tlsDrainCount <= 5 || tlsDrainCount%10 == 0 {
+					log.Warn("Detected TLS data (type=0x%02x, len=%d), draining... [%d/%d]", header[0], tlsLen, tlsDrainCount, maxTLSDrain)
+				}
+				if tlsLen > 0 && tlsLen < 16384 {
+					drain := make([]byte, tlsLen-3) // Already read 8 bytes (5 hdr + 3 fragment), need remaining
+					io.ReadFull(mc, drain)
+				}
+				continue // Skip to next read
 			}
-			// This looks like TLS data, not a relay frame. Drain and skip.
-			tlsLen := int(header[3])<<8 | int(header[4])
-			if tlsDrainCount <= 3 {
-				log.Warn("Detected TLS data (type=0x%02x, len=%d), draining... [%d/%d]", header[0], tlsLen, tlsDrainCount, maxTLSDrain)
-			}
-			if tlsLen > 0 && tlsLen < 16384 {
-				drain := make([]byte, tlsLen-3) // Already read 8 bytes (5 hdr + 3 fragment), need remaining
-				io.ReadFull(mc, drain)
-			}
-			continue // Skip to next read
 		}
 		tlsDrainCount = 0 // Reset counter on valid frame
 

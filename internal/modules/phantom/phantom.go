@@ -332,10 +332,7 @@ func (h *Handler) sendFakeHandshake(clientConn net.Conn, clientHello []byte, sni
 		return fmt.Errorf("write client hello: %w", err)
 	}
 
-	// Read ServerHello response
-	// We read until we get enough data to look like a handshake, or timeout
-	// Typically ServerHello + ChangeCipherSpec + EncryptedExtensions + Cert + Verify + Finished
-	// But simply reading a chunk is often enough for standard DPI which looks for "ServerHello"
+	// Read initial ServerHello response (first chunk to forward to client)
 	buffer := make([]byte, 4096)
 	destConn.SetReadDeadline(time.Now().Add(2 * time.Second))
 	n, err := destConn.Read(buffer)
@@ -343,17 +340,37 @@ func (h *Handler) sendFakeHandshake(clientConn net.Conn, clientHello []byte, sni
 		return fmt.Errorf("read server hello: %w", err)
 	}
 
-	// Forward response to client
+	// Forward initial response to client (for DPI to see ServerHello)
 	if n > 0 {
 		if _, err := clientConn.Write(buffer[:n]); err != nil {
 			return fmt.Errorf("write server hello: %w", err)
 		}
 	}
 
-	// We stop here. The Client now sees a ServerResponse.
-	// We drop the destConn. The clientConn is now "Ready" for VPN traffic
-	// (assuming Client ignores the data we just sent and just starts sending VPN frames)
+	// CRITICAL: Fully drain all remaining TLS data from destConn
+	// TLS 1.3 sends lots of data after ServerHello (Certificate, NewSessionTicket, etc.)
+	// We must NOT forward this to client - just absorb it until timeout
+	drainBuf := make([]byte, 8192)
+	totalDrained := 0
+	for {
+		destConn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+		dn, derr := destConn.Read(drainBuf)
+		if dn > 0 {
+			totalDrained += dn
+			// DO NOT forward this to client - just discard
+		}
+		if derr != nil {
+			// Timeout or EOF - we're done draining
+			break
+		}
+		// Safety: don't drain forever
+		if totalDrained > 64*1024 {
+			break
+		}
+	}
 
+	// Now destConn is fully drained - close it and proceed
+	// The clientConn is now "Ready" for VPN traffic
 	return nil
 }
 
