@@ -231,30 +231,26 @@ func (m *Module) handleIncomingFrame(frame *relay.Frame) {
 	m.streamsMu.RUnlock()
 
 	if !exists {
-		if m.config.Debug {
-			stdlog.Printf("[SOCKS5] Frame for unknown stream %d", frame.StreamID)
+		if m.config.Debug || true {
+			stdlog.Printf("[SOCKS5] Frame for unknown stream %d (Type=%d)", frame.StreamID, frame.Type)
 		}
 		return
 	}
 
 	switch frame.Type {
 	case relay.FrameConnectOK:
+		stdlog.Printf("[SOCKS5] Stream %d connected (ConnectOK received)", stream.ID)
 		stream.mu.Lock()
 		stream.Connected = true
 		stream.mu.Unlock()
-		if m.config.Debug {
-			stdlog.Printf("[SOCKS5] Stream %d connected", stream.ID)
-		}
 
 	case relay.FrameConnectFail:
+		reason := string(frame.Payload)
+		stdlog.Printf("[SOCKS5] Stream %d connect failed: %s", stream.ID, reason)
 		stream.mu.Lock()
 		stream.Closed = true
 		stream.mu.Unlock()
 		close(stream.closeChan)
-		if m.config.Debug {
-			reason := string(frame.Payload)
-			stdlog.Printf("[SOCKS5] Stream %d connect failed: %s", stream.ID, reason)
-		}
 
 	case relay.FrameData:
 		select {
@@ -390,6 +386,7 @@ Loop:
 
 		select {
 		case <-connectTimeout:
+			stdlog.Printf("[SOCKS5] Stream %d: connection timeout waiting for ConnectOK", streamID)
 			return fmt.Errorf("connection timeout")
 		case <-stream.closeChan:
 			return fmt.Errorf("stream closed")

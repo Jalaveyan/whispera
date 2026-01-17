@@ -808,7 +808,8 @@ func (m *Manager) readLoop(mc *managedConn) {
 
 	// Buffer for header
 	header := make([]byte, FrameHeaderSize)
-	tlsDrainCount := 0 // Counter to prevent infinite TLS drain loop
+	tlsDrainCount := 0      // Counter to prevent infinite TLS drain loop
+	consecutiveGarbage := 0 // Counter for consecutive bad packets
 	const maxTLSDrain = 50
 
 	for {
@@ -831,9 +832,7 @@ func (m *Manager) readLoop(mc *managedConn) {
 		// Check for TLS signature: Type (20-23) + Version (00 xx - 04 xx)
 		if tlsDrainCount < maxTLSDrain && peek[0] >= 0x14 && peek[0] <= 0x17 && peek[1] <= 0x04 {
 			tlsLen := int(peek[3])<<8 | int(peek[4])
-			if tlsDrainCount <= 5 || tlsDrainCount%10 == 0 {
-				log.Warn("Detected TLS data (type=0x%02x, ver=0x%02x, len=%d), draining... [%d/%d]", peek[0], peek[1], tlsLen, tlsDrainCount, maxTLSDrain)
-			}
+			log.Debug("Detected TLS data (type=0x%02x, ver=0x%02x, len=%d)", peek[0], peek[1], tlsLen)
 
 			// Discard the 5-byte header
 			if _, err := reader.Discard(5); err != nil {
@@ -925,7 +924,8 @@ func (m *Manager) readLoop(mc *managedConn) {
 					}
 
 					if isWrappedFrame {
-						continue // Check next packet (outer loop)
+						consecutiveGarbage = 0 // Reset garbage counter
+						continue               // Check next packet (outer loop)
 					}
 
 					// If we reached here, we failed to identify a frame.
@@ -951,12 +951,24 @@ func (m *Manager) readLoop(mc *managedConn) {
 						return
 					}
 				}
+
+				// Failure tracking
+				if !isWrappedFrame {
+					consecutiveGarbage++
+					if consecutiveGarbage > 20 {
+						log.Error("Too much garbage data (%d packets), triggering reconnect", consecutiveGarbage)
+						go m.Reconnect(context.Background())
+						return
+					}
+				}
 			}
 
 			tlsDrainCount++
 			continue // Check next packet
 		}
-		tlsDrainCount = 0 // Reset on non-TLS (Frame)
+
+		consecutiveGarbage = 0 // Reset on non-TLS (Frame)
+		tlsDrainCount = 0      // Reset on non-TLS (Frame)
 
 		// 2. Read Frame Header (8 bytes)
 		mc.SetReadDeadline(time.Now().Add(m.config.KeepaliveInterval * 2))
