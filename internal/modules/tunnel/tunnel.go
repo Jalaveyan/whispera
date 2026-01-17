@@ -419,7 +419,9 @@ func (m *Manager) connectInternal(ctx context.Context, isRotation bool) error {
 	}
 
 	// Perform handshake on this new connection
-	if m.handshake != nil {
+	// SKIP handshake for Phantom connections - Phantom already authenticates via REALITY-like HMAC
+	// in the ClientHello. The additional protocol handshake causes synchronization issues.
+	if m.handshake != nil && !m.config.EnablePhantom {
 		log.Info("[%s] Starting Protocol Handshake...", op)
 		hsStart := time.Now()
 		session, err := m.handshake.InitiateHandshake(ctx, mc, conn.RemoteAddr())
@@ -433,6 +435,9 @@ func (m *Manager) connectInternal(ctx context.Context, isRotation bool) error {
 		if session != nil {
 			m.sessionID = session.ID()
 		}
+	} else if m.config.EnablePhantom {
+		log.Info("[%s] Phantom mode - skipping protocol handshake (already authenticated via REALITY)", op)
+		m.sessionID = uint32(time.Now().Unix() & 0xFFFFFFFF) // Generate session ID
 	} else {
 		log.Warn("[%s] No Handshake handler configured - proceeding with raw connection", op)
 	}
