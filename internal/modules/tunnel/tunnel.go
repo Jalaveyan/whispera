@@ -2,6 +2,7 @@
 package tunnel
 
 import (
+	"bufio"
 	"context"
 	"crypto/rand"
 	"encoding/binary"
@@ -474,12 +475,13 @@ func (m *Manager) connectInternal(ctx context.Context, isRotation bool) error {
 	m.activeConn = mc
 	m.connMu.Unlock()
 
-	// Start reading from this new connection
-	go m.readLoop(mc)
-
 	// Start mechanics
 	if !isRotation {
+		// CRITICAL FIX: Start keepalive (send PING) BEFORE readLoop
+		// Server waits for data immediately after authentication.
+		// We must send data first to unblock the server.
 		m.startKeepalive()
+
 		m.startRotation()
 		m.connectedAt = time.Now()
 		m.setState(StateConnected)
@@ -497,6 +499,10 @@ func (m *Manager) connectInternal(ctx context.Context, isRotation bool) error {
 		})
 		log.Info("[%s] Rotation complete.", op)
 	}
+
+	// Start reading from this new connection
+	// Start AFTER sending initial PING to ensure server unblocks
+	go m.readLoop(mc)
 
 	return nil
 }
@@ -767,6 +773,9 @@ func (m *Manager) Reconnect(ctx context.Context) error {
 // 3. Moving old connection to draining (it keeps serving existing streams)
 // 4. New streams go to the new connection
 func (m *Manager) RotateSNI() {
+	// Save current SNI in case rotation fails
+	oldSNI := m.currentSNI
+
 	// First, select a new SNI before connecting
 	newSNI := m.selectNewSNI()
 	log.Info("Initiating Seamless SNI Rotation to: %s", newSNI)
@@ -776,7 +785,12 @@ func (m *Manager) RotateSNI() {
 
 	if err := m.connectInternal(ctx, true); err != nil {
 		log.Error("SNI Rotation failed: %v - keeping existing connection", err)
-		// Don't break existing connection on rotation failure
+
+		// Revert to old SNI so subsequent reconnects don't use the failed one
+		m.connMu.Lock()
+		m.currentSNI = oldSNI
+		m.connMu.Unlock()
+
 		return
 	}
 
@@ -787,10 +801,15 @@ func (m *Manager) RotateSNI() {
 func (m *Manager) readLoop(mc *managedConn) {
 	defer mc.Close()
 
+	// Use bufio.NewReader for Peek capability
+	// This helps us distinguish between TLS data (from masquerade) and Frame data
+	// without over-reading and causing desync.
+	reader := bufio.NewReader(mc)
+
 	// Buffer for header
 	header := make([]byte, FrameHeaderSize)
 	tlsDrainCount := 0 // Counter to prevent infinite TLS drain loop
-	const maxTLSDrain = 20
+	const maxTLSDrain = 50
 
 	for {
 		select {
@@ -799,60 +818,243 @@ func (m *Manager) readLoop(mc *managedConn) {
 		default:
 		}
 
-		// 1. Read Header
-		// Use io.ReadFull to ensure we got all 8 bytes of header
-		// Set deadline to keepalive * 2
-		mc.SetReadDeadline(time.Now().Add(m.config.KeepaliveInterval * 2))
-		if _, err := io.ReadFull(mc, header); err != nil {
+		// 1. Check for TLS data using Peek
+		// TLS Header is 5 bytes. Frame Header is 8 bytes.
+		// If we blindly read 8 bytes, we might swallow a short TLS packet (like CCS, 6 bytes)
+		// and parts of the next packet, breaking sync.
+		peek, err := reader.Peek(5)
+		if err != nil {
 			m.handleReadError(mc, err)
 			return
 		}
 
-		// Check for TLS data (leftover from masquerade handshake)
-		// TLS record types: 0x14 (ChangeCipherSpec), 0x15 (Alert), 0x16 (Handshake), 0x17 (ApplicationData)
-		if header[0] >= 0x14 && header[0] <= 0x17 && header[1] == 0x03 {
-			tlsDrainCount++
-			if tlsDrainCount > maxTLSDrain {
-				// Don't close connection - just stop draining and try as normal frame
-				log.Warn("Exceeded TLS drain limit (%d), attempting normal frame processing", tlsDrainCount)
-				// Fall through to normal frame processing
-			} else {
-				// This looks like TLS data, not a relay frame. Drain and skip.
-				tlsLen := int(header[3])<<8 | int(header[4])
-				if tlsDrainCount <= 5 || tlsDrainCount%10 == 0 {
-					log.Warn("Detected TLS data (type=0x%02x, len=%d), draining... [%d/%d]", header[0], tlsLen, tlsDrainCount, maxTLSDrain)
-				}
-				if tlsLen > 0 && tlsLen < 16384 {
-					drain := make([]byte, tlsLen-3) // Already read 8 bytes (5 hdr + 3 fragment), need remaining
-					io.ReadFull(mc, drain)
-				}
-				continue // Skip to next read
+		// Check for TLS signature: Type (20-23) + Version (00 xx - 04 xx)
+		if tlsDrainCount < maxTLSDrain && peek[0] >= 0x14 && peek[0] <= 0x17 && peek[1] <= 0x04 {
+			tlsLen := int(peek[3])<<8 | int(peek[4])
+			if tlsDrainCount <= 5 || tlsDrainCount%10 == 0 {
+				log.Warn("Detected TLS data (type=0x%02x, ver=0x%02x, len=%d), draining... [%d/%d]", peek[0], peek[1], tlsLen, tlsDrainCount, maxTLSDrain)
 			}
-		}
-		tlsDrainCount = 0 // Reset counter on valid frame
 
-		// 2. Parse Payload Length
+			// Discard the 5-byte header
+			if _, err := reader.Discard(5); err != nil {
+				m.handleReadError(mc, err)
+				return
+			}
+
+			// Handle payload (Unwrap or Drain)
+			if tlsLen > 0 {
+				isWrappedFrame := false
+
+				// Optimization: If it's Application Data (0x17), it might contain our VPN Frames wrapped
+				if peek[0] == 0x17 {
+					// Read the full TLS payload to check contents
+					buf := make([]byte, tlsLen)
+					if _, err := io.ReadFull(reader, buf); err != nil {
+						m.handleReadError(mc, err)
+						return
+					}
+
+					// Recursive check: Handle up to 5 layers of TLS wrapping (Triple+ TLS)
+					processBuf := buf
+					for layer := 0; layer < 5; layer++ {
+						if len(processBuf) >= FrameHeaderSize {
+							// Validate as Frame
+							pLen := binary.BigEndian.Uint32(processBuf[4:8])
+							fType := processBuf[2]
+
+							// Heuristic: Type must be valid (0-10, 0=Padding) and length must be reasonable
+							if fType <= 0x0A && int(pLen) <= 65535 && FrameHeaderSize+int(pLen) <= len(processBuf) {
+								log.Info("Unwrapped TLS ApplicationData containing valid Frame (Layer %d, StreamID=%d, Type=%d, Len=%d)",
+									layer, binary.BigEndian.Uint16(processBuf[0:2]), fType, pLen)
+								isWrappedFrame = true
+
+								// Process frames from processBuf
+								offset := 0
+								for offset+FrameHeaderSize <= len(processBuf) {
+									if offset+FrameHeaderSize > len(processBuf) {
+										break
+									}
+
+									pLen := binary.BigEndian.Uint32(processBuf[offset+4 : offset+8])
+									fType := processBuf[offset+2]
+									frameTotal := FrameHeaderSize + int(pLen)
+
+									// Validate subsequent frames in batch
+									if fType > 0x0A || offset+frameTotal > len(processBuf) {
+										log.Warn("Invalid frame in TLS batch at offset %d (Type=%d, Len=%d)", offset, fType, pLen)
+										break
+									}
+
+									// Handle Padding/Ping frames (Type 0x00)
+									if fType == 0x00 {
+										log.Debug("Skipping Padding frame (Len=%d)", pLen)
+										offset += frameTotal
+										continue
+									}
+
+									frameData := make([]byte, frameTotal)
+									copy(frameData, processBuf[offset:offset+frameTotal])
+
+									select {
+									case m.readCh <- frameData:
+										atomic.AddUint64(&m.bytesDown, uint64(len(frameData)))
+										m.UpdateActivity()
+									case <-mc.closing:
+										return
+									}
+
+									offset += frameTotal
+								}
+
+								tlsDrainCount = 0 // Valid data processed
+								break             // Exit layer loop, we are done
+							}
+						}
+
+						// If not a frame, check if it is nested TLS (e.g. [17][03][03][LenHigh][LenLow]...)
+						if len(processBuf) > 5 && processBuf[0] == 0x17 && processBuf[1] == 0x03 {
+							innerLen := int(processBuf[3])<<8 | int(processBuf[4])
+							if innerLen+5 <= len(processBuf) {
+								log.Info("Detected nested TLS record inside AppData (Layer %d), unwrapping %d bytes...", layer, innerLen)
+								processBuf = processBuf[5 : 5+innerLen]
+								continue // Try next layer
+							}
+						}
+
+						break // Not a frame and not nested TLS, give up
+					}
+
+					if isWrappedFrame {
+						continue // Check next packet (outer loop)
+					}
+
+					// If we reached here, we failed to identify a frame.
+					// Log the header for debugging
+					if len(buf) > 0 {
+						headerPeek := buf
+						if len(headerPeek) > 16 {
+							headerPeek = headerPeek[:16]
+						}
+						log.Warn("Failed to unwrap TLS AppData (Len=%d). First 16 bytes: %x", len(buf), headerPeek)
+					}
+					// If verification failed, we effectively 'drained' it by reading into buf and doing nothing.
+				}
+
+				// If not an unwrapped frame (either not 0x17, or 0x17 but garbage), drain it.
+				if !isWrappedFrame && peek[0] != 0x17 {
+					// Cap drain to avoid huge allocations/reads on bad data if we haven't read it yet
+					if tlsLen > 65535 {
+						tlsLen = 65535
+					}
+					if _, err := io.CopyN(io.Discard, reader, int64(tlsLen)); err != nil {
+						m.handleReadError(mc, err)
+						return
+					}
+				}
+			}
+
+			tlsDrainCount++
+			continue // Check next packet
+		}
+		tlsDrainCount = 0 // Reset on non-TLS (Frame)
+
+		// 2. Read Frame Header (8 bytes)
+		mc.SetReadDeadline(time.Now().Add(m.config.KeepaliveInterval * 2))
+		if _, err := io.ReadFull(reader, header); err != nil {
+			m.handleReadError(mc, err)
+			return
+		}
+
+		// 3. Parse Payload Length
 		// Format: [StreamID:2][Type:1][Flags:1][Length:4]
 		payloadLen := binary.BigEndian.Uint32(header[4:8])
 
 		// Safety check for huge frames (max 65KB payload as per protocol)
 		if payloadLen > 65535 {
-			log.Warn("Frame too large (%d bytes), closing connection", payloadLen)
-			return
+			log.Warn("Frame too large (%d bytes), header: %x. Attempting RESYNC...", payloadLen, header)
+
+			// Resync Logic: Check if we have a TLS header embedded inside this garbage frame header
+			// We scan the bytes we just read (header) for a TLS signature: Type (20-23) + Version (00-04)
+			foundOffset := -1
+			for i := 1; i <= FrameHeaderSize-3; i++ { // Need at least 3 bytes [Type, VerHigh, VerLow] to check
+				if header[i] >= 0x14 && header[i] <= 0x17 && header[i+1] == 0x03 && header[i+2] <= 0x04 {
+					foundOffset = i
+					break
+				}
+			}
+
+			if foundOffset != -1 {
+				// We found a TLS header starting at offset 'foundOffset' inside 'header'
+				log.Warn("RESYNC: Found TLS header signature at offset %d inside invalid frame. Recovering...", foundOffset)
+
+				// Reconstruct the TLS header
+				tlsHeader := make([]byte, 5)
+				// Bytes available in 'header' starting from foundOffset
+				available := FrameHeaderSize - foundOffset
+				copy(tlsHeader, header[foundOffset:])
+
+				// If we need more bytes to complete the 5-byte TLS header, read them now
+				if available < 5 {
+					if _, err := io.ReadFull(reader, tlsHeader[available:]); err != nil {
+						m.handleReadError(mc, err)
+						return
+					}
+				} else {
+					// We read more than 5 bytes of TLS header? (e.g. found at offset 1, we have 7 bytes)
+					// Actually 'header' is 8 bytes. If found at 0, we have 8. If found at 1, we have 7.
+					// We only need 5. So we might have extra bytes of TLS Payload in 'header'.
+					// But let's keep it simple: We just need to parse length from the first 5 bytes.
+				}
+
+				// Parse TLS length
+				tlsLen := int(tlsHeader[3])<<8 | int(tlsHeader[4])
+				log.Warn("RESYNC: Recovered TLS packet (len=%d). Draining...", tlsLen)
+
+				// Calculate how many payload bytes we ALREADY read into 'header'
+				// foundOffset + 5 is where payload starts.
+				// Total bytes in 'header' = 8.
+				// Bytes of payload in 'header' = 8 - (foundOffset + 5)
+				payloadBytesInHeader := FrameHeaderSize - (foundOffset + 5)
+				if payloadBytesInHeader < 0 {
+					payloadBytesInHeader = 0
+				}
+
+				remainingToDrain := tlsLen - payloadBytesInHeader
+
+				if remainingToDrain > 0 {
+					// Cap drain
+					if remainingToDrain > 65535 {
+						remainingToDrain = 65535
+					}
+					if _, err := io.CopyN(io.Discard, reader, int64(remainingToDrain)); err != nil {
+						m.handleReadError(mc, err)
+						return
+					}
+				}
+
+				// Resync successful, continue loop
+				tlsDrainCount++
+				continue
+			} else {
+				// If not found in header, maybe we should byte-scan the reader?
+				// For now, fail but log nicely.
+				log.Error("RESYNC failed: No embedded TLS header found. Closing connection.")
+				return
+			}
 		}
 
-		// 3. Read Payload
+		// 4. Read Payload
 		frameData := make([]byte, FrameHeaderSize+int(payloadLen))
 		copy(frameData, header)
 
 		if payloadLen > 0 {
-			if _, err := io.ReadFull(mc, frameData[FrameHeaderSize:]); err != nil {
+			if _, err := io.ReadFull(reader, frameData[FrameHeaderSize:]); err != nil {
 				m.handleReadError(mc, err)
 				return
 			}
 		}
 
-		// 4. Send atomic frame
+		// 5. Send atomic frame
 		select {
 		case m.readCh <- frameData:
 			atomic.AddUint64(&m.bytesDown, uint64(len(frameData)))
@@ -873,8 +1075,13 @@ func (m *Manager) handleReadError(mc *managedConn, err error) {
 	m.connMu.RUnlock()
 
 	if isActive && m.GetState() == StateConnected {
-		log.Warn("Active connection read error: %v", err)
+		log.Warn("Active connection read error: %v. Triggering Reconnect...", err)
 		m.lastError = err
+
+		// Check state again to avoid race conditions
+		if m.GetState() == StateConnected {
+			go m.Reconnect(context.Background())
+		}
 	}
 }
 
