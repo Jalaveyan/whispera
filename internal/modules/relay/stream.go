@@ -80,9 +80,10 @@ func (s *Stream) SetWriter(w ResponseWriter) {
 
 // sendFrame encodes and sends a frame to the writer
 func (s *Stream) sendFrame(f *Frame) error {
-	s.mu.RLock()
+	// NOTE: writer is set once during construction and rarely changes.
+	// We avoid locking here to prevent deadlock with Connect() which holds s.mu.Lock()
+	// while calling FSM events that trigger sendFrame().
 	writer := s.writer
-	s.mu.RUnlock()
 
 	if writer == nil {
 		return fmt.Errorf("no writer")
