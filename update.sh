@@ -74,8 +74,8 @@ echo "Updating configuration..."
 PRIVATE_KEY=$(get_key_from_config "private_key")
 PUBLIC_KEY=$(get_key_from_config "public_key")
 
-# 2. If missing, generate NEW pair using the binary
-if [[ -z "$PRIVATE_KEY" ]]; then
+# 2. If EITHER key is missing, generate NEW pair
+if [[ -z "$PRIVATE_KEY" ]] || [[ -z "$PUBLIC_KEY" ]]; then
     log_info "Generating new keys..."
     OUTPUT=$(./whispera-server x25519 2>/dev/null)
     PRIVATE_KEY=$(echo "$OUTPUT" | grep "Private Key:" | awk '{print $3}')
