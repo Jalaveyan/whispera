@@ -129,6 +129,9 @@ EOF
 echo "Restarting service..."
 systemctl restart whispera
 
+# Install cryptography if missing
+pip3 install cryptography -q 2>/dev/null
+
 # Calculate public key from private key using Python
 calc_pubkey() {
     python3 -c "
@@ -156,6 +159,9 @@ if [[ -n "$PUB_KEY" ]]; then
     echo -e "${GREEN}================================================================${PLAIN}"
     echo -e "${BLUE}${CONN_URL}${PLAIN}"
     echo -e "${GREEN}================================================================${PLAIN}"
+else
+    echo ""
+    echo -e "${YELLOW}Could not calculate public key. Run: whispera x25519${PLAIN}"
 fi
 echo ""
 
