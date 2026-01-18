@@ -373,6 +373,7 @@ fn find_bin_dir() -> Result<std::path::PathBuf, String> {
     
     let possible_bin_dirs = vec![
         exe_dir.join("bin"),
+        exe_dir.join("resources").join("bin"), // Standard Tauri bundle path
         exe_dir.join("..").join("..").join("bin"),
         exe_dir.join("..").join("..").join("..").join("src-tauri").join("bin"),
         std::path::PathBuf::from("C:\\Whispera-main\\client-package-tauri\\src-tauri\\bin"),
@@ -380,7 +381,7 @@ fn find_bin_dir() -> Result<std::path::PathBuf, String> {
     
     for dir in &possible_bin_dirs {
         let client = dir.join("whispera-go-client-x86_64-pc-windows-msvc.exe");
-        let mihomo = dir.join("mihomo-windows-amd64.exe");
+        let mihomo = dir.join("mihomo-x86_64-pc-windows-msvc.exe");
         
         if client.exists() && mihomo.exists() {
             return Ok(dir.clone());
@@ -438,7 +439,12 @@ fn connect(key: String) -> Result<ConnectResult, String> {
         bin_dir.join("whispera-go-client.exe")
     };
     
-    let mihomo_path = bin_dir.join("mihomo.exe");
+    let mihomo_path = if bin_dir.join("mihomo-x86_64-pc-windows-msvc.exe").exists() {
+        bin_dir.join("mihomo-x86_64-pc-windows-msvc.exe")
+    } else {
+        bin_dir.join("mihomo.exe")
+    };
+
     let config_path = bin_dir.join("client_config.yaml");
     let mihomo_config_path = bin_dir.join("mihomo-config-runtime.yaml");
     

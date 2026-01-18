@@ -73,10 +73,11 @@ func mapErrorToReplyCode(err error) byte {
 type SOCKS5Server struct {
 	listenAddr    string
 	handler       func(net.Conn, string, uint16) error
-	authHandler   AuthHandler   // Обработчик аутентификации (nil = NoAuth)
-	packetHandler PacketHandler // Обработчик UDP пакетов (nil = Drop)
-	udpConn       *net.UDPConn  // UDP соединение для UDP ASSOCIATE
-	udpAddr       *net.UDPAddr  // Адрес UDP сервера
+	authHandler   AuthHandler          // Обработчик аутентификации (nil = NoAuth)
+	packetHandler PacketHandler        // Обработчик UDP пакетов (nil = Drop)
+	udpHandler    func(net.Conn) error // External UDP ASSOCIATE handler
+	udpConn       *net.UDPConn         // UDP соединение для UDP ASSOCIATE
+	udpAddr       *net.UDPAddr         // Адрес UDP сервера
 	mu            sync.RWMutex
 	log           *logger.Logger
 }
@@ -103,6 +104,11 @@ func (s *SOCKS5Server) SetUDPAddr(addr *net.UDPAddr) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.udpAddr = addr
+}
+
+// SetUDPHandler sets the handler for UDP ASSOCIATE
+func (s *SOCKS5Server) SetUDPHandler(h func(net.Conn) error) {
+	s.udpHandler = h
 }
 
 // SetPacketHandler sets the handler for UDP packets
@@ -154,9 +160,9 @@ func (s *SOCKS5Server) handleConnection(conn net.Conn) {
 
 	fmt.Printf("[SOCKS5] Request: addr=%s port=%d\n", addr, port)
 
-	// Empty addr means UDP ASSOCIATE was handled internally
+	// Empty addr means UDP ASSOCIATE was handled internally (or via external handler)
 	if addr == "" {
-		fmt.Printf("[SOCKS5] UDP ASSOCIATE handled internally\n")
+		fmt.Printf("[SOCKS5] UDP ASSOCIATE handled\n")
 		// Keep connection alive for UDP relay (it monitors this connection)
 		select {} // Block forever until connection closes
 	}
@@ -256,7 +262,34 @@ func (s *SOCKS5Server) handleRequest(conn net.Conn) (string, uint16, error) {
 	case socks5CmdConnect:
 		// Обрабатывается ниже
 	case socks5CmdUDP:
-		// UDP ASSOCIATE - pass ATYP from header
+		// UDP ASSOCIATE
+		if s.udpHandler != nil {
+			// Use external handler
+			// Check ATYP (header[3]) to skip address parsing here if needed, or pass control
+			// Standard SOCKS5: UDP ASSOCIATE sends address/port of client. We usually ignore it.
+			// We need to consume the address/port bytes first.
+			atyp := header[3]
+			// Consume address/port logic (replicated from below)
+			switch atyp {
+			case socks5ATYPIPv4:
+				io.CopyN(io.Discard, conn, 4)
+			case socks5ATYPIPv6:
+				io.CopyN(io.Discard, conn, 16)
+			case socks5ATYPDomain:
+				lenBuf := make([]byte, 1)
+				io.ReadFull(conn, lenBuf)
+				io.CopyN(io.Discard, conn, int64(lenBuf[0]))
+			}
+			io.CopyN(io.Discard, conn, 2) // Port
+
+			// Call external handler
+			if err := s.udpHandler(conn); err != nil {
+				s.sendReply(conn, mapErrorToReplyCode(err), nil, 0)
+				return "", 0, err
+			}
+			return "", 0, nil
+		}
+		// Fallback to internal
 		return s.handleUDPAssociate(conn, header[3])
 	case socks5CmdBind:
 		// BIND не поддерживается

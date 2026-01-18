@@ -25,6 +25,10 @@
             "identifier": "com.whispera.client",
             "icon": [
                 "icons/app-icon.ico"
+            ],
+            "externalBin": [
+                "bin/whispera-go-client",
+                "bin/mihomo"
             ]
         },
         "security": {

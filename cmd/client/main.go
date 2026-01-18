@@ -256,6 +256,7 @@ func main() {
 	stdlog.Printf("Connecting to VPN server: %s", serverAddress)
 
 	// Create Kill Switch manager (but don't activate yet)
+	// Create Kill Switch manager (but don't activate yet)
 	var ks *killswitch.KillSwitch
 	if *enableKillSwitch {
 		var err error
@@ -280,38 +281,33 @@ func main() {
 		if *noInternalTun {
 			stdlog.Printf("External TUN mode: Mihomo will handle TUN/routing")
 			stdlog.Printf("SOCKS5 proxy ready for Mihomo at %s", *socksAddr)
-		} else {
-			// Set VPN server IP for route configuration
-			// This ensures the VPN server traffic doesn't go through TUN (avoiding loop)
-			var vpnServerIP net.IP
-			var vpnPort int = 8443
-			if host, portStr, err := net.SplitHostPort(serverAddress); err == nil {
-				os.Setenv("WHISPERA_VPN_SERVER", host)
-				stdlog.Printf("VPN server IP for routing: %s", host)
-				vpnServerIP = net.ParseIP(host)
-				if p, _ := net.LookupPort("udp", portStr); p > 0 {
-					vpnPort = p
+
+			// Still enforce Kill Switch for external TUN mode
+			// We need to determine the VPN server IP to whitelist it
+			if host, _, err := net.SplitHostPort(serverAddress); err == nil {
+				vpnServerIP := net.ParseIP(host)
+				vpnPort := 8443
+				if p, err := net.LookupPort("tcp", "8443"); err == nil {
+					vpnPort = p // Simplified, ideal would be to parse actual port
 				}
-			}
 
-			// Start HevTunnel now that tunnel is connected
-			// All traffic will now go through the encrypted tunnel
-			if err := socksMod.StartHevTunnel(); err != nil {
-				stdlog.Printf("WARNING: Failed to start HevTunnel: %v", err)
-			} else {
-				stdlog.Printf("HevTunnel started - all traffic routed through VPN")
-
-				// Activate Kill Switch AFTER HevTunnel is running
-				// This ensures VPN traffic is allowed before blocking other traffic
 				if ks != nil && vpnServerIP != nil {
 					ks.SetVPNServer(vpnServerIP, vpnPort)
 					if err := ks.Enable(); err != nil {
 						stdlog.Printf("WARNING: Failed to enable kill switch: %v", err)
 					} else {
-						stdlog.Printf("Kill Switch ENABLED - traffic will NOT leak if VPN drops")
+						stdlog.Printf("Kill Switch ENABLED - traffic blocked except to %s", host)
 					}
 				}
 			}
+		} else {
+			// Set VPN server IP for route configuration
+			// This ensures the VPN server traffic doesn't go through TUN (avoiding loop)
+			if host, _, err := net.SplitHostPort(serverAddress); err == nil {
+				os.Setenv("WHISPERA_VPN_SERVER", host)
+				stdlog.Printf("VPN server IP for routing: %s", host)
+			}
+			stdlog.Printf("WARNING: Internal HevTunnel support removed. Use --no-tun=true (default) with Mihomo.")
 		}
 	}
 

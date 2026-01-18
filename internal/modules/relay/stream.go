@@ -3,6 +3,7 @@ package relay
 
 import (
 	"context"
+	"encoding/binary"
 	"fmt"
 	"io"
 	"net"
@@ -144,27 +145,45 @@ func (s *Stream) Connect(ctx context.Context) error {
 		go s.readFromTarget()
 
 	case ProtoUDP:
-		var addr *net.UDPAddr
-		addr, err = net.ResolveUDPAddr("udp", target)
-		if err != nil {
-			s.fsm.Event(EventConnectFail)
-			return err
-		}
-		var conn *net.UDPConn
-		conn, err = net.DialUDP("udp", nil, addr)
-		if err != nil {
-			s.fsm.Event(EventConnectFail)
-			return err
-		}
-		s.udpConn = conn
+		// Check for Relay Mode (0.0.0.0 or ::)
+		if s.TargetAddr == "0.0.0.0" || s.TargetAddr == "::" {
+			// Unconnected UDP socket for Relay
+			conn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("0.0.0.0"), Port: 0})
+			if err != nil {
+				s.fsm.Event(EventConnectFail)
+				return err
+			}
+			s.udpConn = conn
 
-		// Event: ConnectOK
-		if err := s.fsm.Event(EventConnectOK); err != nil {
-			s.udpConn.Close()
-			return err
-		}
+			if err := s.fsm.Event(EventConnectOK); err != nil {
+				s.udpConn.Close()
+				return err
+			}
 
-		go s.readUDPFromTarget()
+			go s.readRelayUDP()
+		} else {
+			// Connected UDP socket (P2P)
+			var addr *net.UDPAddr
+			addr, err = net.ResolveUDPAddr("udp", target)
+			if err != nil {
+				s.fsm.Event(EventConnectFail)
+				return err
+			}
+			var conn *net.UDPConn
+			conn, err = net.DialUDP("udp", nil, addr)
+			if err != nil {
+				s.fsm.Event(EventConnectFail)
+				return err
+			}
+			s.udpConn = conn
+
+			if err := s.fsm.Event(EventConnectOK); err != nil {
+				s.udpConn.Close()
+				return err
+			}
+
+			go s.readUDPFromTarget()
+		}
 	}
 
 	return nil
@@ -205,6 +224,82 @@ func (s *Stream) Write(data []byte) error {
 	}
 
 	return ErrStreamClosed
+}
+
+// HandleUDPData handles incoming UDP_DATA frame (with destination)
+func (s *Stream) HandleUDPData(data []byte) error {
+	s.mu.RLock()
+	udpConn := s.udpConn
+	s.mu.RUnlock()
+
+	if udpConn == nil {
+		return ErrStreamClosed
+	}
+
+	s.lastT = time.Now()
+
+	// Parse payload: [AddrType][Addr][Port][Data]
+	if len(data) < 7 {
+		return fmt.Errorf("short UDP data")
+	}
+
+	offset := 0
+	atyp := data[offset]
+	offset++
+
+	var addr *net.UDPAddr
+	var ip net.IP
+
+	switch atyp {
+	case 0x01: // IPv4
+		if len(data) < offset+4 {
+			return fmt.Errorf("short IPv4")
+		}
+		ip = net.IP(data[offset : offset+4])
+		offset += 4
+	case 0x04: // IPv6
+		if len(data) < offset+16 {
+			return fmt.Errorf("short IPv6")
+		}
+		ip = net.IP(data[offset : offset+16])
+		offset += 16
+	case 0x03: // Domain
+		if len(data) < offset+1 {
+			return fmt.Errorf("short domain len")
+		}
+		l := int(data[offset])
+		offset++
+		if len(data) < offset+l {
+			return fmt.Errorf("short domain")
+		}
+		domain := string(data[offset : offset+l])
+		offset += l
+		// Resolve domain
+		if resolved, err := net.ResolveIPAddr("ip", domain); err == nil {
+			ip = resolved.IP
+		} else {
+			return err
+		}
+	default:
+		return fmt.Errorf("unknown ATYP %d", atyp)
+	}
+
+	if len(data) < offset+2 {
+		return fmt.Errorf("short port")
+	}
+	port := binary.BigEndian.Uint16(data[offset : offset+2])
+	offset += 2
+
+	addr = &net.UDPAddr{IP: ip, Port: int(port)}
+	payload := data[offset:]
+
+	// WriteToUDP
+	n, err := udpConn.WriteToUDP(payload, addr)
+	if err != nil {
+		return err
+	}
+	s.bytesOut += uint64(n)
+	return nil
 }
 
 // readFromTarget reads data from TCP target and sends back through tunnel
@@ -248,7 +343,7 @@ func (s *Stream) readFromTarget() {
 	}
 }
 
-// readUDPFromTarget reads data from UDP target and sends back through tunnel
+// readUDPFromTarget reads data from Connected UDP target
 func (s *Stream) readUDPFromTarget() {
 	defer func() {
 		if r := recover(); r != nil {
@@ -279,7 +374,52 @@ func (s *Stream) readUDPFromTarget() {
 			s.bytesIn += uint64(n)
 			s.lastT = time.Now()
 
+			// Connected UDP uses standard DFRAME
 			frame := NewDataFrame(s.ID, buf[:n])
+			if err := s.sendFrame(frame); err != nil {
+				return
+			}
+		}
+	}
+}
+
+// readRelayUDP reads from Unconnected UDP socket and sends UDP_DATA frames
+func (s *Stream) readRelayUDP() {
+	defer func() {
+		if r := recover(); r != nil {
+		}
+		s.Close()
+	}()
+
+	buf := make([]byte, 65535)
+	for {
+		select {
+		case <-s.closeChan:
+			return
+		default:
+		}
+
+		s.udpConn.SetReadDeadline(time.Now().Add(300 * time.Second))
+		n, addr, err := s.udpConn.ReadFromUDP(buf)
+		if err != nil {
+			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				continue
+			}
+			s.fsm.Event(EventError)
+			return
+		}
+
+		if n > 0 {
+			s.bytesIn += uint64(n)
+			s.lastT = time.Now()
+
+			// Determine ATYP
+			atyp := uint8(0x01) // IPv4
+			if addr.IP.To4() == nil {
+				atyp = 0x04 // IPv6
+			}
+
+			frame := NewUDPDataFrame(s.ID, atyp, addr.IP.String(), uint16(addr.Port), buf[:n])
 			if err := s.sendFrame(frame); err != nil {
 				return
 			}
@@ -376,6 +516,19 @@ func (sm *StreamManager) HandleData(streamID uint16, data []byte) error {
 	}
 
 	return stream.Write(data)
+}
+
+// HandleUDPData handles incoming UDP_DATA frame
+func (sm *StreamManager) HandleUDPData(streamID uint16, data []byte) error {
+	sm.mu.RLock()
+	stream, ok := sm.streams[streamID]
+	sm.mu.RUnlock()
+
+	if !ok {
+		return ErrStreamNotFound
+	}
+
+	return stream.HandleUDPData(data)
 }
 
 // HandleClose handles incoming CLOSE frame

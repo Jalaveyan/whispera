@@ -112,6 +112,7 @@ func (m *Module) Start() error {
 
 	// Create SOCKS5 server with connection handler
 	m.server = proxy.NewSOCKS5Server(m.config.ListenAddr, m.handleConnection)
+	m.server.SetUDPHandler(m.handleUDPConnection)
 
 	// Start frame receiver goroutine
 	go m.receiveFrames()
@@ -259,6 +260,16 @@ func (m *Module) handleIncomingFrame(frame *relay.Frame) {
 			// Channel full, drop data
 			if m.config.Debug {
 				stdlog.Printf("[SOCKS5] Stream %d data dropped (buffer full)", stream.ID)
+			}
+		}
+
+	case relay.FrameUDPData:
+		// Route UDP data to stream
+		select {
+		case stream.dataChan <- frame.Payload:
+		default:
+			if m.config.Debug {
+				stdlog.Printf("[SOCKS5] Stream %d UDP data dropped", stream.ID)
 			}
 		}
 
@@ -459,8 +470,181 @@ Loop:
 	return err
 }
 
-// StartHevTunnel starts HevTunnel for TUN mode (no-op when using Mihomo)
-func (m *Module) StartHevTunnel() error {
-	stdlog.Printf("[SOCKS5] StartHevTunnel called - skipped (using Mihomo for TUN)")
-	return nil
+// handleUDPConnection handles a UDP ASSOCIATE connection
+func (m *Module) handleUDPConnection(tcpConn net.Conn) error {
+	m.mu.RLock()
+	tunnel := m.tunnel
+	m.mu.RUnlock()
+
+	// Wait for tunnel (Kill Switch)
+	if tunnel == nil || !tunnel.IsConnected() {
+		return fmt.Errorf("tunnel not ready")
+	}
+
+	// Create UDP listener for relay
+	udpListener, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	if err != nil {
+		return fmt.Errorf("failed to create UDP listener: %w", err)
+	}
+	defer udpListener.Close()
+
+	localAddr := udpListener.LocalAddr().(*net.UDPAddr)
+
+	// Send success reply with relay address
+	// SOCKS5 reply: VER REP RSV ATYP BND.ADDR BND.PORT
+	reply := []byte{0x05, 0x00, 0x00, 0x01}
+	reply = append(reply, localAddr.IP.To4()...)
+	portBuf := make([]byte, 2)
+	binary.BigEndian.PutUint16(portBuf, uint16(localAddr.Port))
+	reply = append(reply, portBuf...)
+
+	if _, err := tcpConn.Write(reply); err != nil {
+		return err
+	}
+
+	// Create Tunnel Stream for UDP
+	streamID := m.nextStreamID()
+	stream := &ClientStream{
+		ID:         streamID,
+		TargetAddr: "0.0.0.0",
+		TargetPort: 0,
+		dataChan:   make(chan []byte, 1000), // Larger buffer for UDP
+		closeChan:  make(chan struct{}),
+	}
+
+	m.streamsMu.Lock()
+	m.streams[streamID] = stream
+	m.streamsMu.Unlock()
+
+	defer func() {
+		m.streamsMu.Lock()
+		delete(m.streams, streamID)
+		m.streamsMu.Unlock()
+		close(stream.closeChan)
+	}()
+
+	// Send CONNECT frame (UDP Mode)
+	// Addr 0.0.0.0 signals Relay Mode on server
+	connectFrame := relay.NewConnectFrame(streamID, relay.ProtoUDP, relay.AddrTypeIPv4, "0.0.0.0", 0, relay.ProfilePersonal)
+	encFrame, _ := connectFrame.Encode()
+	if err := tunnel.Send(encFrame); err != nil {
+		return err
+	}
+
+	// Monitor TCP connection closing (signals end of association)
+	go func() {
+		buf := make([]byte, 1)
+		tcpConn.Read(buf)
+		udpListener.Close() // Force close listener to break loop
+	}()
+
+	// Bidirectional Copy
+	errChan := make(chan error, 2)
+
+	// Track client address safely
+	var clientAddr atomic.Value
+
+	// UDP -> Tunnel
+	go func() {
+		buf := make([]byte, 65535)
+		for {
+			n, addr, err := udpListener.ReadFromUDP(buf)
+			if err != nil {
+				errChan <- err
+				return
+			}
+
+			// Store/Update client address
+			clientAddr.Store(addr)
+
+			// SOCKS5 UDP Header: RSV(2) FRAG(1) ATYP(1) ...
+			if n < 3 {
+				continue
+			}
+
+			udpPayload := buf[3:n]
+
+			// Parse SOCKS5 header from udpPayload
+			if len(udpPayload) < 4 {
+				continue
+			}
+			atyp := udpPayload[0]
+			var dstAddr string
+			var dstPort uint16
+			var dataOffset int
+
+			switch atyp {
+			case 0x01: // IPv4
+				if len(udpPayload) < 1+4+2 {
+					continue
+				}
+				dstAddr = net.IP(udpPayload[1:5]).String()
+				dstPort = binary.BigEndian.Uint16(udpPayload[5:7])
+				dataOffset = 7
+			case 0x03: // Domain
+				if len(udpPayload) < 2 {
+					continue
+				}
+				dlen := int(udpPayload[1])
+				if len(udpPayload) < 2+dlen+2 {
+					continue
+				}
+				dstAddr = string(udpPayload[2 : 2+dlen])
+				dstPort = binary.BigEndian.Uint16(udpPayload[2+dlen : 2+dlen+2])
+				dataOffset = 2 + dlen + 2
+			case 0x04: // IPv6
+				if len(udpPayload) < 1+16+2 {
+					continue
+				}
+				dstAddr = net.IP(udpPayload[1:17]).String()
+				dstPort = binary.BigEndian.Uint16(udpPayload[17:19])
+				dataOffset = 19
+			default:
+				continue
+			}
+
+			data := udpPayload[dataOffset:]
+			frame := relay.NewUDPDataFrame(streamID, atyp, dstAddr, dstPort, data)
+
+			// Send to tunnel
+			enc, _ := frame.Encode()
+			if err := tunnel.Send(enc); err != nil {
+				time.Sleep(10 * time.Millisecond)
+				tunnel.Send(enc)
+			}
+		}
+	}()
+
+	// Tunnel -> UDP
+	go func() {
+		for {
+			select {
+			case payload := <-stream.dataChan:
+				// Payload is [ATYP][ADDR][PORT][DATA]
+
+				// Get Client Address
+				addrVal := clientAddr.Load()
+				if addrVal == nil {
+					// Drop if we don't know where to send yet
+					continue
+				}
+				addr := addrVal.(*net.UDPAddr)
+
+				// Construct SOCKS5 Packet: [00 00 00] + payload
+				pkt := make([]byte, 3+len(payload))
+				pkt[0], pkt[1], pkt[2] = 0, 0, 0 // RSV, FRAG
+				copy(pkt[3:], payload)
+
+				_, err := udpListener.WriteToUDP(pkt, addr)
+				if err != nil {
+					// log or ignore
+				}
+
+			case <-stream.closeChan:
+				return
+			}
+		}
+	}()
+
+	return <-errChan
 }
