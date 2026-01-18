@@ -65,7 +65,7 @@ fi
 
 # Helper to get key
 get_key_from_config() {
-    grep "$1:" "$CONF_PATH/config.yaml" 2>/dev/null | head -n1 | awk -F': ' '{print $2}' | tr -d '"' | tr -d " "
+    grep "$1:" "$CONF_PATH/config.yaml" 2>/dev/null | head -n1 | awk -F': ' '{print $2}' | tr -d '"' | tr -d " " | tr -d '\r'
 }
 
 echo "Updating configuration..."
@@ -75,10 +75,8 @@ PRIVATE_KEY=$(get_key_from_config "private_key")
 
 # 2. If missing, generate NEW one using the binary
 if [[ -z "$PRIVATE_KEY" ]]; then
-    echo "Generating new Shadow keys..."
-    # Run binary to get keys (parse output)
-    # Output format: Private Key: <hex>\nPublic Key: <hex>
-    OUTPUT=$($BIN_PATH/whispera x25519)
+    log_info "Generating new keys..."
+    OUTPUT=$(./whispera-server x25519 2>/dev/null)
     PRIVATE_KEY=$(echo "$OUTPUT" | grep "Private Key:" | awk '{print $3}')
 fi
 
@@ -129,24 +127,35 @@ api:
 EOF
 
 echo "Restarting service..."
-systemctl start whispera
-sleep 2
+systemctl restart whispera
 
-# Calculate Public Key for the banner
-PUB_KEY=$($BIN_PATH/whispera pubkey "$PRIVATE_KEY")
+# Calculate public key from private key using Python
+calc_pubkey() {
+    python3 -c "
+from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
+import binascii
+priv = X25519PrivateKey.from_private_bytes(binascii.unhexlify('$1'))
+print(priv.public_key().public_bytes_raw().hex())
+" 2>/dev/null
+}
+
+# Get public key
+PUB_KEY=$(calc_pubkey "$PRIVATE_KEY")
 SERVER_IP=$(get_public_ip)
-CONN_URL="whispera://${SERVER_IP}:8443?pub=${PUB_KEY}&transport=tcp&phantom=1&sni=random_ru&asn=1&tls=chrome"
 
 echo ""
 log_success "Whispera updated successfully!"
-echo -e "  Manage command: ${GREEN}whispera-mgmt${PLAIN}"
 echo -e "  Config file:    ${GREEN}$CONF_PATH/config.yaml${PLAIN}"
 echo -e "  Web Interface:  ${GREEN}http://${SERVER_IP}:8080${PLAIN}"
-echo ""
-echo -e "${GREEN}================================================================${PLAIN}"
-echo -e "${GREEN} CLIENT CONNECTION KEY (User Access)                            ${PLAIN}"
-echo -e "${GREEN}================================================================${PLAIN}"
-echo -e "${BLUE}${CONN_URL}${PLAIN}"
-echo -e "${GREEN}================================================================${PLAIN}"
+
+if [[ -n "$PUB_KEY" ]]; then
+    CONN_URL="whispera://${SERVER_IP}:8443?pub=${PUB_KEY}&transport=tcp&phantom=1&sni=random_ru&asn=1&tls=chrome"
+    echo ""
+    echo -e "${GREEN}================================================================${PLAIN}"
+    echo -e "${GREEN} CLIENT CONNECTION KEY                                          ${PLAIN}"
+    echo -e "${GREEN}================================================================${PLAIN}"
+    echo -e "${BLUE}${CONN_URL}${PLAIN}"
+    echo -e "${GREEN}================================================================${PLAIN}"
+fi
 echo ""
 

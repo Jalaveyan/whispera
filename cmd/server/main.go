@@ -87,22 +87,14 @@ var (
 )
 
 func main() {
-	defer func() {
-		if r := recover(); r != nil {
-			fmt.Printf("[PANIC] Whispera Server: %v\n", r)
-			os.Exit(2)
-		}
-	}()
-
-	fmt.Println("[DEBUG] Whispera Server: main() started")
-
-	// CLI Commands handling
+	// CLI Commands - handle FIRST before anything else
 	if len(os.Args) > 1 {
-		switch strings.TrimSpace(os.Args[1]) {
+		cmd := strings.TrimSpace(os.Args[1])
+		switch cmd {
 		case "x25519":
 			priv, pub, err := phantom.GenerateKeyPair()
 			if err != nil {
-				fmt.Printf("Error generating keys: %v\n", err)
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 				os.Exit(1)
 			}
 			fmt.Printf("Private Key: %s\n", hex.EncodeToString(priv))
@@ -110,13 +102,13 @@ func main() {
 			os.Exit(0)
 		case "pubkey":
 			if len(os.Args) < 3 {
-				fmt.Println("Usage: whispera-server pubkey <private_key_hex>")
+				fmt.Fprintln(os.Stderr, "Usage: whispera pubkey <private_key_hex>")
 				os.Exit(1)
 			}
-			privHex := os.Args[2]
+			privHex := strings.TrimSpace(os.Args[2])
 			priv, err := hex.DecodeString(privHex)
 			if err != nil || len(priv) != 32 {
-				fmt.Printf("Error: invalid private key (must be 32 bytes hex): %v\n", err)
+				fmt.Fprintf(os.Stderr, "Error: invalid private key\n")
 				os.Exit(1)
 			}
 			pub, _ := curve25519.X25519(priv, curve25519.Basepoint)
@@ -124,6 +116,14 @@ func main() {
 			os.Exit(0)
 		}
 	}
+
+	// Server startup
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Printf("[PANIC] Whispera Server: %v\n", r)
+			os.Exit(2)
+		}
+	}()
 
 	flag.Parse()
 
