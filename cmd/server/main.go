@@ -11,6 +11,7 @@ import (
 	"net/http"
 	_ "net/http/pprof" // Register pprof handlers
 	"os"
+	"strings"
 	"time"
 
 	"golang.org/x/crypto/curve25519"
@@ -97,7 +98,7 @@ func main() {
 
 	// CLI Commands handling
 	if len(os.Args) > 1 {
-		switch os.Args[1] {
+		switch strings.TrimSpace(os.Args[1]) {
 		case "x25519":
 			priv, pub, err := phantom.GenerateKeyPair()
 			if err != nil {
