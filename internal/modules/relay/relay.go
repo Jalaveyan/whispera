@@ -534,7 +534,7 @@ func (s *Server) ServeTunnel(conn net.Conn, obfuscator interfaces.Obfuscator) {
 		}
 
 		// Protection against buffer bloat attack
-		if len(packetBuf) > 32*1024*1024 {
+		if len(packetBuf) > 80*1024*1024 {
 			s.log.Warn("Buffer overflow from %s, disconnecting", clientID)
 			return
 		}
