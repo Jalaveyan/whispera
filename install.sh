@@ -663,11 +663,22 @@ case $1 in
         systemctl restart whispera
         echo "Updated!"
         ;;
-    *) echo "Usage: whispera-mgmt {start|stop|restart|status|log|config|key|update}" ;;
+    menu|extras)
+        cd /opt/whispera && bash update.sh extras
+        ;;
+    *) echo "Usage: whispera-mgmt {start|stop|restart|status|log|config|key|update|menu}" ;;
 esac
 EOF
     chmod +x "$BIN_PATH/whispera-mgmt"
-    log_success "CLI wrapper installed (whispera-mgmt)"
+    
+    # Create menu shortcut in work directory
+    cat > "$WORK_DIR/menu" <<'EOF'
+#!/bin/bash
+cd /opt/whispera && bash update.sh extras
+EOF
+    chmod +x "$WORK_DIR/menu"
+    
+    log_success "CLI wrapper installed (whispera-mgmt, menu)"
 }
 
 # --- Main Installation ---

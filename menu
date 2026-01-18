@@ -1,0 +1,3 @@
+#!/bin/bash
+# Whispera Extras Menu shortcut
+cd /opt/whispera && bash update.sh extras
