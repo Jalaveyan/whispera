@@ -119,10 +119,10 @@ phantom:
   dest: "cloudflare.com:443"
   server_names: []
   private_key: "$PRIVATE_KEY"
-  public_key: "$PUBLIC_KEY"
-  max_time_diff: 60
+  max_time_diff: 60000
   short_ids:
     - ""
+  fingerprint: "chrome"
 
 metrics:
   enabled: true
