@@ -221,23 +221,25 @@ setup_ssh_hardening() {
 }
 
 show_extras_menu() {
-    echo ""
-    echo -e "${BLUE}╔══════════════════════════════════════════════════════════════╗${PLAIN}"
-    echo -e "${BLUE}║              OPTIONAL EXTRAS - Select by number              ║${PLAIN}"
-    echo -e "${BLUE}╠══════════════════════════════════════════════════════════════╣${PLAIN}"
-    echo -e "${BLUE}║${PLAIN}  1. BBR           - Faster TCP (recommended)                ${BLUE}║${PLAIN}"
-    echo -e "${BLUE}║${PLAIN}  2. WARP          - Hide server IP via Cloudflare           ${BLUE}║${PLAIN}"
-    echo -e "${BLUE}║${PLAIN}  3. Fail2ban      - Protect SSH from brute-force            ${BLUE}║${PLAIN}"
-    echo -e "${BLUE}║${PLAIN}  4. Swap          - Add 2GB swap (for low-RAM servers)      ${BLUE}║${PLAIN}"
-    echo -e "${BLUE}║${PLAIN}  5. Optimize      - Tune sysctl for high performance        ${BLUE}║${PLAIN}"
-    echo -e "${BLUE}║${PLAIN}  6. Auto-update   - Daily auto-update from GitHub           ${BLUE}║${PLAIN}"
-    echo -e "${BLUE}║${PLAIN}  7. SSH Hardening - Disable password auth (keys only)       ${BLUE}║${PLAIN}"
-    echo -e "${BLUE}║${PLAIN}  0. Exit          - Done, no more extras                    ${BLUE}║${PLAIN}"
-    echo -e "${BLUE}╚══════════════════════════════════════════════════════════════╝${PLAIN}"
-    echo ""
-    
     while true; do
-        read -p "Select option [0-7]: " choice
+        echo ""
+        echo -e "${BLUE}╔══════════════════════════════════════════════════════════════╗${PLAIN}"
+        echo -e "${BLUE}║              OPTIONAL EXTRAS - Select by number              ║${PLAIN}"
+        echo -e "${BLUE}╠══════════════════════════════════════════════════════════════╣${PLAIN}"
+        echo -e "${BLUE}║${PLAIN}  1. BBR           - Faster TCP (recommended)                ${BLUE}║${PLAIN}"
+        echo -e "${BLUE}║${PLAIN}  2. WARP          - Hide server IP via Cloudflare           ${BLUE}║${PLAIN}"
+        echo -e "${BLUE}║${PLAIN}  3. Fail2ban      - Protect SSH from brute-force            ${BLUE}║${PLAIN}"
+        echo -e "${BLUE}║${PLAIN}  4. Swap          - Add 2GB swap (for low-RAM servers)      ${BLUE}║${PLAIN}"
+        echo -e "${BLUE}║${PLAIN}  5. Optimize      - Tune sysctl for high performance        ${BLUE}║${PLAIN}"
+        echo -e "${BLUE}║${PLAIN}  6. Auto-update   - Daily auto-update from GitHub           ${BLUE}║${PLAIN}"
+        echo -e "${BLUE}║${PLAIN}  7. SSH Hardening - Disable password auth (keys only)       ${BLUE}║${PLAIN}"
+        echo -e "${BLUE}╠══════════════════════════════════════════════════════════════╣${PLAIN}"
+        echo -e "${BLUE}║${PLAIN}  9. Show menu     - Refresh this menu                       ${BLUE}║${PLAIN}"
+        echo -e "${BLUE}║${PLAIN}  0. Exit                                                    ${BLUE}║${PLAIN}"
+        echo -e "${BLUE}╚══════════════════════════════════════════════════════════════╝${PLAIN}"
+        echo ""
+        
+        read -p "Select [0-7, 9]: " choice
         case $choice in
             1) setup_bbr ;;
             2) setup_warp ;;
@@ -246,13 +248,10 @@ show_extras_menu() {
             5) setup_sysctl ;;
             6) setup_autoupdate ;;
             7) setup_ssh_hardening ;;
+            9) continue ;;
             0|"") log_info "Done!"; break ;;
             *) log_warn "Invalid option" ;;
         esac
-        echo ""
-        read -p "Install another? [y/N]: " -n 1 -r REPLY
-        echo
-        [[ ! $REPLY =~ ^[Yy]$ ]] && break
     done
 }
 
