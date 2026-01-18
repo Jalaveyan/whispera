@@ -276,7 +276,7 @@ func (s *Server) handlePing(writer ResponseWriter) error {
 // handleUDPData handles UDP data frame
 func (s *Server) handleUDPData(frame *Frame, _ ResponseWriter) error {
 	// For UDP streams managed by StreamManager
-	return s.streamManager.HandleData(frame.StreamID, frame.Payload)
+	return s.streamManager.HandleUDPData(frame.StreamID, frame.Payload)
 }
 
 // handleRawPacket handles RAW_PACKET frames
@@ -322,6 +322,36 @@ func (s *Server) HealthCheck() interfaces.HealthStatus {
 	return status
 }
 
+// tunnelWriter implements ResponseWriter for ServeTunnel
+type tunnelWriter struct {
+	conn       net.Conn
+	obfuscator interfaces.Obfuscator
+	mu         *sync.Mutex
+}
+
+func (w *tunnelWriter) Write(data []byte) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	// Apply obfuscation
+	if w.obfuscator != nil {
+		obfuscated, _, err := w.obfuscator.Process(data, interfaces.DirectionOutbound)
+		if err != nil {
+			return err
+		}
+		data = obfuscated
+	}
+
+	w.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+	_, err := w.conn.Write(data)
+	w.conn.SetWriteDeadline(time.Time{})
+	return err
+}
+
+func (w *tunnelWriter) RemoteAddr() net.Addr {
+	return w.conn.RemoteAddr()
+}
+
 // ServeTunnel handles a persistent tunnel connection (e.g. TCP or Phantom)
 // It manages streams, applies obfuscation, and routes frames via the Relay Protocol.
 func (s *Server) ServeTunnel(conn net.Conn, obfuscator interfaces.Obfuscator) {
@@ -334,42 +364,28 @@ func (s *Server) ServeTunnel(conn net.Conn, obfuscator interfaces.Obfuscator) {
 	// Write lock for the tunnel
 	var writeMu sync.Mutex
 
+	// Create ResponseWriter wrapper for this tunnel
+	writer := &tunnelWriter{
+		conn:       conn,
+		obfuscator: obfuscator,
+		mu:         &writeMu,
+	}
+
+	// Create LOCAL StreamManager for this tunnel to ensure isolation and features (UDP)
+	sm := NewStreamManager(s.proxyDialer)
+	defer sm.CloseAll()
+	defer func() {
+		s.log.Info("Tunnel closed for %s", clientID)
+	}()
+
 	// Helper to send frame
 	sendFrame := func(f *Frame) error {
-		data, err := f.Encode()
+		encoded, err := f.Encode()
 		if err != nil {
 			return err
 		}
-
-		// Apply obfuscation
-		if obfuscator != nil {
-			obfuscated, _, err := obfuscator.Process(data, interfaces.DirectionOutbound)
-			if err != nil {
-				return err
-			}
-			data = obfuscated
-		}
-
-		writeMu.Lock()
-		defer writeMu.Unlock()
-		conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
-		_, err = conn.Write(data)
-		conn.SetWriteDeadline(time.Time{})
-		return err
+		return writer.Write(encoded)
 	}
-
-	// Active streams for this tunnel
-	streams := make(map[uint16]net.Conn)
-	var streamsMu sync.Mutex
-
-	defer func() {
-		streamsMu.Lock()
-		for _, c := range streams {
-			c.Close()
-		}
-		streamsMu.Unlock()
-		s.log.Info("Tunnel closed for %s", clientID)
-	}()
 
 	// Read buffer
 	buf := make([]byte, 32*1024)
@@ -465,90 +481,47 @@ func (s *Server) ServeTunnel(conn net.Conn, obfuscator interfaces.Obfuscator) {
 				return // Protocol violation
 			}
 
-			// Handle Frame
+			// Handle Frame via StreamManager
 			switch f.Type {
 			case FrameConnect:
-				// Async Connect
+				// Handle Connect Async to avoid blocking the tunnel read loop
+				// Payload parsing and stream creation happens here
 				go func(fr *Frame) {
-					// Decode Payload
-					payload, err := DecodeConnectPayload(fr.Payload)
+					// Deep copy payload if needed? Frame logic decodes it.
+					// fr.Payload is slice of buffer which might be overwritten?
+					// Wait, packetBuf is sliced. buffer 'data' comes from 'buf'.
+					// But we process 'frameData' which is a slice of 'packetBuf'.
+					// 'packetBuf' is append()ed.
+					// We shifted 'packetBuf'. The underlying array might be reused if we didn't realloc.
+					// Safest to Clone payload if passing to goroutine.
+					payloadCopy := make([]byte, len(fr.Payload))
+					copy(payloadCopy, fr.Payload)
+					fr.Payload = payloadCopy // Swap with copy
+
+					connPayload, err := DecodeConnectPayload(fr.Payload)
 					if err != nil {
 						sendFrame(NewConnectFailFrame(fr.StreamID, "Invalid payload"))
 						return
 					}
-
-					target := fmt.Sprintf("%s:%d", payload.Addr, payload.Port)
-					network := "tcp"
-					if payload.Protocol == ProtoUDP {
-						network = "udp"
-					}
-
-					// Dial
-					var dialer proxy.Dialer = proxy.Direct
-					if s.proxyDialer != nil {
-						dialer = s.proxyDialer
-					}
-
-					rConn, err := dialer.Dial(network, target)
-					if err != nil {
-						s.log.Debug("Failed to dial %s: %v", target, err)
-						sendFrame(NewConnectFailFrame(fr.StreamID, err.Error()))
+					// Permission check (optional, but good practice)
+					if connPayload.Protocol == ProtoUDP && !s.config.EnableUDP {
+						sendFrame(NewConnectFailFrame(fr.StreamID, "UDP disabled"))
 						return
 					}
 
-					streamsMu.Lock()
-					streams[fr.StreamID] = rConn
-					streamsMu.Unlock()
-
-					sendFrame(NewConnectOKFrame(fr.StreamID))
-
-					// Pump Data Target -> Tunnel
-					go func() {
-						defer rConn.Close()
-
-						// Close tunnel stream on exit
-						defer func() {
-							sendFrame(NewCloseFrame(fr.StreamID))
-							streamsMu.Lock()
-							delete(streams, fr.StreamID)
-							streamsMu.Unlock()
-						}()
-
-						// Cap buffer to safe MTU (1280) to prevent fragmentation/drops on the way back to client
-						b := make([]byte, 1280)
-						for {
-							rConn.SetReadDeadline(time.Now().Add(5 * time.Minute))
-							rn, rerr := rConn.Read(b)
-							if rn > 0 {
-								if err := sendFrame(NewDataFrame(fr.StreamID, b[:rn])); err != nil {
-									return
-								}
-							}
-							if rerr != nil {
-								return
-							}
-						}
-					}()
+					// Delegate to SM
+					sm.HandleConnect(fr.StreamID, connPayload, writer)
 				}(f)
 
 			case FrameData:
-				streamsMu.Lock()
-				rc, ok := streams[f.StreamID]
-				streamsMu.Unlock()
-				if ok {
-					rc.SetWriteDeadline(time.Now().Add(5 * time.Second))
-					rc.Write(f.Payload)
-					rc.SetWriteDeadline(time.Time{})
-				}
+				sm.HandleData(f.StreamID, f.Payload)
+
+			case FrameUDPData:
+				// UDP Support!
+				sm.HandleUDPData(f.StreamID, f.Payload)
 
 			case FrameClose:
-				streamsMu.Lock()
-				rc, ok := streams[f.StreamID]
-				delete(streams, f.StreamID)
-				streamsMu.Unlock()
-				if ok {
-					rc.Close()
-				}
+				sm.HandleClose(f.StreamID)
 
 			case FramePing:
 				sendFrame(NewPongFrame())
