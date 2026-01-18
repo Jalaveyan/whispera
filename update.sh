@@ -75,17 +75,11 @@ get_key_from_config() {
 
 echo "Updating configuration..."
 
-# 1. Try to read existing keys
-PRIVATE_KEY=$(get_key_from_config "private_key")
-PUBLIC_KEY=$(get_key_from_config "public_key")
-
-# 2. If EITHER key is missing, generate NEW pair
-if [[ -z "$PRIVATE_KEY" ]] || [[ -z "$PUBLIC_KEY" ]]; then
-    log_info "Generating new keys..."
-    OUTPUT=$(./whispera-server x25519 2>/dev/null)
-    PRIVATE_KEY=$(echo "$OUTPUT" | grep "Private Key:" | awk '{print $3}')
-    PUBLIC_KEY=$(echo "$OUTPUT" | grep "Public Key:" | awk '{print $3}')
-fi
+# Generate keys (always fresh pair to ensure match)
+log_info "Generating keys..."
+OUTPUT=$(./whispera-server x25519 2>/dev/null)
+PRIVATE_KEY=$(echo "$OUTPUT" | grep "Private Key:" | awk '{print $3}')
+PUBLIC_KEY=$(echo "$OUTPUT" | grep "Public Key:" | awk '{print $3}')
 
 # Regenerate config (Updating to latest structure)
 cat > "$CONF_PATH/config.yaml" << EOF
