@@ -94,6 +94,36 @@ func main() {
 	}()
 
 	fmt.Println("[DEBUG] Whispera Server: main() started")
+
+	// CLI Commands handling
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "x25519":
+			priv, pub, err := phantom.GenerateKeyPair()
+			if err != nil {
+				fmt.Printf("Error generating keys: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Printf("Private Key: %s\n", hex.EncodeToString(priv))
+			fmt.Printf("Public Key:  %s\n", hex.EncodeToString(pub))
+			os.Exit(0)
+		case "pubkey":
+			if len(os.Args) < 3 {
+				fmt.Println("Usage: whispera-server pubkey <private_key_hex>")
+				os.Exit(1)
+			}
+			privHex := os.Args[2]
+			priv, err := hex.DecodeString(privHex)
+			if err != nil || len(priv) != 32 {
+				fmt.Printf("Error: invalid private key (must be 32 bytes hex): %v\n", err)
+				os.Exit(1)
+			}
+			pub, _ := curve25519.X25519(priv, curve25519.Basepoint)
+			fmt.Println(hex.EncodeToString(pub))
+			os.Exit(0)
+		}
+	}
+
 	flag.Parse()
 
 	// Default to config.yaml if not specified to allow persistence

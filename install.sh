@@ -163,6 +163,7 @@ build_whispera() {
     log_success "Whispera binary installed to $BIN_PATH/whispera"
 }
 
+	# Generate new keys
 generate_keys() {
     log_info "Generating X25519 keypair..."
     
@@ -172,25 +173,32 @@ generate_keys() {
     
     mkdir -p "$CONF_PATH"
     
-    # Generate X25519 keypair using Go keygen
-    if [[ -f "./cmd/keygen/main.go" ]]; then
-        OUTPUT=$(/usr/local/go/bin/go run ./cmd/keygen/main.go -mode x25519 2>/dev/null)
-        PRIVATE_KEY=$(echo "$OUTPUT" | grep "priv=" | cut -d= -f2 | xargs)
-        PUBLIC_KEY=$(echo "$OUTPUT" | grep "pub=" | cut -d= -f2 | xargs)
+    # Generate X25519 keypair using binary (if available) or temp build
+    if [[ -f "$BIN_PATH/whispera" ]]; then
+        OUTPUT=$($BIN_PATH/whispera x25519)
+        PRIVATE_KEY=$(echo "$OUTPUT" | grep "Private Key:" | awk '{print $3}')
+        PUBLIC_KEY=$(echo "$OUTPUT" | grep "Public Key:" | awk '{print $3}')
     fi
-    
-    # Fallback: generate with openssl if Go keygen fails
-    if [[ -z "$PRIVATE_KEY" ]] || [[ -z "$PUBLIC_KEY" ]]; then
-        log_warn "Go keygen failed, using openssl fallback..."
-        PRIVATE_KEY=$(openssl rand -hex 32)
-        # For X25519, we need proper derivation - but openssl doesn't support it directly
-        # So we'll compute it at runtime in the server
-        PUBLIC_KEY="COMPUTED_AT_RUNTIME"
+
+    # Fallback if binary not ready yet (first install)
+    if [[ -z "$PRIVATE_KEY" ]]; then
+        # Use our just-built binary in work dir
+         if [[ -f "./whispera-server" ]]; then
+            OUTPUT=$(./whispera-server x25519)
+            PRIVATE_KEY=$(echo "$OUTPUT" | grep "Private Key:" | awk '{print $3}')
+            PUBLIC_KEY=$(echo "$OUTPUT" | grep "Public Key:" | awk '{print $3}')
+         else
+            # Worst case fallback to openssl (not recommended due to format diffs)
+             log_warn "Binary not found for keygen, using openssl (might be incompatible)"
+             PRIVATE_KEY=$(openssl rand -hex 32)
+         fi
     fi
     
     # Save keys
     echo "$PRIVATE_KEY" > "$CONF_PATH/server.key"
-    echo "$PUBLIC_KEY" > "$CONF_PATH/server.pub"
+    if [[ -n "$PUBLIC_KEY" ]]; then
+        echo "$PUBLIC_KEY" > "$CONF_PATH/server.pub"
+    fi
     echo "$UUID" > "$CONF_PATH/uuid"
     
     log_success "Server private key: $CONF_PATH/server.key"
@@ -203,14 +211,13 @@ generate_connection_key() {
     
     local SERVER_IP=$(get_public_ip)
     local PUBLIC_KEY=$(cat "$CONF_PATH/server.pub" 2>/dev/null)
-    local UUID=$(cat "$CONF_PATH/uuid" 2>/dev/null)
+    local PRIVATE_KEY=$(cat "$CONF_PATH/server.key" 2>/dev/null)
     
+    # Try to derive public key if missing
     if [[ -z "$PUBLIC_KEY" ]] || [[ "$PUBLIC_KEY" == "COMPUTED_AT_RUNTIME" ]]; then
-        # Derive public key from private key
-        local PRIVATE_KEY=$(cat "$CONF_PATH/server.key" 2>/dev/null)
-        if [[ -n "$PRIVATE_KEY" ]] && [[ -f "./cmd/keygen/main.go" ]]; then
-            PUBLIC_KEY=$(/usr/local/go/bin/go run ./cmd/keygen/main.go -mode x25519 -from-priv "$PRIVATE_KEY" 2>/dev/null | grep "pub=" | cut -d= -f2 | xargs)
-            echo "$PUBLIC_KEY" > "$CONF_PATH/server.pub"
+        if [[ -n "$PRIVATE_KEY" ]] && [[ -f "$BIN_PATH/whispera" ]]; then
+             PUBLIC_KEY=$($BIN_PATH/whispera pubkey "$PRIVATE_KEY")
+             echo "$PUBLIC_KEY" > "$CONF_PATH/server.pub"
         fi
     fi
     
@@ -233,7 +240,7 @@ generate_connection_key() {
     echo -e "${GREEN}║${PLAIN} Copy this key and paste it in the Whispera client:              ${GREEN}║${PLAIN}"
     echo -e "${GREEN}╚══════════════════════════════════════════════════════════════════╝${PLAIN}"
     echo ""
-    echo -e "${YELLOW}$CONNECTION_KEY${PLAIN}"
+    echo -e "${BLUE}$CONNECTION_KEY${PLAIN}"
     echo ""
 }
 

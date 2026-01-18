@@ -371,7 +371,8 @@ fn find_bin_dir() -> Result<std::path::PathBuf, String> {
         .map(|p| p.parent().unwrap().to_path_buf())
         .map_err(|e| format!("Failed to get exe path: {}", e))?;
     
-    let possible_bin_dirs = vec![
+	let possible_bin_dirs = vec![
+        exe_dir.clone(), // Check current directory first (common in flat installs)
         exe_dir.join("bin"),
         exe_dir.join("resources").join("bin"), // Standard Tauri bundle path
         exe_dir.join("..").join("..").join("bin"),
@@ -380,24 +381,29 @@ fn find_bin_dir() -> Result<std::path::PathBuf, String> {
     ];
     
     for dir in &possible_bin_dirs {
-        let client = dir.join("whispera-go-client-x86_64-pc-windows-msvc.exe");
-        let mihomo = dir.join("mihomo-x86_64-pc-windows-msvc.exe");
+        // Check for both long and short names
+        let client_long = dir.join("whispera-go-client-x86_64-pc-windows-msvc.exe");
+        let client_short = dir.join("whispera-go-client.exe");
         
-        if client.exists() && mihomo.exists() {
-            return Ok(dir.clone());
-        } else if client.exists() {
+        let mihomo_long = dir.join("mihomo-x86_64-pc-windows-msvc.exe");
+        let mihomo_short = dir.join("mihomo.exe");
+        
+        // If any variant of client exists, this is likely the bin dir
+        if client_long.exists() || client_short.exists() {
+             // If mihomo exists (optional but good) or just client
             return Ok(dir.clone());
         }
     }
     
-    // Fallback to first existing
+    // Fallback if strict check fails but dir exists (legacy behavior)
     for dir in &possible_bin_dirs {
-        if dir.exists() {
+        // Skip current dir check here as it always exists
+        if dir.exists() && dir != &exe_dir {
             return Ok(dir.clone());
         }
     }
     
-    Err("Binary directory not found".to_string())
+    Err(format!("Binary directory not found. Searched in: {:?}", possible_bin_dirs))
 }
 
 #[tauri::command]
