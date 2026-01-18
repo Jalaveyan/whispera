@@ -72,6 +72,7 @@ type ClientStream struct {
 	// Data channels
 	dataChan  chan []byte
 	closeChan chan struct{}
+	closeOnce sync.Once // Prevents panic on double-close
 
 	mu sync.Mutex
 }
@@ -249,7 +250,7 @@ func (m *Module) handleIncomingFrame(frame *relay.Frame) {
 		stream.mu.Lock()
 		stream.Closed = true
 		stream.mu.Unlock()
-		close(stream.closeChan)
+		stream.closeOnce.Do(func() { close(stream.closeChan) })
 
 	case relay.FrameData:
 		// CRITICAL FIX: Blocking send for TCP data.

@@ -111,7 +111,7 @@ func (s *Stream) Connect(ctx context.Context) error {
 	connectTimeout := 10 * time.Second
 	// ... (simplified for brevity, keep basics)
 
-	target := fmt.Sprintf("%s:%d", s.TargetAddr, s.TargetPort)
+	target := net.JoinHostPort(s.TargetAddr, fmt.Sprintf("%d", s.TargetPort))
 
 	// Action logic
 	var err error

@@ -42,7 +42,7 @@ var log = logger.Module("server")
 
 // Version information (set at build time)
 var (
-	Version   = "2.0.4"
+	Version   = "2.0.5"
 	BuildTime = "unknown"
 	GitCommit = "unknown"
 )
