@@ -9,6 +9,12 @@ The easiest way to install Whispera on Linux is via the automated installer:
 bash install.sh
 ```
 
+## Menu (Linux)
+call menu:
+```bash
+bash menu
+```
+
 ### Management
 After installation, you can manage the server using the `whispera-mgmt` command:
 - `whispera-mgmt status`   - Check server status
