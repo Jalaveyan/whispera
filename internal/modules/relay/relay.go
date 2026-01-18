@@ -512,7 +512,10 @@ func (s *Server) ServeTunnel(conn net.Conn, obfuscator interfaces.Obfuscator) {
 					}
 
 					// Delegate to SM
-					sm.HandleConnect(fr.StreamID, connPayload, writer)
+					if err := sm.HandleConnect(fr.StreamID, connPayload, writer); err != nil {
+						s.log.Warn("Stream %d connect failed: %v", fr.StreamID, err)
+						sendFrame(NewConnectFailFrame(fr.StreamID, err.Error()))
+					}
 				}(f)
 
 			case FrameData:
