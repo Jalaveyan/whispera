@@ -126,7 +126,10 @@ func (s *Stream) Connect(ctx context.Context) error {
 			}
 			s.conn = conn
 		} else {
-			dialer := &net.Dialer{Timeout: connectTimeout}
+			dialer := &net.Dialer{
+				Timeout:   connectTimeout,
+				KeepAlive: 30 * time.Second, // Enable TCP Keep-Alive
+			}
 			var conn net.Conn
 			conn, err = dialer.DialContext(ctx, "tcp", target)
 			if err != nil {
@@ -134,6 +137,16 @@ func (s *Stream) Connect(ctx context.Context) error {
 				return err
 			}
 			s.conn = conn
+		}
+
+		// Optimize TCP socket buffers for high throughput
+		if tcpConn, ok := s.conn.(*net.TCPConn); ok {
+			tcpConn.SetReadBuffer(16 * 1024 * 1024)  // 16MB read buffer
+			tcpConn.SetWriteBuffer(16 * 1024 * 1024) // 16MB write buffer
+			tcpConn.SetNoDelay(true)                 // Disable Nagle's algorithm
+			tcpConn.SetKeepAlive(true)               // Enable TCP Keep-Alive
+			tcpConn.SetKeepAlivePeriod(30 * time.Second)
+			tcpConn.SetLinger(0) // Close immediately, don't wait for unsent data
 		}
 
 		// Event: ConnectOK
