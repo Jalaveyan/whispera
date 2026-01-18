@@ -94,7 +94,7 @@ func New(cfg *Config) (*Module, error) {
 		Module:   base.NewModule(ModuleName, ModuleVersion, nil),
 		config:   cfg,
 		streams:  make(map[uint16]*ClientStream),
-		recvChan: make(chan *relay.Frame, 1000),
+		recvChan: make(chan *relay.Frame, 4000),
 	}
 
 	return m, nil
@@ -329,7 +329,7 @@ Loop:
 		ID:         streamID,
 		TargetAddr: targetAddr,
 		TargetPort: targetPort,
-		dataChan:   make(chan []byte, 1000), // Larger buffer (was 100) for 4K video bursts
+		dataChan:   make(chan []byte, 4000), // Large buffer for video bursts
 		closeChan:  make(chan struct{}),
 	}
 
@@ -507,7 +507,7 @@ func (m *Module) handleUDPConnection(tcpConn net.Conn) error {
 		ID:         streamID,
 		TargetAddr: "0.0.0.0",
 		TargetPort: 0,
-		dataChan:   make(chan []byte, 1000), // Larger buffer for UDP
+		dataChan:   make(chan []byte, 4000), // Large buffer for UDP
 		closeChan:  make(chan struct{}),
 	}
 

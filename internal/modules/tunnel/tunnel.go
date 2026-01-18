@@ -224,7 +224,7 @@ func New(cfg *Config) (*Manager, error) {
 		config:      cfg,
 		state:       StateDisconnected,
 		streamConns: make(map[uint16]*managedConn),
-		readCh:      make(chan []byte, 1000), // Buffered to absorb bursts
+		readCh:      make(chan []byte, 4000), // Large buffer to absorb bursts
 	}
 
 	// Initialize ASN Bypass dialer if enabled
