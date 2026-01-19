@@ -1072,9 +1072,12 @@ func (m *Manager) readLoop(mc *managedConn) {
 		// 4.5. Handle PONG frames (Type 0x07) - update lastPong time
 		if len(frameData) >= 3 && frameData[2] == 0x07 {
 			m.lastPong = time.Now()
-			log.Debug("Received PONG from server")
+			log.Info("Received PONG from server")
 			continue // Don't send to readCh, just update timestamp
 		}
+
+		// Any valid frame from server counts as activity
+		m.lastPong = time.Now()
 
 		// 5. Send atomic frame
 		select {
@@ -1385,12 +1388,13 @@ func (m *Manager) stopKeepalive() {
 
 // sendKeepalive sends a keepalive packet (proper PING frame)
 func (m *Manager) sendKeepalive() {
-	// Check connection health - if no PONG received in 5 seconds, reconnect
+	// Check connection health - if no data received in 60 seconds, reconnect
+	// This is more lenient than checking just for PONG, since any server response proves liveness
 	if !m.lastPong.IsZero() && m.GetState() == StateConnected {
 		silentDuration := time.Since(m.lastPong)
-		maxSilence := 5 * time.Second
+		maxSilence := 60 * time.Second // INCREASED: 60 seconds is more reasonable for real-world conditions
 		if silentDuration > maxSilence {
-			log.Warn("No PONG received in %s (max %s), triggering reconnect", silentDuration, maxSilence)
+			log.Warn("No data received in %s (max %s), triggering reconnect", silentDuration, maxSilence)
 			go m.Reconnect(context.Background())
 			return
 		}
