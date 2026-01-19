@@ -6,6 +6,8 @@ VPN-туннель
 ## Quick Start (Linux)
 The easiest way to install Whispera on Linux is via the automated installer:
 ```bash
+git clone https://github.com/Jalaveyan/Whispera.git
+cd Whispera
 bash install.sh
 ```
 
