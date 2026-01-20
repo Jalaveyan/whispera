@@ -353,8 +353,8 @@ Loop:
 	// CRITICAL: Optimize Local TCP Connection (Browser <-> Client)
 	// The default buffer is too small for 500Mbps, causing the internal buffer to fill up.
 	if tcpConn, ok := clientConn.(*net.TCPConn); ok {
-		tcpConn.SetReadBuffer(5 * 1024 * 1024)  // 5MB
-		tcpConn.SetWriteBuffer(5 * 1024 * 1024) // 5MB
+		tcpConn.SetReadBuffer(12 * 1024 * 1024)  // 12MB
+		tcpConn.SetWriteBuffer(12 * 1024 * 1024) // 12MB
 		tcpConn.SetNoDelay(true)
 	}
 
@@ -363,7 +363,7 @@ Loop:
 		ID:         streamID,
 		TargetAddr: targetAddr,
 		TargetPort: targetPort,
-		dataChan:   make(chan DataPacket, 2048), // Optimized: 2048 * 64KB = 128MB buffer per stream
+		dataChan:   make(chan DataPacket, 10000), // Optimized: 10000 * 64KB = ~640MB buffer per stream. "Heavy Duty" mode.
 		closeChan:  make(chan struct{}),
 	}
 
@@ -572,7 +572,7 @@ func (m *Module) handleUDPConnection(tcpConn net.Conn) error {
 		ID:         streamID,
 		TargetAddr: "0.0.0.0",
 		TargetPort: 0,
-		dataChan:   make(chan DataPacket, 2048), // Optimized: 128MB buffer
+		dataChan:   make(chan DataPacket, 10000), // Optimized: 10000 packets for UDP
 		closeChan:  make(chan struct{}),
 	}
 
