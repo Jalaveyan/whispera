@@ -378,8 +378,8 @@ Loop:
 	// CRITICAL: Optimize Local TCP Connection (Browser <-> Client)
 	// The default buffer is too small for 500Mbps, causing the internal buffer to fill up.
 	if tcpConn, ok := clientConn.(*net.TCPConn); ok {
-		tcpConn.SetReadBuffer(12 * 1024 * 1024)  // 12MB
-		tcpConn.SetWriteBuffer(12 * 1024 * 1024) // 12MB
+		tcpConn.SetReadBuffer(512 * 1024)  // 512KB
+		tcpConn.SetWriteBuffer(512 * 1024) // 512KB
 		tcpConn.SetNoDelay(true)
 	}
 

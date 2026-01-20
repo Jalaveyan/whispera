@@ -153,7 +153,7 @@ func (s *Stream) Connect(ctx context.Context) error {
 			tcpConn.SetNoDelay(true)           // Disable Nagle's algorithm
 			tcpConn.SetKeepAlive(true)         // Enable TCP Keep-Alive
 			tcpConn.SetKeepAlivePeriod(30 * time.Second)
-			tcpConn.SetLinger(0) // Close immediately, don't wait for unsent data
+
 		}
 
 		// Event: ConnectOK
