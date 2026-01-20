@@ -176,9 +176,41 @@ func (m *Module) SetTunnel(tunnel TunnelManager) {
 	stdlog.Printf("[SOCKS5] Tunnel set for encrypted relay routing")
 }
 
-// receiveFrames receives frames from tunnel and dispatches to streams
+// receiveFrames receives frames from tunnel and dispatches to streams using Sharded Workers
 func (m *Module) receiveFrames() {
-	stdlog.Printf("[SOCKS5] receiveFrames started (Zero-Copy Mode)")
+	stdlog.Printf("[SOCKS5] receiveFrames started (Sharded Worker Mode)")
+
+	type packetReq struct {
+		pkt    []byte
+		tunnel TunnelManager
+	}
+
+	const numWorkers = 16
+	workerChans := make([]chan packetReq, numWorkers)
+
+	// Start Workers
+	for i := 0; i < numWorkers; i++ {
+		workerChans[i] = make(chan packetReq, 2048) // Buffer per worker to absorb micro-bursts
+		go func(ch chan packetReq) {
+			for req := range ch {
+				pkt := req.pkt
+				tunnel := req.tunnel
+
+				// Parse Header (already checked len in dispatcher)
+				streamID := binary.BigEndian.Uint16(pkt[0:2])
+				fType := pkt[2]
+				payloadLen := binary.BigEndian.Uint32(pkt[4:8])
+
+				// Construct DataPacket
+				dp := DataPacket{
+					Raw:     pkt,
+					Payload: pkt[8 : 8+int(payloadLen)],
+				}
+
+				m.handleIncomingFrame(streamID, fType, dp, tunnel)
+			}
+		}(workerChans[i])
+	}
 
 	for {
 		m.mu.RLock()
@@ -200,42 +232,39 @@ func (m *Module) receiveFrames() {
 			continue
 		}
 
-		// Parse Header (8 bytes)
-		// [StreamID:2][Type:1]...
+		// Parse Header (8 bytes) to get StreamID for sharding
 		if len(pkt) < 8 {
 			tunnel.Recycle(pkt)
 			continue
 		}
 
 		streamID := binary.BigEndian.Uint16(pkt[0:2])
-		fType := pkt[2]
 		payloadLen := binary.BigEndian.Uint32(pkt[4:8])
 
-		// Safety check
+		// Safety check length
 		if int(payloadLen)+8 > len(pkt) {
 			tunnel.Recycle(pkt)
 			continue
 		}
 
-		// Construct DataPacket wrapper
-		// We pass 'pkt' ownership to the stream
-		dp := DataPacket{
-			Raw:     pkt,
-			Payload: pkt[8 : 8+int(payloadLen)],
-		}
+		// Dispatch to Worker
+		shardID := streamID % uint16(numWorkers)
 
-		m.handleIncomingFrame(streamID, fType, dp, tunnel)
+		// BLOCKING Dispatch to Worker Queue.
+		// If a specific worker is backed up, we block here.
+		// This means severe congestion on one shard CAN eventually block the dispatcher.
+		// However, with 16 workers and 2048 queue size, this is highly resilient.
+		workerChans[shardID] <- packetReq{pkt: pkt, tunnel: tunnel}
 	}
 }
 
-// handleIncomingFrame processes frames received from server
+// handleIncomingFrame processes frames received from server (Executed by Worker)
 func (m *Module) handleIncomingFrame(streamID uint16, fType byte, dp DataPacket, tunnel TunnelManager) {
 	m.streamsMu.RLock()
 	stream, exists := m.streams[streamID]
 	m.streamsMu.RUnlock()
 
 	if !exists {
-		// Recycle unwrapped packet if stream invalid
 		tunnel.Recycle(dp.Raw)
 		return
 	}
@@ -243,15 +272,15 @@ func (m *Module) handleIncomingFrame(streamID uint16, fType byte, dp DataPacket,
 	switch fType {
 	case relay.FrameConnectOK:
 		if m.config.Debug {
-			stdlog.Printf("[SOCKS5] Stream %d connected (ConnectOK received)", stream.ID)
+			stdlog.Printf("[SOCKS5] Stream %d connected", stream.ID)
 		}
 		stream.mu.Lock()
 		stream.Connected = true
 		stream.mu.Unlock()
-		tunnel.Recycle(dp.Raw) // Control frame, done with it
+		tunnel.Recycle(dp.Raw)
 
 	case relay.FrameConnectFail:
-		stdlog.Printf("[SOCKS5] Stream %d connect failed", stream.ID) // Simplified log (msg in payload but we recycle)
+		stdlog.Printf("[SOCKS5] Stream %d connect failed", stream.ID)
 		stream.mu.Lock()
 		stream.Closed = true
 		stream.mu.Unlock()
@@ -259,16 +288,12 @@ func (m *Module) handleIncomingFrame(streamID uint16, fType byte, dp DataPacket,
 		tunnel.Recycle(dp.Raw)
 
 	case relay.FrameData, relay.FrameUDPData:
-		// Push DataPacket to channel (NON-BLOCKING)
+		// Push DataPacket to channel (BLOCKING with Backpressure)
+		// We are now inside a Sharded Worker. Blocking here only stalls this shard (1/16th of streams).
 		select {
 		case stream.dataChan <- dp:
+			// Success
 		case <-stream.closeChan:
-			tunnel.Recycle(dp.Raw)
-		default:
-			// Channel FULL! Drop packet to avoid Head-of-Line Blocking
-			// This is critical for global stability.
-			// TCP will handle retransmission for this specific stream.
-			stdlog.Printf("[SOCKS5] Stream %d buffer full, dropping packet", stream.ID)
 			tunnel.Recycle(dp.Raw)
 		}
 
@@ -507,15 +532,31 @@ Loop:
 
 	// Server -> Client (from tunnel via stream.dataChan)
 	go func() {
+		var pendingWindow uint32
 		for {
 			select {
 			case dp := <-stream.dataChan:
-				if _, err := clientConn.Write(dp.Payload); err != nil {
+				n, err := clientConn.Write(dp.Payload)
+				if err != nil {
 					tunnel.Recycle(dp.Raw) // Recycle on error
 					errChan <- err
 					return
 				}
 				tunnel.Recycle(dp.Raw) // Recycle after write
+
+				// Flow Control: Send WINDOW_UPDATE
+				if n > 0 {
+					pendingWindow += uint32(n)
+					if pendingWindow >= 65536 { // 64KB threshold
+						// Create and send WindowUpdate frame
+						// We use a simple allocation here as it happens relatively infrequently (once per 64KB)
+						wf := relay.NewWindowUpdateFrame(streamID, pendingWindow)
+						if data, err := wf.Encode(); err == nil {
+							tunnel.Send(data)
+						}
+						pendingWindow = 0
+					}
+				}
 			case <-stream.closeChan:
 				// GRACEFUL SHUTDOWN: Try CloseWrite first to send FIN instead of RST
 				if tcpConn, ok := clientConn.(*net.TCPConn); ok {

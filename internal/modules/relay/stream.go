@@ -31,6 +31,10 @@ type Stream struct {
 	// UDP connection (for UDP relay)
 	udpConn *net.UDPConn
 
+	// Flow Control
+	sendWindow int64
+	windowCond *sync.Cond
+
 	// Channels
 	incoming  chan []byte // Data from tunnel to target
 	outgoing  chan []byte // Data from target to tunnel
@@ -60,6 +64,7 @@ func NewStream(id uint16, proto uint8, addr string, port uint16, profile uint8, 
 		TargetAddr: addr,
 		TargetPort: port,
 		writer:     writer,
+		sendWindow: 2 * 1024 * 1024, // 2MB initial window
 		incoming:   make(chan []byte, 16384),
 		outgoing:   make(chan []byte, 16384),
 		closeChan:  make(chan struct{}),
@@ -67,6 +72,7 @@ func NewStream(id uint16, proto uint8, addr string, port uint16, profile uint8, 
 		lastT:      time.Now(),
 		dialer:     dialer,
 	}
+	s.windowCond = sync.NewCond(&s.mu)
 	s.fsm = NewFSM(s)
 	return s
 }
@@ -241,6 +247,17 @@ func (s *Stream) Write(data []byte) error {
 	return ErrStreamClosed
 }
 
+// UpdateWindow increases the flow control window and wakes up blocked writers
+func (s *Stream) UpdateWindow(increment uint32) {
+	s.mu.Lock()
+	s.sendWindow += int64(increment)
+	if s.sendWindow > 50*1024*1024 { // Cap at 50MB to prevent overflow
+		s.sendWindow = 50 * 1024 * 1024
+	}
+	s.windowCond.Broadcast() // Wake up writer
+	s.mu.Unlock()
+}
+
 // HandleUDPData handles incoming UDP_DATA frame (with destination)
 func (s *Stream) HandleUDPData(data []byte) error {
 	s.mu.RLock()
@@ -351,6 +368,23 @@ func (s *Stream) readFromTarget() {
 			s.bytesIn += uint64(n)
 			s.lastT = time.Now()
 
+			// Flow Control (TCP only)
+			if s.Protocol == ProtoTCP {
+				s.mu.Lock()
+				for s.sendWindow <= 0 {
+					// Broadcast sent on Close(), check if alive
+					select {
+					case <-s.closeChan:
+						s.mu.Unlock()
+						return
+					default:
+					}
+					s.windowCond.Wait()
+				}
+				s.sendWindow -= int64(n)
+				s.mu.Unlock()
+			}
+
 			// Send data frame back through tunnel (make a copy to avoid buffer reuse issues)
 			data := make([]byte, n)
 			copy(data, buf[:n])
@@ -455,6 +489,7 @@ func (s *Stream) Close() {
 func (s *Stream) cleanupResources() {
 	s.closeOnce.Do(func() {
 		close(s.closeChan)
+		s.windowCond.Broadcast() // Wake up any waiters on Flow Control
 	})
 
 	// Close connections
@@ -548,6 +583,17 @@ func (sm *StreamManager) HandleUDPData(streamID uint16, data []byte) error {
 	}
 
 	return stream.HandleUDPData(data)
+}
+
+// HandleWindowUpdate handles incoming WINDOW_UPDATE frame
+func (sm *StreamManager) HandleWindowUpdate(streamID uint16, increment uint32) {
+	sm.mu.RLock()
+	stream, ok := sm.streams[streamID]
+	sm.mu.RUnlock()
+
+	if ok {
+		stream.UpdateWindow(increment)
+	}
 }
 
 // HandleClose handles incoming CLOSE frame

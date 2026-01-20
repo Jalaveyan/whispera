@@ -34,15 +34,16 @@ import (
 
 // Frame types
 const (
-	FrameConnect     uint8 = 0x01 // Request connection to target
-	FrameConnectOK   uint8 = 0x02 // Connection successful
-	FrameConnectFail uint8 = 0x03 // Connection failed
-	FrameData        uint8 = 0x04 // Data transfer
-	FrameClose       uint8 = 0x05 // Close stream
-	FramePing        uint8 = 0x06 // Keep-alive ping
-	FramePong        uint8 = 0x07 // Keep-alive pong
-	FrameUDPData     uint8 = 0x08 // UDP data (for DNS etc)
-	FrameRawPacket   uint8 = 0x09 // Raw IP packet (TCP/UDP/ICMP/etc from TUN)
+	FrameConnect      uint8 = 0x01 // Request connection to target
+	FrameConnectOK    uint8 = 0x02 // Connection successful
+	FrameConnectFail  uint8 = 0x03 // Connection failed
+	FrameData         uint8 = 0x04 // Data transfer
+	FrameClose        uint8 = 0x05 // Close stream
+	FramePing         uint8 = 0x06 // Keep-alive ping
+	FramePong         uint8 = 0x07 // Keep-alive pong
+	FrameUDPData      uint8 = 0x08 // UDP data (for DNS etc)
+	FrameRawPacket    uint8 = 0x09 // Raw IP packet (TCP/UDP/ICMP/etc from TUN)
+	FrameWindowUpdate uint8 = 0x0A // Flow control window update
 )
 
 // Frame flags
@@ -104,6 +105,8 @@ func FrameTypeName(t uint8) string {
 		return "UDP_DATA"
 	case FrameRawPacket:
 		return "RAW_PACKET"
+	case FrameWindowUpdate:
+		return "WINDOW_UPDATE"
 	default:
 		return fmt.Sprintf("UNKNOWN(%d)", t)
 	}
@@ -522,4 +525,29 @@ func ParseRawPacketFrame(f *Frame) (packetID uint32, rawPacket []byte, err error
 	rawPacket = f.Payload[4:]
 
 	return packetID, rawPacket, nil
+}
+
+// NewWindowUpdateFrame creates a WINDOW_UPDATE frame
+// Payload: [Increment:4 bytes]
+func NewWindowUpdateFrame(streamID uint16, increment uint32) *Frame {
+	payload := make([]byte, 4)
+	binary.BigEndian.PutUint32(payload, increment)
+
+	return &Frame{
+		StreamID: streamID,
+		Type:     FrameWindowUpdate,
+		Flags:    0,
+		Payload:  payload,
+	}
+}
+
+// ParseWindowUpdateFrame parses a WINDOW_UPDATE frame
+func ParseWindowUpdateFrame(f *Frame) (uint32, error) {
+	if f.Type != FrameWindowUpdate {
+		return 0, ErrInvalidFrame
+	}
+	if len(f.Payload) < 4 {
+		return 0, ErrInvalidFrame
+	}
+	return binary.BigEndian.Uint32(f.Payload), nil
 }

@@ -527,6 +527,12 @@ func (s *Server) ServeTunnel(conn net.Conn, obfuscator interfaces.Obfuscator) {
 
 			case FramePing:
 				sendFrame(NewPongFrame())
+
+			case FrameWindowUpdate:
+				if len(f.Payload) >= 4 {
+					increment := binary.BigEndian.Uint32(f.Payload)
+					sm.HandleWindowUpdate(f.StreamID, increment)
+				}
 			}
 		}
 
