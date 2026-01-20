@@ -1184,6 +1184,23 @@ func (m *Manager) Receive(buf []byte) (int, error) {
 	return n, nil
 }
 
+// ReceivePacket returns a packet directly from the channel (Zero Copy)
+// Caller MUST call Recycle(packet) when done.
+func (m *Manager) ReceivePacket() ([]byte, error) {
+	packet, ok := <-m.readCh
+	if !ok {
+		return nil, fmt.Errorf("tunnel closed")
+	}
+	return packet, nil
+}
+
+// Recycle returns a buffer to the pool
+func (m *Manager) Recycle(buf []byte) {
+	if cap(buf) == 66048 {
+		bufferPool.Put(buf)
+	}
+}
+
 // Send sends data through the tunnel
 func (m *Manager) Send(data []byte) error {
 	// Route to correct connection

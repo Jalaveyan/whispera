@@ -51,14 +51,6 @@ type Module struct {
 	recvChan chan *relay.Frame
 }
 
-// recvBufferPool recycles 16MB buffers for the main receiver loop
-var recvBufferPool = sync.Pool{
-	New: func() interface{} {
-		// 16MB buffer as requested for burst tolerance
-		return make([]byte, 16*1024*1024)
-	},
-}
-
 // streamBufferPool recycles 64KB+ buffers for individual client streams
 var streamBufferPool = sync.Pool{
 	New: func() interface{} {
@@ -76,6 +68,16 @@ type TunnelManager interface {
 	Send(data []byte) error
 	// Receive receives data from the tunnel
 	Receive(buf []byte) (int, error)
+	// ReceivePacket returns zero-copy packet
+	ReceivePacket() ([]byte, error)
+	// Recycle returns packet to pool
+	Recycle(buf []byte)
+}
+
+// DataPacket wrapper to pass ownership + payload range
+type DataPacket struct {
+	Raw     []byte // The full buffer to recycle
+	Payload []byte // The payload slice to write
 }
 
 // ClientStream represents a client-side stream (one SOCKS5 connection)
@@ -86,8 +88,8 @@ type ClientStream struct {
 	Connected  bool
 	Closed     bool
 
-	// Data channels
-	dataChan  chan []byte
+	// Data channels - changed to interface{} to support DataPacket or []byte (legacy)
+	dataChan  chan interface{}
 	closeChan chan struct{}
 	closeOnce sync.Once // Prevents panic on double-close
 
@@ -176,17 +178,7 @@ func (m *Module) SetTunnel(tunnel TunnelManager) {
 
 // receiveFrames receives frames from tunnel and dispatches to streams
 func (m *Module) receiveFrames() {
-	// OPTIMIZATION: Use sync.Pool for the large 16MB buffer
-	// This avoids allocating 16MB every time the tunnel reconnects
-	packetBuf := recvBufferPool.Get().([]byte)
-	defer recvBufferPool.Put(packetBuf)
-
-	const bufferSize = 16 * 1024 * 1024 // Keep constant for logic references
-	// Reset buffer logic (though we just overwrite what we need, indices handle validity)
-	dataStart := 0
-	dataEnd := 0
-
-	stdlog.Printf("[SOCKS5] receiveFrames goroutine started (Fixed Buffer Optimization)")
+	stdlog.Printf("[SOCKS5] receiveFrames started (Zero-Copy Mode)")
 
 	for {
 		m.mu.RLock()
@@ -198,102 +190,57 @@ func (m *Module) receiveFrames() {
 			continue
 		}
 
-		// If buffer is full or near full, we need to shift data to the beginning
-		// We trigger shift if free space at the end is less than 64KB (max frame size)
-		if len(packetBuf)-dataEnd < 65536 {
-			if dataStart > 0 {
-				// Compact buffer: move active data to the front
-				copy(packetBuf, packetBuf[dataStart:dataEnd])
-				dataEnd -= dataStart
-				dataStart = 0
-			} else {
-				// Buffer completely full, this shouldn't happen with 1MB buffer and fast processing
-				// Drop data to recover
-				stdlog.Printf("[SOCKS5] Receive buffer full! Dropping %d bytes", dataEnd)
-				dataEnd = 0
-				dataStart = 0
-			}
-		}
-
-		// Read directly into the free space at the end of our buffer
-		// tunnel.Receive writes directly here, so NO intermediate copy
-		n, err := tunnel.Receive(packetBuf[dataEnd:])
+		// Zero-Copy Read
+		pkt, err := tunnel.ReceivePacket()
 		if err != nil {
 			if err != io.EOF {
-				if netErr, ok := err.(net.Error); !ok || !netErr.Timeout() {
-					stdlog.Printf("[SOCKS5] Receive error: %v", err)
-				}
+				// Log?
 			}
 			time.Sleep(50 * time.Millisecond)
 			continue
 		}
 
-		if n > 0 {
-			dataEnd += n
+		// Parse Header (8 bytes)
+		// [StreamID:2][Type:1]...
+		if len(pkt) < 8 {
+			tunnel.Recycle(pkt)
+			continue
 		}
 
-		// Process all complete frames in buffer
-		for {
-			activeDataLen := dataEnd - dataStart
-			if activeDataLen < relay.HeaderSize {
-				break // Not enough for header
-			}
+		streamID := binary.BigEndian.Uint16(pkt[0:2])
+		fType := pkt[2]
+		payloadLen := binary.BigEndian.Uint32(pkt[4:8])
 
-			// Peek length directly from buffer
-			// packetBuf[dataStart+4 : dataStart+8]
-			payloadLen := binary.BigEndian.Uint32(packetBuf[dataStart+4 : dataStart+8])
-			frameSize := relay.HeaderSize + int(payloadLen)
-
-			if activeDataLen < frameSize {
-				break // Not enough for full frame
-			}
-
-			// We have a full frame.
-			// Ideally we would pass a slice without copying, BUT handleIncomingFrame
-			// might pass the payload to a channel, which is async.
-			// If we modify packetBuf later, we race. So we MUST copy the frame payload here.
-			// However, we only copy the PAYLOAD, not the whole buffer structure.
-
-			// Extract frame header fields manually to avoid 'relay.Decode' allocation overhead
-			streamID := binary.BigEndian.Uint16(packetBuf[dataStart : dataStart+2])
-			fType := packetBuf[dataStart+2]
-			// fFlags := packetBuf[dataStart+3]
-
-			payload := make([]byte, payloadLen)
-			copy(payload, packetBuf[dataStart+relay.HeaderSize:dataStart+frameSize])
-
-			frame := &relay.Frame{
-				StreamID: streamID,
-				Type:     fType,
-				Payload:  payload,
-			}
-
-			m.handleIncomingFrame(frame)
-
-			// Advance start pointer
-			dataStart += frameSize
+		// Safety check
+		if int(payloadLen)+8 > len(pkt) {
+			tunnel.Recycle(pkt)
+			continue
 		}
 
-		// If buffer is empty, reset pointers to 0 to maximize read space
-		if dataStart == dataEnd {
-			dataStart = 0
-			dataEnd = 0
+		// Construct DataPacket wrapper
+		// We pass 'pkt' ownership to the stream
+		dp := DataPacket{
+			Raw:     pkt,
+			Payload: pkt[8 : 8+int(payloadLen)],
 		}
+
+		m.handleIncomingFrame(streamID, fType, dp, tunnel)
 	}
 }
 
 // handleIncomingFrame processes frames received from server
-func (m *Module) handleIncomingFrame(frame *relay.Frame) {
+func (m *Module) handleIncomingFrame(streamID uint16, fType byte, dp DataPacket, tunnel TunnelManager) {
 	m.streamsMu.RLock()
-	stream, exists := m.streams[frame.StreamID]
+	stream, exists := m.streams[streamID]
 	m.streamsMu.RUnlock()
 
 	if !exists {
-		// Log removed to reduce noise for late frames
+		// Recycle unwrapped packet if stream invalid
+		tunnel.Recycle(dp.Raw)
 		return
 	}
 
-	switch frame.Type {
+	switch fType {
 	case relay.FrameConnectOK:
 		if m.config.Debug {
 			stdlog.Printf("[SOCKS5] Stream %d connected (ConnectOK received)", stream.ID)
@@ -301,33 +248,22 @@ func (m *Module) handleIncomingFrame(frame *relay.Frame) {
 		stream.mu.Lock()
 		stream.Connected = true
 		stream.mu.Unlock()
+		tunnel.Recycle(dp.Raw) // Control frame, done with it
 
 	case relay.FrameConnectFail:
-		reason := string(frame.Payload)
-		stdlog.Printf("[SOCKS5] Stream %d connect failed: %s", stream.ID, reason)
+		stdlog.Printf("[SOCKS5] Stream %d connect failed", stream.ID) // Simplified log (msg in payload but we recycle)
 		stream.mu.Lock()
 		stream.Closed = true
 		stream.mu.Unlock()
 		stream.closeOnce.Do(func() { close(stream.closeChan) })
+		tunnel.Recycle(dp.Raw)
 
-	case relay.FrameData:
-		// CRITICAL FIX: Blocking send for TCP data.
-		// Dropping TCP packets causes stream corruption and stalls (YouTube buffering).
-		// Backpressure will propagate to the tunnel if channel fills.
+	case relay.FrameData, relay.FrameUDPData:
+		// Push DataPacket to channel
 		select {
-		case stream.dataChan <- frame.Payload:
+		case stream.dataChan <- dp:
 		case <-stream.closeChan:
-			// Stream closed while waiting
-		}
-
-	case relay.FrameUDPData:
-		// Route UDP data to stream
-		select {
-		case stream.dataChan <- frame.Payload:
-		default:
-			if m.config.Debug {
-				stdlog.Printf("[SOCKS5] Stream %d UDP data dropped", stream.ID)
-			}
+			tunnel.Recycle(dp.Raw)
 		}
 
 	case relay.FrameClose:
@@ -335,6 +271,10 @@ func (m *Module) handleIncomingFrame(frame *relay.Frame) {
 		stream.Closed = true
 		stream.mu.Unlock()
 		close(stream.closeChan)
+		tunnel.Recycle(dp.Raw)
+
+	default:
+		tunnel.Recycle(dp.Raw)
 	}
 }
 
@@ -409,7 +349,7 @@ Loop:
 		ID:         streamID,
 		TargetAddr: targetAddr,
 		TargetPort: targetPort,
-		dataChan:   make(chan []byte, 32000), // Large buffer for video bursts
+		dataChan:   make(chan interface{}, 32000), // Large buffer for video bursts
 		closeChan:  make(chan struct{}),
 	}
 
@@ -555,10 +495,15 @@ Loop:
 	go func() {
 		for {
 			select {
-			case data := <-stream.dataChan:
-				if _, err := clientConn.Write(data); err != nil {
-					errChan <- err
-					return
+			case item := <-stream.dataChan:
+				// item is DataPacket
+				if dp, ok := item.(DataPacket); ok {
+					if _, err := clientConn.Write(dp.Payload); err != nil {
+						tunnel.Recycle(dp.Raw) // Recycle on error
+						errChan <- err
+						return
+					}
+					tunnel.Recycle(dp.Raw) // Recycle after write
 				}
 			case <-stream.closeChan:
 				errChan <- io.EOF
@@ -616,7 +561,7 @@ func (m *Module) handleUDPConnection(tcpConn net.Conn) error {
 		ID:         streamID,
 		TargetAddr: "0.0.0.0",
 		TargetPort: 0,
-		dataChan:   make(chan []byte, 32000), // Large buffer for UDP
+		dataChan:   make(chan interface{}, 32000), // Large buffer for UDP
 		closeChan:  make(chan struct{}),
 	}
 
@@ -727,13 +672,21 @@ func (m *Module) handleUDPConnection(tcpConn net.Conn) error {
 	go func() {
 		for {
 			select {
-			case payload := <-stream.dataChan:
+			case item := <-stream.dataChan:
+				// item is DataPacket
+				dp, ok := item.(DataPacket)
+				if !ok {
+					continue
+				}
+				payload := dp.Payload
+
 				// Payload is [ATYP][ADDR][PORT][DATA]
 
 				// Get Client Address
 				addrVal := clientAddr.Load()
 				if addrVal == nil {
 					// Drop if we don't know where to send yet
+					tunnel.Recycle(dp.Raw)
 					continue
 				}
 				addr := addrVal.(*net.UDPAddr)
@@ -747,6 +700,7 @@ func (m *Module) handleUDPConnection(tcpConn net.Conn) error {
 				if err != nil {
 					// log or ignore
 				}
+				tunnel.Recycle(dp.Raw)
 
 			case <-stream.closeChan:
 				return
