@@ -259,10 +259,16 @@ func (m *Module) handleIncomingFrame(streamID uint16, fType byte, dp DataPacket,
 		tunnel.Recycle(dp.Raw)
 
 	case relay.FrameData, relay.FrameUDPData:
-		// Push DataPacket to channel
+		// Push DataPacket to channel (NON-BLOCKING)
 		select {
 		case stream.dataChan <- dp:
 		case <-stream.closeChan:
+			tunnel.Recycle(dp.Raw)
+		default:
+			// Channel FULL! Drop packet to avoid Head-of-Line Blocking
+			// This is critical for global stability.
+			// TCP will handle retransmission for this specific stream.
+			stdlog.Printf("[SOCKS5] Stream %d buffer full, dropping packet", stream.ID)
 			tunnel.Recycle(dp.Raw)
 		}
 
