@@ -282,8 +282,28 @@ func (m *Module) handleIncomingFrame(frame *relay.Frame) {
 
 // nextStreamID returns next unique stream ID
 func (m *Module) nextStreamID() uint16 {
-	id := atomic.AddUint32(&m.streamID, 1)
-	return uint16(id % 65535)
+	for {
+		id := atomic.AddUint32(&m.streamID, 1)
+		sid := uint16(id % 65535)
+		if sid == 0 {
+			continue
+		}
+
+		// Critical Fix: Skip StreamIDs that mimic TLS headers.
+		// The tunnel reader peeks 5 bytes to detect TLS (masquerade/handshake).
+		// Frame Header: [StreamID:2][Type:1]...
+		// If StreamID in BigEndian is [0x14..0x17][0x00..0x04], the reader
+		// misinterprets it as a TLS record and discards it.
+		// Range: HighByte 20-23 (0x14-0x17), LowByte 0-3 (0x00-0x03) (Checks <= 0x04)
+		hb := sid >> 8
+		lb := sid & 0xFF
+		if hb >= 0x14 && hb <= 0x17 && lb <= 0x04 {
+			stdlog.Printf("[SOCKS5] Skipping unsafe StreamID: %d (0x%04x) to avoid TLS collision", sid, sid)
+			continue
+		}
+
+		return sid
+	}
 }
 
 // handleConnection handles a SOCKS5 connection request through relay protocol

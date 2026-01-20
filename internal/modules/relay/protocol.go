@@ -333,9 +333,18 @@ func (g *StreamIDGenerator) Next() uint16 {
 	for {
 		id := atomic.AddUint32(&g.counter, 1)
 		streamID := uint16(id % 65535)
-		if streamID != 0 {
-			return streamID
+		if streamID == 0 {
+			continue
 		}
+
+		// Avoid TLS Header collision (See tunnel.go readLoop)
+		hb := streamID >> 8
+		lb := streamID & 0xFF
+		if hb >= 0x14 && hb <= 0x17 && lb <= 0x04 {
+			continue
+		}
+
+		return streamID
 	}
 }
 
