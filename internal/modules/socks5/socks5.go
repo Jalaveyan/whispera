@@ -275,7 +275,9 @@ func (m *Module) handleIncomingFrame(frame *relay.Frame) {
 
 	switch frame.Type {
 	case relay.FrameConnectOK:
-		stdlog.Printf("[SOCKS5] Stream %d connected (ConnectOK received)", stream.ID)
+		if m.config.Debug {
+			stdlog.Printf("[SOCKS5] Stream %d connected (ConnectOK received)", stream.ID)
+		}
 		stream.mu.Lock()
 		stream.Connected = true
 		stream.mu.Unlock()
@@ -334,7 +336,9 @@ func (m *Module) nextStreamID() uint16 {
 		hb := sid >> 8
 		lb := sid & 0xFF
 		if hb >= 0x14 && hb <= 0x17 && lb <= 0x04 {
-			stdlog.Printf("[SOCKS5] Skipping unsafe StreamID: %d (0x%04x) to avoid TLS collision", sid, sid)
+			if m.config.Debug {
+				stdlog.Printf("[SOCKS5] Skipping unsafe StreamID: %d (0x%04x) to avoid TLS collision", sid, sid)
+			}
 			continue
 		}
 

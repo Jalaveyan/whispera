@@ -37,6 +37,14 @@ const (
 	FrameTypeClose   = 0x05
 )
 
+// bufferPool recycles buffers to allow zero-allocation packet processing
+// Size: 64KB payload + 8B header + safety margin
+var bufferPool = sync.Pool{
+	New: func() interface{} {
+		return make([]byte, 66048)
+	},
+}
+
 // TunnelState represents the tunnel state
 type TunnelState int
 
@@ -877,7 +885,7 @@ func (m *Manager) readLoop(mc *managedConn) {
 
 							// Heuristic: Type must be valid (0-10, 0=Padding) and length must be reasonable
 							if fType <= 0x0A && int(pLen) <= 65535 && FrameHeaderSize+int(pLen) <= len(processBuf) {
-								log.Info("Unwrapped TLS ApplicationData containing valid Frame (Layer %d, StreamID=%d, Type=%d, Len=%d)",
+								log.Debug("Unwrapped TLS ApplicationData containing valid Frame (Layer %d, StreamID=%d, Type=%d, Len=%d)",
 									layer, binary.BigEndian.Uint16(processBuf[0:2]), fType, pLen)
 								isWrappedFrame = true
 
@@ -928,7 +936,7 @@ func (m *Manager) readLoop(mc *managedConn) {
 						if len(processBuf) > 5 && processBuf[0] == 0x17 && processBuf[1] == 0x03 {
 							innerLen := int(processBuf[3])<<8 | int(processBuf[4])
 							if innerLen+5 <= len(processBuf) {
-								log.Info("Detected nested TLS record inside AppData (Layer %d), unwrapping %d bytes...", layer, innerLen)
+								log.Debug("Detected nested TLS record inside AppData (Layer %d), unwrapping %d bytes...", layer, innerLen)
 								processBuf = processBuf[5 : 5+innerLen]
 								continue // Try next layer
 							}
@@ -1077,7 +1085,17 @@ func (m *Manager) readLoop(mc *managedConn) {
 		}
 
 		// 4. Read Payload
-		frameData := make([]byte, FrameHeaderSize+int(payloadLen))
+		needed := FrameHeaderSize + int(payloadLen)
+		var frameData []byte
+
+		// Use pool for standard sizes to avoid GC churn
+		if needed <= 66048 {
+			frameData = bufferPool.Get().([]byte)
+			frameData = frameData[:needed]
+		} else {
+			frameData = make([]byte, needed) // Fallback for huge/abnormal frames
+		}
+
 		copy(frameData, header)
 
 		if payloadLen > 0 {
@@ -1090,7 +1108,7 @@ func (m *Manager) readLoop(mc *managedConn) {
 		// 4.5. Handle PONG frames (Type 0x07) - update lastPong time
 		if len(frameData) >= 3 && frameData[2] == 0x07 {
 			m.lastPong = time.Now()
-			log.Info("Received PONG from server")
+			log.Debug("Received PONG from server")
 			continue // Don't send to readCh, just update timestamp
 		}
 
@@ -1140,10 +1158,18 @@ func (m *Manager) Receive(buf []byte) (int, error) {
 
 	if len(packet) > len(buf) {
 		log.Error("Receive buffer too small for packet (%d > %d)", len(packet), len(buf))
+		if cap(packet) == 66048 {
+			bufferPool.Put(packet)
+		}
 		return 0, fmt.Errorf("buffer too small")
 	}
 
 	copy(buf, packet) // Raw encrypted/obfuscated data?
+
+	// Return buffer to pool
+	if cap(packet) == 66048 {
+		bufferPool.Put(packet)
+	}
 
 	n := len(packet)
 
