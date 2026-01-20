@@ -388,7 +388,7 @@ Loop:
 		ID:         streamID,
 		TargetAddr: targetAddr,
 		TargetPort: targetPort,
-		dataChan:   make(chan DataPacket, 10000), // Optimized: 10000 * 64KB = ~640MB buffer per stream. "Heavy Duty" mode.
+		dataChan:   make(chan DataPacket, 4096), // Tuned: 4096 * 64KB = ~256MB. Balanced for High BDP links.
 		closeChan:  make(chan struct{}),
 	}
 

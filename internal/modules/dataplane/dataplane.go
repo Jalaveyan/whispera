@@ -19,7 +19,7 @@ const (
 	ModuleVersion = "1.0.0"
 
 	// Default packet sizes
-	DefaultMTU    = 1420
+	DefaultMTU    = 1350
 	MaxPacketSize = 65535
 	MinPacketSize = 20 // Minimum IP header size
 )

@@ -548,9 +548,9 @@ func (m *Manager) dial(ctx context.Context) (net.Conn, error) {
 			log.Info("ASN bypass connection established")
 			// CRITICAL: Apply TCP Buffer Optimizations to ASN Connection
 			if tcpConn, ok := conn.(*net.TCPConn); ok {
-				log.Info("[TUNNEL] Applying 20MB buffers to ASN connection")
-				tcpConn.SetReadBuffer(20 * 1024 * 1024)
-				tcpConn.SetWriteBuffer(20 * 1024 * 1024)
+				log.Info("[TUNNEL] Applying 12MB buffers to ASN connection (High Performance)")
+				tcpConn.SetReadBuffer(12 * 1024 * 1024)
+				tcpConn.SetWriteBuffer(12 * 1024 * 1024)
 				tcpConn.SetNoDelay(true)
 			}
 			m.isTransportSecure = true

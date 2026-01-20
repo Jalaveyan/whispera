@@ -203,7 +203,7 @@ func DefaultServerConfig() *ServerConfig {
 			Name:         "whispera-server",
 			ListenAddr:   ":443",
 			TUNName:      "tun0",
-			MTU:          1420,
+			MTU:          1350,
 			Workers:      8,
 			GracefulStop: 30 * time.Second,
 		},

@@ -148,10 +148,10 @@ func (s *Stream) Connect(ctx context.Context) error {
 
 		// Optimize TCP socket buffers for high throughput
 		if tcpConn, ok := s.conn.(*net.TCPConn); ok {
-			tcpConn.SetReadBuffer(16 * 1024 * 1024)  // 16MB read buffer
-			tcpConn.SetWriteBuffer(16 * 1024 * 1024) // 16MB write buffer
-			tcpConn.SetNoDelay(true)                 // Disable Nagle's algorithm
-			tcpConn.SetKeepAlive(true)               // Enable TCP Keep-Alive
+			tcpConn.SetReadBuffer(512 * 1024)  // 512KB read buffer (reduced from 16MB to prevent bufferbloat)
+			tcpConn.SetWriteBuffer(512 * 1024) // 512KB write buffer
+			tcpConn.SetNoDelay(true)           // Disable Nagle's algorithm
+			tcpConn.SetKeepAlive(true)         // Enable TCP Keep-Alive
 			tcpConn.SetKeepAlivePeriod(30 * time.Second)
 			tcpConn.SetLinger(0) // Close immediately, don't wait for unsent data
 		}
