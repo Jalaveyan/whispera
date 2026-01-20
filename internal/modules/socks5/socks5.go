@@ -88,8 +88,8 @@ type ClientStream struct {
 	Connected  bool
 	Closed     bool
 
-	// Data channels - changed to interface{} to support DataPacket or []byte (legacy)
-	dataChan  chan interface{}
+	// Data channels - strongly typed to avoid interface{} boxing allocations
+	dataChan  chan DataPacket
 	closeChan chan struct{}
 	closeOnce sync.Once // Prevents panic on double-close
 
@@ -349,7 +349,7 @@ Loop:
 		ID:         streamID,
 		TargetAddr: targetAddr,
 		TargetPort: targetPort,
-		dataChan:   make(chan interface{}, 32000), // Large buffer for video bursts
+		dataChan:   make(chan DataPacket, 512), // Optimized: 32MB buffer, no boxing
 		closeChan:  make(chan struct{}),
 	}
 
@@ -495,16 +495,13 @@ Loop:
 	go func() {
 		for {
 			select {
-			case item := <-stream.dataChan:
-				// item is DataPacket
-				if dp, ok := item.(DataPacket); ok {
-					if _, err := clientConn.Write(dp.Payload); err != nil {
-						tunnel.Recycle(dp.Raw) // Recycle on error
-						errChan <- err
-						return
-					}
-					tunnel.Recycle(dp.Raw) // Recycle after write
+			case dp := <-stream.dataChan:
+				if _, err := clientConn.Write(dp.Payload); err != nil {
+					tunnel.Recycle(dp.Raw) // Recycle on error
+					errChan <- err
+					return
 				}
+				tunnel.Recycle(dp.Raw) // Recycle after write
 			case <-stream.closeChan:
 				errChan <- io.EOF
 				return
@@ -561,7 +558,7 @@ func (m *Module) handleUDPConnection(tcpConn net.Conn) error {
 		ID:         streamID,
 		TargetAddr: "0.0.0.0",
 		TargetPort: 0,
-		dataChan:   make(chan interface{}, 32000), // Large buffer for UDP
+		dataChan:   make(chan DataPacket, 512), // Optimized: 32MB buffer for UDP, strictly typed
 		closeChan:  make(chan struct{}),
 	}
 
@@ -672,12 +669,7 @@ func (m *Module) handleUDPConnection(tcpConn net.Conn) error {
 	go func() {
 		for {
 			select {
-			case item := <-stream.dataChan:
-				// item is DataPacket
-				dp, ok := item.(DataPacket)
-				if !ok {
-					continue
-				}
+			case dp := <-stream.dataChan:
 				payload := dp.Payload
 
 				// Payload is [ATYP][ADDR][PORT][DATA]

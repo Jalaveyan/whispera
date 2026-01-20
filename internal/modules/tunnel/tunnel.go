@@ -350,6 +350,7 @@ func (m *Manager) Start() error {
 	}
 	m.SetHealthy(true, "tunnel manager running")
 	m.PublishEvent(events.EventTypeModuleStarted, nil)
+	log.Info("[TUNNEL] Starting Tunnel Manager (Build: Zero-Copy Final v3)...")
 
 	// Initiate connection automatically in background
 	go m.Reconnect(context.Background())
@@ -545,6 +546,13 @@ func (m *Manager) dial(ctx context.Context) (net.Conn, error) {
 			log.Warn("ASN bypass dial failed: %v", err)
 		} else {
 			log.Info("ASN bypass connection established")
+			// CRITICAL: Apply TCP Buffer Optimizations to ASN Connection
+			if tcpConn, ok := conn.(*net.TCPConn); ok {
+				log.Info("[TUNNEL] Applying 20MB buffers to ASN connection")
+				tcpConn.SetReadBuffer(20 * 1024 * 1024)
+				tcpConn.SetWriteBuffer(20 * 1024 * 1024)
+				tcpConn.SetNoDelay(true)
+			}
 			m.isTransportSecure = true
 			return conn, nil
 		}
