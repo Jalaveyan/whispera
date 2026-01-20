@@ -51,6 +51,23 @@ type Module struct {
 	recvChan chan *relay.Frame
 }
 
+// recvBufferPool recycles 16MB buffers for the main receiver loop
+var recvBufferPool = sync.Pool{
+	New: func() interface{} {
+		// 16MB buffer as requested for burst tolerance
+		return make([]byte, 16*1024*1024)
+	},
+}
+
+// streamBufferPool recycles 64KB+ buffers for individual client streams
+var streamBufferPool = sync.Pool{
+	New: func() interface{} {
+		// 64KB (Max Payload) + 8B (Header)
+		// Using 66KB to be safe and aligned
+		return make([]byte, 66*1024)
+	},
+}
+
 // TunnelManager interface for tunnel operations
 type TunnelManager interface {
 	// IsConnected returns true if tunnel is connected
@@ -159,11 +176,13 @@ func (m *Module) SetTunnel(tunnel TunnelManager) {
 
 // receiveFrames receives frames from tunnel and dispatches to streams
 func (m *Module) receiveFrames() {
-	// OPTIMIZATION: Use a large fixed static buffer instead of dynamic append
-	// This avoids expensive reallocation/copying when processing high-bandwidth streams
-	// Increased to 16MB as requested for maximum burst tolerance
-	const bufferSize = 16 * 1024 * 1024 // 16MB buffer
-	packetBuf := make([]byte, bufferSize)
+	// OPTIMIZATION: Use sync.Pool for the large 16MB buffer
+	// This avoids allocating 16MB every time the tunnel reconnects
+	packetBuf := recvBufferPool.Get().([]byte)
+	defer recvBufferPool.Put(packetBuf)
+
+	const bufferSize = 16 * 1024 * 1024 // Keep constant for logic references
+	// Reset buffer logic (though we just overwrite what we need, indices handle validity)
 	dataStart := 0
 	dataEnd := 0
 
@@ -476,11 +495,11 @@ Loop:
 	// Client -> Server (via tunnel)
 	// Client -> Server (via tunnel)
 	go func() {
-		// ZERO-COPY OPTIMIZATION
-		// Pre-allocate buffer with space for Header (8 bytes)
-		// We use a larger buffer to accommodate the Reader and the Frame overhead without copying
+		// ZERO-COPY OPTIMIZATION with sync.Pool
+		// Use pooled buffer to avoid GC on every new connection
 		const headerSize = 8 // relay.HeaderSize
-		buf := make([]byte, headerSize+m.config.MTU)
+		buf := streamBufferPool.Get().([]byte)
+		defer streamBufferPool.Put(buf)
 
 		for {
 			// Read directly into the payload area, skipping header space
