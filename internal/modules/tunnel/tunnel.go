@@ -1142,19 +1142,6 @@ func (m *Manager) Receive(buf []byte) (int, error) {
 
 // Send sends data through the tunnel
 func (m *Manager) Send(data []byte) error {
-	if m.obfuscator != nil && !m.isTransportSecure {
-		obfuscated, delay, err := m.obfuscator.Process(data, interfaces.DirectionOutbound)
-		if err != nil {
-			return fmt.Errorf("outbound obfuscation failed: %w", err)
-		}
-		if obfuscated != nil {
-			data = obfuscated
-		}
-		if delay > 0 && delay < 5*time.Second {
-			time.Sleep(delay)
-		}
-	}
-
 	// Route to correct connection
 	// Parse Frame Header to get StreamID and Type
 	var streamID uint16
@@ -1165,8 +1152,25 @@ func (m *Manager) Send(data []byte) error {
 		frameType = data[2]
 	}
 
+	if m.obfuscator != nil && !m.isTransportSecure {
+		obfuscated, delay, err := m.obfuscator.Process(data, interfaces.DirectionOutbound)
+		if err != nil {
+			return fmt.Errorf("outbound obfuscation failed: %w", err)
+		}
+		if obfuscated != nil {
+			data = obfuscated
+		}
+		// OPTIMIZATION: Skip delay for DATA frames to maximize throughput
+		// Jitter is only needed for handshake/control frames to defeat traffic analysis
+		if delay > 0 && delay < 5*time.Second {
+			if frameType != 0x04 && frameType != 0x08 && frameType != 0x09 { // Skip for DATA, UDP_DATA, RAW_PACKET
+				time.Sleep(delay)
+			}
+		}
+	}
+
 	// Retry loop for reconnect scenarios
-	const maxRetries = 3
+	const maxRetries = 10
 	var lastErr error
 
 	for attempt := 0; attempt < maxRetries; attempt++ {
@@ -1211,10 +1215,26 @@ func (m *Manager) Send(data []byte) error {
 			lastErr = err
 
 			// Check if it's a "use of closed network connection" error
-			if strings.Contains(err.Error(), "closed") || strings.Contains(err.Error(), "broken pipe") {
+			// Also handle "connection reset" and "EOF" which imply connection death
+			errMsg := err.Error()
+			isClosed := strings.Contains(errMsg, "closed") || strings.Contains(errMsg, "broken pipe") || strings.Contains(errMsg, "connection reset") || strings.Contains(errMsg, "EOF")
+
+			if isClosed {
 				state := m.GetState()
-				if state == StateReconnecting || state == StateRotating {
-					log.Debug("Send: connection closed during reconnect (attempt %d/%d)", attempt+1, maxRetries)
+
+				// If we encounter a closed connection while supposedly Connected, trigger Reconnect immediately
+				if state == StateConnected {
+					// Only trigger if this was the active connection (or we can't tell)
+					// handleReadError checks if it's activeConn
+					log.Warn("Send: connection unexpectedly closed/reset. Triggering Reconnect... (Err: %v)", err)
+					m.handleReadError(conn, err)
+				}
+
+				// Wait and retry if we are (now) reconnecting
+				// We check state again because handleReadError might have changed it
+				state = m.GetState()
+				if state == StateReconnecting || state == StateRotating || state == StateConnecting {
+					log.Debug("Send: connection closed during reconnect (attempt %d/%d). Waiting...", attempt+1, maxRetries)
 					time.Sleep(500 * time.Millisecond)
 					continue
 				}
