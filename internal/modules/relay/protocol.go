@@ -451,27 +451,47 @@ func NewPongFrame() *Frame {
 // NewUDPDataFrame creates a UDP_DATA frame
 func NewUDPDataFrame(streamID uint16, addrType uint8, addr string, port uint16, data []byte) *Frame {
 	// Format: [AddrType:1][Addr:N][Port:2][Data:N]
-	var payload []byte
 
+	// Calculate size
+	addrLen := 0
+	switch addrType {
+	case AddrTypeIPv4:
+		addrLen = 4
+	case AddrTypeIPv6:
+		addrLen = 16
+	case AddrTypeDomain:
+		addrLen = 1 + len(addr)
+	}
+
+	size := 1 + addrLen + 2 + len(data)
+	payload := make([]byte, size)
+
+	offset := 0
 	// Address type
-	payload = append(payload, addrType)
+	payload[offset] = addrType
+	offset++
 
 	// Address
 	switch addrType {
 	case AddrTypeIPv4:
-		payload = append(payload, parseIPv4(addr)...)
+		copy(payload[offset:], parseIPv4(addr))
+		offset += 4
 	case AddrTypeIPv6:
-		payload = append(payload, parseIPv6(addr)...)
+		copy(payload[offset:], parseIPv6(addr))
+		offset += 16
 	case AddrTypeDomain:
-		payload = append(payload, byte(len(addr)))
-		payload = append(payload, []byte(addr)...)
+		payload[offset] = byte(len(addr))
+		offset++
+		copy(payload[offset:], addr)
+		offset += len(addr)
 	}
 
 	// Port
-	payload = append(payload, byte(port>>8), byte(port&0xff))
+	binary.BigEndian.PutUint16(payload[offset:], port)
+	offset += 2
 
 	// Data
-	payload = append(payload, data...)
+	copy(payload[offset:], data)
 
 	return &Frame{
 		StreamID: streamID,
@@ -484,18 +504,13 @@ func NewUDPDataFrame(streamID uint16, addrType uint8, addr string, port uint16, 
 // NewRawPacketFrame creates a RAW_PACKET frame
 // Payload format: [PacketID:4][RawPacketData:N]
 func NewRawPacketFrame(packetID uint32, rawPacket []byte) *Frame {
-	var payload []byte
+	payload := make([]byte, 4+len(rawPacket))
 
 	// PacketID (4 bytes, big-endian)
-	payload = append(payload,
-		byte(packetID>>24),
-		byte((packetID>>16)&0xff),
-		byte((packetID>>8)&0xff),
-		byte(packetID&0xff),
-	)
+	binary.BigEndian.PutUint32(payload[0:4], packetID)
 
 	// Raw packet data
-	payload = append(payload, rawPacket...)
+	copy(payload[4:], rawPacket)
 
 	return &Frame{
 		StreamID: 0, // Raw packets use stream 0 (control channel)
@@ -550,4 +565,97 @@ func ParseWindowUpdateFrame(f *Frame) (uint32, error) {
 		return 0, ErrInvalidFrame
 	}
 	return binary.BigEndian.Uint32(f.Payload), nil
+}
+
+// WriteFrameHeader writes a frame header directly to a buffer.
+// Use this for zero-copy frame construction when you have pre-allocated buffer space.
+func WriteFrameHeader(buf []byte, streamID uint16, fType uint8, flags uint8, payloadLen int) {
+	binary.BigEndian.PutUint16(buf[0:2], streamID)
+	buf[2] = fType
+	buf[3] = flags
+	binary.BigEndian.PutUint32(buf[4:8], uint32(payloadLen))
+}
+
+// SealRawPacket performs zero-copy framing for Raw Packets.
+// It assumes 'buf' contains the Raw Packet data starting at offset (HeaderSize + 4).
+// It writes the Frame Header and PacketID in the space before the data.
+// Returns the full slice buf[:totalLen] ready to send.
+func SealRawPacket(buf []byte, streamID uint16, packetID uint32) ([]byte, error) {
+	// Offset where packet data MUST start
+	dataOffset := HeaderSize + 4
+	if len(buf) < dataOffset {
+		return nil, errors.New("buffer too small for headers")
+	}
+
+	packetLen := len(buf) - dataOffset
+	totalPayloadLen := 4 + packetLen
+
+	// Write Frame Header at 0
+	WriteFrameHeader(buf, streamID, FrameRawPacket, 0, totalPayloadLen)
+
+	// Write PacketID at HeaderSize
+	binary.BigEndian.PutUint32(buf[HeaderSize:], packetID)
+
+	return buf, nil
+}
+
+// SealUDPData performs zero-copy framing for UDP Data.
+// It assumes 'buf' contains the UDP payload starting at 'dataOffset'.
+// It writes Frame Header and UDP Header (ATYP, ADDR, PORT) before 'dataOffset'.
+// NOTE: Caller must calculate 'dataOffset' correctly based on AddrType/Length.
+func SealUDPData(buf []byte, streamID uint16, addrType uint8, addr string, port uint16, dataOffset int) ([]byte, error) {
+	if len(buf) < dataOffset {
+		return nil, errors.New("buffer too small/offset mismatch")
+	}
+
+	dataLen := len(buf) - dataOffset
+
+	// Calculate UDP Header Size
+	udpHeaderLen := 0
+	switch addrType {
+	case AddrTypeIPv4:
+		udpHeaderLen = 1 + 4 + 2
+	case AddrTypeIPv6:
+		udpHeaderLen = 1 + 16 + 2
+	case AddrTypeDomain:
+		udpHeaderLen = 1 + 1 + len(addr) + 2
+	}
+
+	if dataOffset < HeaderSize+udpHeaderLen {
+		return nil, errors.New("insufficient headroom for headers")
+	}
+
+	// Calculate start of Frame Header
+	// We align so that Data is exactly at dataOffset
+	frameStart := dataOffset - udpHeaderLen - HeaderSize
+
+	// Write UDP Header components
+	udpStart := frameStart + HeaderSize
+	current := udpStart
+
+	buf[current] = addrType
+	current++
+
+	switch addrType {
+	case AddrTypeIPv4:
+		copy(buf[current:], parseIPv4(addr))
+		current += 4
+	case AddrTypeIPv6:
+		copy(buf[current:], parseIPv6(addr))
+		current += 16
+	case AddrTypeDomain:
+		buf[current] = byte(len(addr))
+		current++
+		copy(buf[current:], addr)
+		current += len(addr)
+	}
+
+	binary.BigEndian.PutUint16(buf[current:], port)
+	current += 2
+
+	// Now write Frame Header at frameStart
+	totalPayloadLen := udpHeaderLen + dataLen
+	WriteFrameHeader(buf[frameStart:], streamID, FrameUDPData, 0, totalPayloadLen)
+
+	return buf[frameStart:], nil
 }
