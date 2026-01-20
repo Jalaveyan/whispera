@@ -170,7 +170,7 @@ func (s *SOCKS5Server) handleConnection(conn net.Conn) {
 
 	// Вызываем обработчик для проксирования
 	if err := s.handler(conn, addr, port); err != nil {
-		if err != io.EOF && err.Error() != "EOF" && !strings.Contains(err.Error(), "i/o timeout") {
+		if err != io.EOF && err.Error() != "EOF" && !strings.Contains(err.Error(), "i/o timeout") && !strings.Contains(err.Error(), "use of closed network connection") {
 			fmt.Printf("[SOCKS5] Handler failed: %v\n", err)
 			s.log.Debug("Handler failed: %v", err)
 		}

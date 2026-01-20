@@ -483,6 +483,25 @@ Loop:
 		for {
 			// Read directly into the payload area, skipping header space
 			n, err := clientConn.Read(buf[headerSize:])
+
+			// Check if stream was closed remotely (Graceful Drain Mode)
+			stream.mu.Lock()
+			closed := stream.Closed
+			stream.mu.Unlock()
+
+			if closed {
+				// We are in draining mode (CloseWrite already sent FIN)
+				// If we receive data, we discard it to prevent RST
+				// If we receive Error (EOF/Timeout), we exit cleanly
+				if err != nil {
+					// Treat any error during drain as clean exit
+					errChan <- nil
+					return
+				}
+				// Discard data and continue draining
+				continue
+			}
+
 			if err != nil {
 				errChan <- err
 				return
