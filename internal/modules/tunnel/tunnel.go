@@ -814,6 +814,10 @@ func (m *Manager) readLoop(mc *managedConn) {
 	consecutiveGarbage := 0 // Counter for consecutive bad packets
 	const maxTLSDrain = 50
 
+	// Track deadline updates to reduce syscalls
+	lastDeadlineUpdate := time.Now()
+	mc.SetReadDeadline(lastDeadlineUpdate.Add(m.config.KeepaliveInterval * 2))
+
 	for {
 		select {
 		case <-mc.closing:
@@ -973,7 +977,14 @@ func (m *Manager) readLoop(mc *managedConn) {
 		tlsDrainCount = 0      // Reset on non-TLS (Frame)
 
 		// 2. Read Frame Header (8 bytes)
-		mc.SetReadDeadline(time.Now().Add(m.config.KeepaliveInterval * 2))
+		// OPTIMIZATION: Lazy Deadline Update
+		// Instead of calling syscall SetReadDeadline on every frame (expensive!),
+		// only update it periodically (e.g. every 5 seconds).
+		if time.Since(lastDeadlineUpdate) > 5*time.Second {
+			lastDeadlineUpdate = time.Now()
+			mc.SetReadDeadline(lastDeadlineUpdate.Add(m.config.KeepaliveInterval * 2))
+		}
+
 		if _, err := io.ReadFull(reader, header); err != nil {
 			m.handleReadError(mc, err)
 			return
