@@ -161,7 +161,8 @@ func (m *Module) SetTunnel(tunnel TunnelManager) {
 func (m *Module) receiveFrames() {
 	// OPTIMIZATION: Use a large fixed static buffer instead of dynamic append
 	// This avoids expensive reallocation/copying when processing high-bandwidth streams
-	const bufferSize = 1024 * 1024 // 1MB buffer
+	// Increased to 16MB as requested for maximum burst tolerance
+	const bufferSize = 16 * 1024 * 1024 // 16MB buffer
 	packetBuf := make([]byte, bufferSize)
 	dataStart := 0
 	dataEnd := 0
