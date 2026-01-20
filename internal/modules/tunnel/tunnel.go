@@ -805,9 +805,8 @@ func (m *Manager) readLoop(mc *managedConn) {
 	defer mc.Close()
 
 	// Use bufio.NewReader for Peek capability
-	// This helps us distinguish between TLS data (from masquerade) and Frame data
-	// without over-reading and causing desync.
-	reader := bufio.NewReader(mc)
+	// Increase buffer to 256KB to maximize throughput on high-speed links (500Mbps+)
+	reader := bufio.NewReaderSize(mc, 262144)
 
 	// Buffer for header
 	header := make([]byte, FrameHeaderSize)
