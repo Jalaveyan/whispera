@@ -159,9 +159,14 @@ func (m *Module) SetTunnel(tunnel TunnelManager) {
 
 // receiveFrames receives frames from tunnel and dispatches to streams
 func (m *Module) receiveFrames() {
-	buf := make([]byte, 65536)
-	var packetBuf []byte
-	stdlog.Printf("[SOCKS5] receiveFrames goroutine started")
+	// OPTIMIZATION: Use a large fixed static buffer instead of dynamic append
+	// This avoids expensive reallocation/copying when processing high-bandwidth streams
+	const bufferSize = 1024 * 1024 // 1MB buffer
+	packetBuf := make([]byte, bufferSize)
+	dataStart := 0
+	dataEnd := 0
+
+	stdlog.Printf("[SOCKS5] receiveFrames goroutine started (Fixed Buffer Optimization)")
 
 	for {
 		m.mu.RLock()
@@ -173,10 +178,28 @@ func (m *Module) receiveFrames() {
 			continue
 		}
 
-		n, err := tunnel.Receive(buf)
+		// If buffer is full or near full, we need to shift data to the beginning
+		// We trigger shift if free space at the end is less than 64KB (max frame size)
+		if len(packetBuf)-dataEnd < 65536 {
+			if dataStart > 0 {
+				// Compact buffer: move active data to the front
+				copy(packetBuf, packetBuf[dataStart:dataEnd])
+				dataEnd -= dataStart
+				dataStart = 0
+			} else {
+				// Buffer completely full, this shouldn't happen with 1MB buffer and fast processing
+				// Drop data to recover
+				stdlog.Printf("[SOCKS5] Receive buffer full! Dropping %d bytes", dataEnd)
+				dataEnd = 0
+				dataStart = 0
+			}
+		}
+
+		// Read directly into the free space at the end of our buffer
+		// tunnel.Receive writes directly here, so NO intermediate copy
+		n, err := tunnel.Receive(packetBuf[dataEnd:])
 		if err != nil {
 			if err != io.EOF {
-				// Only log non-timeout errors
 				if netErr, ok := err.(net.Error); !ok || !netErr.Timeout() {
 					stdlog.Printf("[SOCKS5] Receive error: %v", err)
 				}
@@ -186,42 +209,55 @@ func (m *Module) receiveFrames() {
 		}
 
 		if n > 0 {
-			packetBuf = append(packetBuf, buf[:n]...)
+			dataEnd += n
 		}
 
 		// Process all complete frames in buffer
-		for len(packetBuf) >= relay.HeaderSize {
-			// Header: [StreamID:2][Type:1][Flags:1][Length:4]
-			// We need to peek at the length field (offset 4, 4 bytes)
-			payloadLen := binary.BigEndian.Uint32(packetBuf[4:8])
+		for {
+			activeDataLen := dataEnd - dataStart
+			if activeDataLen < relay.HeaderSize {
+				break // Not enough for header
+			}
+
+			// Peek length directly from buffer
+			// packetBuf[dataStart+4 : dataStart+8]
+			payloadLen := binary.BigEndian.Uint32(packetBuf[dataStart+4 : dataStart+8])
 			frameSize := relay.HeaderSize + int(payloadLen)
 
-			if len(packetBuf) < frameSize {
-				// Wait for more data
-				break
+			if activeDataLen < frameSize {
+				break // Not enough for full frame
 			}
 
-			// Extract complete frame
-			frameData := packetBuf[:frameSize]
-			// Decode (this should succeed as we have the full frame)
-			frame, err := relay.Decode(frameData)
-			if err != nil {
-				stdlog.Printf("[SOCKS5] Frame decode error: %v", err)
-				// If decode fails on a sized chunk, the stream is likely desynchronized.
-				// We drop this frame and shift (risky, but better than stuck)
-				// Ideally, we should close the connection, but here we just drop.
-			} else {
-				m.handleIncomingFrame(frame)
+			// We have a full frame.
+			// Ideally we would pass a slice without copying, BUT handleIncomingFrame
+			// might pass the payload to a channel, which is async.
+			// If we modify packetBuf later, we race. So we MUST copy the frame payload here.
+			// However, we only copy the PAYLOAD, not the whole buffer structure.
+
+			// Extract frame header fields manually to avoid 'relay.Decode' allocation overhead
+			streamID := binary.BigEndian.Uint16(packetBuf[dataStart : dataStart+2])
+			fType := packetBuf[dataStart+2]
+			// fFlags := packetBuf[dataStart+3]
+
+			payload := make([]byte, payloadLen)
+			copy(payload, packetBuf[dataStart+relay.HeaderSize:dataStart+frameSize])
+
+			frame := &relay.Frame{
+				StreamID: streamID,
+				Type:     fType,
+				Payload:  payload,
 			}
 
-			// Slice buffer
-			packetBuf = packetBuf[frameSize:]
+			m.handleIncomingFrame(frame)
+
+			// Advance start pointer
+			dataStart += frameSize
 		}
 
-		// Safety cap to prevent memory leaks if stream is infinitely broken
-		if len(packetBuf) > 4*1024*1024 { // 4MB
-			stdlog.Printf("[SOCKS5] Buffer overflow, clearing accumulator")
-			packetBuf = nil
+		// If buffer is empty, reset pointers to 0 to maximize read space
+		if dataStart == dataEnd {
+			dataStart = 0
+			dataEnd = 0
 		}
 	}
 }
