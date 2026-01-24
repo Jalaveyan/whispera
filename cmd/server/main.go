@@ -720,75 +720,53 @@ func createModules(manager *lifecycle.Manager) error {
 		}
 	}
 
-	// 11. Phantom Handler (SNI masquerading / TLS proxy)
-	// Auto-generate keys if missing (Critical for Phantom authentication)
-	if serverConfig.Phantom.PrivateKey == "" {
-		log.Println("Phantom: No Private Key found. Auto-generating new X25519 key pair...")
-		privKey, pubKey, err := phantom.GenerateKeyPair()
-		if err != nil {
-			log.Printf("Error generating keys: %v", err)
-		} else {
-			// Save to config
-			updateErr := configProvider.Update(func(cfg *modconfig.ServerConfig) {
-				cfg.Phantom.PrivateKey = hex.EncodeToString(privKey)
-				// Also ensure it is enabled if we are generating keys, implying intent to use?
-				// Better to leave enabled state as is, but defaults are often false.
+	// 11. Phantom Handler - LEGACY (Disabled)
+	// Phantom functionality is now handled by the unified StartInbound mechanism
+	// to enable dynamic multi-port support without conflicts.
+	/*
+		if serverConfig.Phantom.Enabled {
+			phantomHandler, err := phantom.New(&phantom.Config{
+				Enabled:     true,
+				ListenAddr:  serverConfig.Server.ListenAddr, // Use same port as main server
+				Dest:        serverConfig.Phantom.Dest,
+				ServerNames: serverConfig.Phantom.ServerNames,
+				PrivateKey:  serverConfig.Phantom.PrivateKey,
+				ShortIds:    serverConfig.Phantom.ShortIds,
+				MaxTimeDiff: serverConfig.Phantom.MaxTimeDiff,
+				Fingerprint: serverConfig.Phantom.Fingerprint,
+				OnAuthenticated: func(conn net.Conn, clientID string) {
+					log.Printf("Phantom: Client authenticated: %s", clientID)
+
+					if globalRelay == nil {
+						log.Printf("Phantom: Relay server not available, closing connection from %s", clientID)
+						conn.Close()
+						return
+					}
+
+					// SIMPLIFIED: Skip protocol handshake for Phantom connections.
+					// Phantom already authenticates via secure HMAC in the ClientHello.
+					// The additional protocol handshake was causing synchronization issues
+					// (double handshake, EOF errors, frame corruption).
+					// Client now also skips the handshake when EnablePhantom is true.
+
+					log.Printf("Phantom: Starting relay for %s (no extra handshake - Phantom auth sufficient)", clientID)
+
+					// Pass to relay - client will start sending framed data immediately
+					// Pass nil for obfuscator because Phantom connections use TLS masquerade.
+					// The client sets isTransportSecure=true and does NOT obfuscate outbound data.
+					globalRelay.ServeTunnel(conn, nil)
+				},
 			})
-			if updateErr != nil {
-				log.Printf("Error saving generated key to config: %v", updateErr)
+			if err != nil {
+				log.Printf("⚠ Warning: Failed to create Phantom handler: %v", err)
 			} else {
-				log.Printf("✓ Phantom Keys Generated and Saved to config.yaml")
-				log.Printf("  PRIVATE KEY: %s", hex.EncodeToString(privKey))
-				log.Printf("================================================================")
-				log.Printf("  PUBLIC KEY:  %s", hex.EncodeToString(pubKey))
-				log.Printf("  (COPY THIS KEY to your CLIENT configuration!)")
-				log.Printf("================================================================")
-			}
-		}
-	}
-
-	if serverConfig.Phantom.Enabled {
-		phantomHandler, err := phantom.New(&phantom.Config{
-			Enabled:     true,
-			ListenAddr:  serverConfig.Server.ListenAddr, // Use same port as main server
-			Dest:        serverConfig.Phantom.Dest,
-			ServerNames: serverConfig.Phantom.ServerNames,
-			PrivateKey:  serverConfig.Phantom.PrivateKey,
-			ShortIds:    serverConfig.Phantom.ShortIds,
-			MaxTimeDiff: serverConfig.Phantom.MaxTimeDiff,
-			Fingerprint: serverConfig.Phantom.Fingerprint,
-			OnAuthenticated: func(conn net.Conn, clientID string) {
-				log.Printf("Phantom: Client authenticated: %s", clientID)
-
-				if globalRelay == nil {
-					log.Printf("Phantom: Relay server not available, closing connection from %s", clientID)
-					conn.Close()
-					return
+				if err := manager.Register(phantomHandler); err != nil {
+					return err
 				}
-
-				// SIMPLIFIED: Skip protocol handshake for Phantom connections.
-				// Phantom already authenticates via secure HMAC in the ClientHello.
-				// The additional protocol handshake was causing synchronization issues
-				// (double handshake, EOF errors, frame corruption).
-				// Client now also skips the handshake when EnablePhantom is true.
-
-				log.Printf("Phantom: Starting relay for %s (no extra handshake - Phantom auth sufficient)", clientID)
-
-				// Pass to relay - client will start sending framed data immediately
-				// Pass nil for obfuscator because Phantom connections use TLS masquerade.
-				// The client sets isTransportSecure=true and does NOT obfuscate outbound data.
-				globalRelay.ServeTunnel(conn, nil)
-			},
-		})
-		if err != nil {
-			log.Printf("⚠ Warning: Failed to create Phantom handler: %v", err)
-		} else {
-			if err := manager.Register(phantomHandler); err != nil {
-				return err
+				log.Printf("  ✓ Phantom protocol enabled (dest: %s)", serverConfig.Phantom.Dest)
 			}
-			log.Printf("  ✓ Phantom protocol enabled (dest: %s)", serverConfig.Phantom.Dest)
 		}
-	}
+	*/
 
 	log.Printf("✓ Registered %d modules", len(manager.Registry().GetAll()))
 	return nil
