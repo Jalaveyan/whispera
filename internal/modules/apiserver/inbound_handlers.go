@@ -83,16 +83,24 @@ func (s *Server) handleAddInbound(w http.ResponseWriter, r *http.Request) {
 		req.Tag, req.Port, req.StreamSettings.Network, req.StreamSettings.Security,
 		req.StreamSettings.Phantom.PrivateKey != "")
 
-	// Auto-generate key if missing for Phantom
-	if req.StreamSettings.Security == "phantom" && req.StreamSettings.Phantom.PrivateKey == "" {
+	// Auto-generate key if missing for Phantom/Reality
+	isPhantomOrReality := req.StreamSettings.Security == "phantom" || req.StreamSettings.Security == "reality"
+	if isPhantomOrReality && req.StreamSettings.Phantom.PrivateKey == "" {
 		var privKey [32]byte
 		if _, err := rand.Read(privKey[:]); err != nil {
 			log.Printf("[API] Failed to generate random key: %v", err)
 			s.jsonError(w, http.StatusInternalServerError, "Key generation failed")
 			return
 		}
+		// Set to Phantom struct as it's the primary storage
 		req.StreamSettings.Phantom.PrivateKey = base64Encode(privKey[:])
-		log.Printf("[API] Auto-generated Phantom private key for inbound %s", req.Tag)
+
+		// If Reality is used, duplicate it there for safety/compat
+		if req.StreamSettings.Security == "reality" {
+			req.StreamSettings.Reality.PrivateKey = req.StreamSettings.Phantom.PrivateKey
+		}
+
+		log.Printf("[API] Auto-generated unique Private Key for inbound %s (Security: %s)", req.Tag, req.StreamSettings.Security)
 	}
 
 	module, ok := s.registry.Get("config.provider")
