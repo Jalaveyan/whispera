@@ -645,36 +645,109 @@ class WhisperaApp {
     }
 
     // Заполнить dropdown портов в Quick Connect Modal
+    // Заполнить input+datalist портов
     async populatePortSelector() {
-        const portSelect = document.getElementById('quickConnectPort');
-        if (!portSelect) return;
+        const dataList = document.getElementById('existingPortsList');
+        const portInput = document.getElementById('quickConnectPort');
+        if (!dataList || !portInput) return;
 
         try {
             // Загружаем список inbounds
             const response = await api.request('/api/inbounds');
             const inbounds = response.inbounds || [];
 
-            // Очищаем dropdown
-            portSelect.innerHTML = '';
+            // Сохраняем кэш для проверки существования порта
+            this.cachedInbounds = inbounds;
 
-            // Добавляем порты
-            inbounds.forEach(inbound => {
-                const option = document.createElement('option');
-                option.value = inbound.port;
-                option.setAttribute('data-tag', inbound.tag);
-                option.textContent = `${inbound.tag} - Порт ${inbound.port}`;
-                portSelect.appendChild(option);
-            });
+            // Очищаем datalist
+            dataList.innerHTML = '';
 
-            // Если нет inbounds, показываем заглушку
-            if (inbounds.length === 0) {
-                const option = document.createElement('option');
-                option.value = '';
-                option.textContent = 'Нет доступных портов';
-                portSelect.appendChild(option);
+            if (inbounds && inbounds.length > 0) {
+                // Добавляем существующие порты в подсказки
+                inbounds.forEach(inbound => {
+                    const option = document.createElement('option');
+                    option.value = inbound.port;
+                    option.label = `${inbound.tag || 'Inbound'}`;
+                    dataList.appendChild(option);
+                });
+
+                // Если поле пустое, ставим первый порт
+                if (!portInput.value) {
+                    portInput.value = inbounds[0].port;
+                    this.updateQuickConnectForPort();
+                }
             }
         } catch (error) {
             console.error('Error loading inbounds for port selector:', error);
+        }
+    }
+
+    // Обработка изменения порта (ввод вручную или выбор)
+    async handleQuickConnectPortChange() {
+        const portInput = document.getElementById('quickConnectPort');
+        const statusEl = document.getElementById('portCreationStatus');
+
+        if (!portInput) return;
+
+        const port = parseInt(portInput.value);
+        if (!port || port < 1 || port > 65535) {
+            this.showErrorMessage("Некорректный порт");
+            return;
+        }
+
+        // Проверяем, существует ли порт
+        const exists = this.cachedInbounds?.some(i => i.port === port);
+
+        if (exists) {
+            // Порт существует - просто обновляем данные
+            await this.updateQuickConnectForPort();
+        } else {
+            // Порт НОВЫЙ - создаем автоматически!
+            if (confirm(`Порт ${port} не найден. Создать новое входящее подключение на порту ${port} автоматически?`)) {
+                try {
+                    if (statusEl) statusEl.style.display = 'block'; // Показываем спиннер
+
+                    const newInbound = {
+                        tag: `auto-${port}`,
+                        port: port,
+                        protocol: 'whispera',
+                        listen: '0.0.0.0',
+                        stream_settings: {
+                            network: 'tcp',
+                            security: 'phantom',
+                            phantom: {
+                                private_key: '' // Auto-generate
+                            }
+                        }
+                    };
+
+                    console.log(`Creating auto-inbound for port ${port}...`);
+                    await api.request('/api/inbounds/add', {
+                        method: 'POST',
+                        body: JSON.stringify(newInbound)
+                    });
+
+                    this.showSuccessMessage(`Порт ${port} успешно создан и открыт!`);
+
+                    // Перезагружаем списки
+                    await this.populatePortSelector();
+
+                    // Устанавливаем значение обратно (т.к. populate может сбросить)
+                    portInput.value = port;
+
+                    // Обновляем ключи
+                    await this.updateQuickConnectForPort();
+
+                } catch (error) {
+                    console.error('Auto-create inbound failed:', error);
+                    this.showErrorMessage(`Ошибка создания порта: ${error.message}`);
+                } finally {
+                    if (statusEl) statusEl.style.display = 'none';
+                }
+            } else {
+                // Пользователь отказался
+                portInput.value = ""; // Очистить
+            }
         }
     }
 

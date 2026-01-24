@@ -1145,11 +1145,20 @@
 
 
                 <div class="form-group">
-                    <label><i class="fas fa-network-wired"></i> Выбор порта</label>
-                    <select id="quickConnectPort" class="form-control" onchange="app.updateQuickConnectForPort()">
-                        <!-- Будет заполнено из списка inbounds -->
-                    </select>
-                    <small class="form-help">Выберите порт для генерации ключа подключения</small>
+                    <label><i class="fas fa-network-wired"></i> Порт (Выберите или впишите свой)</label>
+                    <div style="position: relative;">
+                        <input type="number" id="quickConnectPort" class="form-control" list="existingPortsList"
+                            placeholder="Например: 443" onchange="app.handleQuickConnectPortChange()"
+                            onkeypress="if(event.key === 'Enter') this.blur()">
+                        <datalist id="existingPortsList">
+                            <!-- Будет заполнено через JS -->
+                        </datalist>
+                        <div id="portCreationStatus"
+                            style="font-size: 0.8rem; color: var(--warning-color); position: absolute; right: 10px; top: 12px; display: none;">
+                            <i class="fas fa-spinner fa-spin"></i> Создание...
+                        </div>
+                    </div>
+                    <small class="form-help">Если вписать новый порт, он будет создан автоматически!</small>
                 </div>
 
                 <div class="form-group">
@@ -1189,16 +1198,18 @@
                         клиенте</small>
                 </div>
 
-                <div class="info-box" style="margin-top: 1.5rem; background: #fef3c7; border-color: #f59e0b;">
-                    <i class="fas fa-lightbulb"></i>
+                <div class="info-box"
+                    style="margin-top: 1.5rem; background: rgba(30, 41, 59, 0.8); border-color: rgba(99, 102, 241, 0.3); color: var(--text-secondary);">
+                    <i class="fas fa-lightbulb" style="color: var(--primary-color);"></i>
                     <div>
-                        <strong>Инструкция:</strong>
+                        <strong style="color: var(--text-primary);">Инструкция:</strong>
                         <ol style="margin: 0.5rem 0 0 1.5rem; padding-left: 0.5rem;">
                             <li>Откройте Whispera Client (Tauri)</li>
                             <li>Перейдите на главную страницу</li>
                             <li>Найдите поле "Быстрое подключение"</li>
                             <li>Вставьте скопированную строку в формате
-                                <code>whispera://server:port?pub=...&key=...</code>
+                                <code
+                                    style="background: rgba(0,0,0,0.3); padding: 2px 4px; border-radius: 4px; color: var(--primary-color);">whispera://server:port?pub=...&key=...</code>
                             </li>
                             <li>Нажмите "Подключиться по ключу"</li>
                             <li>Все настройки загрузятся автоматически через API!</li>
