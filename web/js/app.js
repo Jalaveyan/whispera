@@ -2416,21 +2416,34 @@ whispera://IP_СЕРВЕРА:ПОРТ?pub=ПУБЛИЧНЫЙ_КЛЮЧ&key=ПРИ
             }
         }
 
-        // Формируем URL в формате whispera://server:port?pub=...&key=...
-        const quickConnectUrl = this.generateQuickConnectUrl(serverIP, serverPort, serverPubKey, privateKey);
-        const serverUrl = `${serverIP}:${serverPort}`;
+        // Store context for sync updates
+        this.quickConnectServerIP = serverIP;
+        this.quickConnectGlobalPub = serverPubKey;
 
+        // Заполняем поля
         document.getElementById('quickConnectPrivateKey').value = privateKey;
-        document.getElementById('quickConnectServerUrl').value = serverUrl;
-        document.getElementById('quickConnectFullUrl').value = quickConnectUrl;
+
+        // Populate ports and set initial port
+        await this.populatePortSelector();
+
+        // Set initial port in input if not set by populate
+        const portInput = document.getElementById('quickConnectPort');
+        if (portInput && !portInput.value) {
+            portInput.value = serverPort;
+        }
+
+        // Initial update
+        this.handleQuickConnectPortInput();
 
         // Показываем модальное окно
-        modal.style.display = 'block';
+        modal.classList.add('active'); // Use class based activation too
+        modal.style.display = 'flex'; // Use flex to match other modals
 
         // Закрытие по клику вне модального окна
         window.onclick = (event) => {
             if (event.target === modal) {
                 modal.style.display = 'none';
+                modal.classList.remove('active');
             }
         };
 
@@ -2439,6 +2452,7 @@ whispera://IP_СЕРВЕРА:ПОРТ?pub=ПУБЛИЧНЫЙ_КЛЮЧ&key=ПРИ
         closeButtons.forEach(btn => {
             btn.onclick = () => {
                 modal.style.display = 'none';
+                modal.classList.remove('active');
             };
         });
     }
@@ -2464,6 +2478,29 @@ whispera://IP_СЕРВЕРА:ПОРТ?pub=ПУБЛИЧНЫЙ_КЛЮЧ&key=ПРИ
         // Формируем URL в формате whispera://server:port?pub=...&key=...
         const url = `whispera://${serverIP}:${serverPort}?${params.toString()}`;
         return url;
+    }
+
+    // Обработка ввода порта (live update)
+    handleQuickConnectPortInput() {
+        const portInput = document.getElementById('quickConnectPort');
+        if (!portInput) return;
+
+        let port = parseInt(portInput.value);
+        if (!port || isNaN(port)) port = 443; // Fallback for display
+
+        // Use stored IP/Pub or fallbacks
+        const ip = this.quickConnectServerIP || window.location.hostname;
+        const pub = this.quickConnectGlobalPub || '';
+        const priv = document.getElementById('quickConnectPrivateKey')?.value || '';
+
+        // Update Server URL display
+        const serverUrlInput = document.getElementById('quickConnectServerUrl');
+        if (serverUrlInput) serverUrlInput.value = `${ip}:${port}`;
+
+        // Generate and update Full URL
+        const fullUrl = this.generateQuickConnectUrl(ip, port, pub, priv);
+        const fullUrlInput = document.getElementById('quickConnectFullUrl');
+        if (fullUrlInput) fullUrlInput.value = fullUrl;
     }
 
     // Копировать приватный ключ из модального окна
