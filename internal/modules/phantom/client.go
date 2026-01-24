@@ -5,6 +5,7 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
@@ -100,13 +101,21 @@ func (c *ClientAuth) CreatePhantomExtension() (extensionType uint16, extensionDa
 	return phantomExtensionID, authData, nil
 }
 
-// ValidateServerPublicKey validates the server's public key
-func ValidateServerPublicKey(hexKey string) bool {
-	if len(hexKey) != 64 { // 32 bytes = 64 hex chars
-		return false
+// ValidateServerPublicKey validates the server's public key (Hex or Base64)
+func ValidateServerPublicKey(key string) bool {
+	// Try Hex (32 bytes = 64 chars)
+	if len(key) == 64 {
+		if _, err := hex.DecodeString(key); err == nil {
+			return true
+		}
 	}
-	_, err := hex.DecodeString(hexKey)
-	return err == nil
+	// Try Base64 (32 bytes = 44 chars)
+	if len(key) >= 43 { // 43 or 44 depending on padding
+		if b, err := base64.StdEncoding.DecodeString(key); err == nil && len(b) == 32 {
+			return true
+		}
+	}
+	return false
 }
 
 // GenerateSessionID generates a Client Random (Ephemeral Public Key) and SessionID (HMAC)
@@ -116,9 +125,17 @@ func (c *ClientAuth) GenerateSessionID() (clientRandom, sessionID []byte, err er
 		return nil, nil, fmt.Errorf("server public key required")
 	}
 
-	serverPub, err := hex.DecodeString(c.config.ServerPublicKey)
+	// Support BOTH Hex and Base64
+	var serverPub []byte
+	// Try Base64 first (more common in new config)
+	serverPub, err = base64.StdEncoding.DecodeString(c.config.ServerPublicKey)
 	if err != nil || len(serverPub) != 32 {
-		return nil, nil, fmt.Errorf("invalid server public key")
+		// Try Hex
+		serverPub, err = hex.DecodeString(c.config.ServerPublicKey)
+	}
+
+	if err != nil || len(serverPub) != 32 {
+		return nil, nil, fmt.Errorf("invalid server public key (must be 32 bytes Hex or Base64)")
 	}
 
 	// Generate Ephemeral Keypair

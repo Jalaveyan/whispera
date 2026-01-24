@@ -290,9 +290,11 @@ func (h *Handler) HandleConnection(conn net.Conn) {
 		log.Printf("Authenticated client: %s from %s (SNI: %s)", clientID, remoteAddr, sni)
 
 		// REALITY-like: Perform minimal handshake with real destination to satisfy DPI
-		if err := h.sendFakeHandshake(conn, clientHello, sni); err != nil {
-			log.Printf("Warning: Failed to send fake handshake: %v", err)
-		}
+		// DISABLED: Client does not expect ServerHello in current implementation.
+		// It starts sending VPN frames immediately after ClientHello.
+		// if err := h.sendFakeHandshake(conn, clientHello, sni); err != nil {
+		// 	log.Printf("Warning: Failed to send fake handshake: %v", err)
+		// }
 
 		// Call handler for authenticated connection
 		if h.config.OnAuthenticated != nil {
