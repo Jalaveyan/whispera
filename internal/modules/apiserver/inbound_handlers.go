@@ -1,6 +1,7 @@
 package apiserver
 
 import (
+	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -71,6 +72,18 @@ func (s *Server) handleAddInbound(w http.ResponseWriter, r *http.Request) {
 	log.Printf("[API] Normalized inbound config: tag=%s, port=%d, network=%s, security=%s, has_phantom_key=%v",
 		req.Tag, req.Port, req.StreamSettings.Network, req.StreamSettings.Security,
 		req.StreamSettings.Phantom.PrivateKey != "")
+
+	// Auto-generate key if missing for Phantom
+	if req.StreamSettings.Security == "phantom" && req.StreamSettings.Phantom.PrivateKey == "" {
+		var privKey [32]byte
+		if _, err := rand.Read(privKey[:]); err != nil {
+			log.Printf("[API] Failed to generate random key: %v", err)
+			s.jsonError(w, http.StatusInternalServerError, "Key generation failed")
+			return
+		}
+		req.StreamSettings.Phantom.PrivateKey = base64Encode(privKey[:])
+		log.Printf("[API] Auto-generated Phantom private key for inbound %s", req.Tag)
+	}
 
 	module, ok := s.registry.Get("config.provider")
 	if !ok {
