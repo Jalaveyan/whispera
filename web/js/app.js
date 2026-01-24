@@ -508,7 +508,7 @@ class WhisperaApp {
     // Inbounds Methods
     async loadInbounds() {
         try {
-            const data = await api.request('GET', '/api/inbounds');
+            const data = await api.request('/api/inbounds?t=' + Date.now());
             if (data.success) {
                 this.renderInboundsTable(data.inbounds);
             }
@@ -783,7 +783,7 @@ class WhisperaApp {
 
             // Получаем публичный ключ для выбранного порта
             // Если у inbound есть свой ключ, сервер должен вернуть его через API
-            const publicKeyResponse = await api.request(`/api/inbounds/pubkey?port=${selectedPort}`);
+            const publicKeyResponse = await api.request(`/api/inbounds/pubkey?port=${selectedPort}&t=${Date.now()}`);
             const serverPubKey = publicKeyResponse.public_key || info.public_key;
 
             // Получаем текущий приватный ключ пользователя
