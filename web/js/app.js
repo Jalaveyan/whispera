@@ -688,6 +688,15 @@ class WhisperaApp {
         }
     }
 
+    async testApiInbounds() {
+        try {
+            const res = await api.request('/api/inbounds');
+            alert("API Response:\n" + JSON.stringify(res, null, 2));
+        } catch (e) {
+            alert("API Error:\n" + e.message);
+        }
+    }
+
     // Обработка изменения порта (ввод вручную или выбор)
     async handleQuickConnectPortChange() {
         const portInput = document.getElementById('quickConnectPort');
