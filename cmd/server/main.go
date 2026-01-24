@@ -566,6 +566,12 @@ func createModules(manager *lifecycle.Manager) error {
 					globalTCPTransport = tcpTrans
 				}
 
+				// Register module to ensure Start() is called by lifecycle manager
+				if err := manager.Register(tcpTrans); err != nil {
+					log.Printf("⚠ Failed to register inbound %s: %v", inbound.Tag, err)
+					continue
+				}
+
 				// Start Accept Loop
 				go func(t *tcp.Transport, tag string, h *handshake.Handler) {
 					// Wait for start
@@ -603,6 +609,11 @@ func createModules(manager *lifecycle.Manager) error {
 				})
 				if err != nil {
 					log.Printf("⚠ Failed to start WS inbound %s: %v", inbound.Tag, err)
+					continue
+				}
+
+				if err := manager.Register(wsTrans); err != nil {
+					log.Printf("⚠ Failed to register WS inbound %s: %v", inbound.Tag, err)
 					continue
 				}
 
