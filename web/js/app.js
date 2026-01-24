@@ -656,6 +656,12 @@ class WhisperaApp {
             const response = await api.request(`/api/inbounds?t=${new Date().getTime()}`);
             const inbounds = response.inbounds || [];
 
+            // Debug info
+            const debugPathEl = document.getElementById('debugConfigPath');
+            const debugCountEl = document.getElementById('debugPortsCount');
+            if (debugPathEl) debugPathEl.textContent = response.config_path || 'Unknown (Server outdated?)';
+            if (debugCountEl) debugCountEl.textContent = `${inbounds?.length || 0} active`;
+
             // Сохраняем кэш для проверки существования порта
             this.cachedInbounds = inbounds;
 
