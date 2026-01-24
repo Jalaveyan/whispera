@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os/exec"
 	"strconv"
 	"time"
 
@@ -132,6 +133,11 @@ func (s *Server) handleAddInbound(w http.ResponseWriter, r *http.Request) {
 	}
 
 	log.Printf("[API] ✓ Inbound %s saved to config.yaml successfully", req.Tag)
+
+	// AUTOMATIC FIREWALL OPENING
+	if err := openFirewallPort(req.Port); err != nil {
+		log.Printf("[API] ⚠️ Warning: Failed to open firewall port %d: %v", req.Port, err)
+	}
 
 	// ⚡ DYNAMICALLY START THE INBOUND WITHOUT RESTART
 	// Import dynamic manager package
@@ -339,4 +345,33 @@ func decodeBase64OrHex(s string) ([]byte, error) {
 // Helper function to encode bytes to base64
 func base64Encode(data []byte) string {
 	return base64.StdEncoding.EncodeToString(data)
+}
+
+// openFirewallPort executes ufw commands to allow traffic on the specified port
+func openFirewallPort(port int) error {
+	if port <= 0 || port > 65535 {
+		return fmt.Errorf("invalid port %d", port)
+	}
+
+	log.Printf("[Firewall] Attempting to auto-configure UFW for port %d...", port)
+
+	// Check if ufw exists
+	if _, err := exec.LookPath("ufw"); err != nil {
+		return fmt.Errorf("ufw not found in PATH, skipping firewall config")
+	}
+
+	// Allow UDP
+	cmdUDP := exec.Command("ufw", "allow", fmt.Sprintf("%d/udp", port))
+	if out, err := cmdUDP.CombinedOutput(); err != nil {
+		return fmt.Errorf("failed to allow UDP: %v (output: %s)", err, string(out))
+	}
+
+	// Allow TCP
+	cmdTCP := exec.Command("ufw", "allow", fmt.Sprintf("%d/tcp", port))
+	if out, err := cmdTCP.CombinedOutput(); err != nil {
+		return fmt.Errorf("failed to allow TCP: %v (output: %s)", err, string(out))
+	}
+
+	log.Printf("[Firewall] ✓ Successfully allowed port %d (TCP+UDP) in UFW", port)
+	return nil
 }
