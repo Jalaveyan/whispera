@@ -796,6 +796,18 @@ class WhisperaApp {
             // Ensure port is int
             const portInt = parseInt(selectedPort);
 
+            // UPDATE URL IMMEDIATELY (Don't wait for pubkey)
+            const serverUrlInput = document.getElementById('quickConnectServerUrl');
+
+            const updateUrlField = () => {
+                if (serverUrlInput) {
+                    serverUrlInput.value = `${serverIP}:${portInt}`;
+                }
+            };
+
+            updateUrlField();
+            setTimeout(updateUrlField, 100); // Retry just in case
+
             // Получаем публичный ключ для выбранного порта
             // Если у inbound есть свой ключ, сервер должен вернуть его через API
             let serverPubKey = info.public_key; // Default to global
@@ -811,12 +823,6 @@ class WhisperaApp {
             // Получаем текущий приватный ключ пользователя
             const privateKeyInput = document.getElementById('quickConnectPrivateKey');
             const privateKey = privateKeyInput?.value || '';
-
-            // Обновляем поля
-            const serverUrlInput = document.getElementById('quickConnectServerUrl');
-            if (serverUrlInput) {
-                serverUrlInput.value = `${serverIP}:${portInt}`;
-            }
 
             // Генерируем полный URL с новым портом
             const fullUrl = this.generateQuickConnectUrl(serverIP, portInt, serverPubKey, privateKey);
