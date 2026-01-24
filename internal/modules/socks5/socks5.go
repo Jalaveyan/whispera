@@ -413,7 +413,9 @@ Loop:
 		if ip.To4() != nil {
 			addrType = relay.AddrTypeIPv4
 		} else {
-			addrType = relay.AddrTypeIPv6
+			// addrType = relay.AddrTypeIPv6
+			// Force IPv4-only: Reject IPv6 connections to ensure fallback
+			return fmt.Errorf("IPv6 not supported: %s", targetAddr)
 		}
 	}
 
@@ -728,12 +730,8 @@ func (m *Module) handleUDPConnection(tcpConn net.Conn) error {
 				dstPort = binary.BigEndian.Uint16(udpPayload[2+dlen : 2+dlen+2])
 				dataOffset = 2 + dlen + 2
 			case 0x04: // IPv6
-				if len(udpPayload) < 1+16+2 {
-					continue
-				}
-				dstAddr = net.IP(udpPayload[1:17]).String()
-				dstPort = binary.BigEndian.Uint16(udpPayload[17:19])
-				dataOffset = 19
+				// IPv6 disabled to prevent routing issues
+				continue
 			default:
 				continue
 			}

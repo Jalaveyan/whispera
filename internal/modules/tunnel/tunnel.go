@@ -562,9 +562,10 @@ func (m *Manager) dial(ctx context.Context) (net.Conn, error) {
 	// 1. UDP
 	if !m.config.EnablePhantom {
 		log.Info("Connecting via UDP to %s", m.config.ServerAddr)
-		udpAddr, resolveErr := net.ResolveUDPAddr("udp", m.config.ServerAddr)
+		// Force IPv4 for UDP
+		udpAddr, resolveErr := net.ResolveUDPAddr("udp4", m.config.ServerAddr)
 		if resolveErr == nil {
-			conn, err = net.DialUDP("udp", nil, udpAddr)
+			conn, err = net.DialUDP("udp4", nil, udpAddr)
 			if err == nil {
 				m.isTransportSecure = false
 				return conn, nil
@@ -576,7 +577,8 @@ func (m *Manager) dial(ctx context.Context) (net.Conn, error) {
 	// 2. TCP Fallback
 	if m.config.ServerAddrTCP != "" && !m.config.EnablePhantom {
 		log.Warn("Falling back to TCP: %s", m.config.ServerAddrTCP)
-		conn, err = net.DialTimeout("tcp", m.config.ServerAddrTCP, 10*time.Second)
+		// Force IPv4 for TCP Fallback
+		conn, err = net.DialTimeout("tcp4", m.config.ServerAddrTCP, 10*time.Second)
 		if err == nil {
 			// OPTIMIZATION: Increase TCP buffers for high throughput
 			// Default 64KB is often insufficient for >100Mbps
