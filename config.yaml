@@ -103,9 +103,9 @@ phantom:
   # Should match the dest server or related domains
   server_names: []
   
-  # x25519 private key for client authentication (hex encoded) -> Now Base64
+  # x25519 private key for client authentication (hex encoded)
   # Generate with: ./whispera-server x25519
-  private_key: "DHKPrryfmzJ9pT1+sLBPYI13m5iViq128fo/6bzGju0="
+  private_key: "0c728faebc9f9b327da53d7eb0b04f608d779b98958aad76f1fa3fe9bcc68eed"
   
   # ShortIds for client identification (0-16 hex characters)
   short_ids:
