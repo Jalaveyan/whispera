@@ -276,7 +276,7 @@ func (s *Stream) HandleUDPData(data []byte) error {
 		return fmt.Errorf("short UDP data")
 	}
 
-	offset := 0
+	offset := 3 // Skip SOCKS5 UDP Header [RSV:2][FRAG:1]
 	atyp := data[offset]
 	offset++
 
@@ -473,27 +473,9 @@ func (s *Stream) readUDPFromTarget() {
 				return
 			}
 
-			// Send with Retry (Seamless Reconnection)
-			retryAttempts := 0
-			const MaxRetryAttempts = 3000 // ~5 minutes
-
-			for {
-				if err := s.writer.Write(packet); err != nil {
-					select {
-					case <-s.closeChan:
-						return
-					default:
-					}
-
-					retryAttempts++
-					if retryAttempts > MaxRetryAttempts {
-						return
-					}
-					time.Sleep(100 * time.Millisecond)
-					continue
-				}
-				break
-			}
+			// Send without Retry (Fire and Forget for UDP)
+			// Blocking here would cause huge latency and kill Discord voice.
+			_ = s.writer.Write(packet)
 		}
 	}
 }

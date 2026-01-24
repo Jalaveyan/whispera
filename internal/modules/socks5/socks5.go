@@ -478,13 +478,19 @@ Loop:
 	go func() {
 		// ZERO-COPY OPTIMIZATION with sync.Pool
 		// Use pooled buffer to avoid GC on every new connection
+		// Optimize MTU: Limit read size to prevent fragmentation/drops in tunnel
+		// Standard MTU 1500 - overheads = ~1350 is safe.
+		// Reading full 64KB causes 1 packet > 1500 bytes -> Drop/Frag -> Retransmit storm.
+		const safeMTU = 1350
 		const headerSize = 8 // relay.HeaderSize
 		buf := streamBufferPool.Get().([]byte)
 		defer streamBufferPool.Put(buf)
 
 		for {
-			// Read directly into the payload area, skipping header space
-			n, err := clientConn.Read(buf[headerSize:])
+			// Read directly into the payload area, limiting to safeMTU
+			// buf[headerSize:] is large, but we splice it to [:safeMTU]
+			readBuf := buf[headerSize : headerSize+safeMTU]
+			n, err := clientConn.Read(readBuf)
 
 			// Check if stream was closed remotely (Graceful Drain Mode)
 			stream.mu.Lock()
@@ -740,10 +746,10 @@ func (m *Module) handleUDPConnection(tcpConn net.Conn) error {
 			frame := relay.NewUDPDataFrame(streamID, atyp, dstAddr, dstPort, data)
 
 			// Send to tunnel
-			enc, _ := frame.Encode()
-			if err := tunnel.Send(enc); err != nil {
-				time.Sleep(10 * time.Millisecond)
-				tunnel.Send(enc)
+			// For UDP/RTC: NO RETRY with Sleep. If congestion occurs, we drop.
+			// Blocking here kills Discord voice (jitter/lag).
+			if enc, err := frame.Encode(); err == nil {
+				_ = tunnel.Send(enc)
 			}
 		}
 	}()
@@ -766,12 +772,8 @@ func (m *Module) handleUDPConnection(tcpConn net.Conn) error {
 				}
 				addr := addrVal.(*net.UDPAddr)
 
-				// Construct SOCKS5 Packet: [00 00 00] + payload
-				pkt := make([]byte, 3+len(payload))
-				pkt[0], pkt[1], pkt[2] = 0, 0, 0 // RSV, FRAG
-				copy(pkt[3:], payload)
-
-				_, err := udpListener.WriteToUDP(pkt, addr)
+				// Construct SOCKS5 Packet: Payload already has [RSV, FRAG, ATYP...] from server
+				_, err := udpListener.WriteToUDP(payload, addr)
 				if err != nil {
 					// log or ignore
 				}

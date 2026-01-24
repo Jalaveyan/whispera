@@ -33,7 +33,7 @@ type Config struct {
 func DefaultConfig() *Config {
 	return &Config{
 		ListenAddr:    ":8443",
-		MaxPacketSize: 1350, // Reduced to prevent IP fragmentation issues
+		MaxPacketSize: 1472, // Optimized for encapsulated traffic to avoid truncation
 		ReadTimeout:   0,    // No timeout by default
 		WriteTimeout:  10 * time.Second,
 		BufferSize:    1024,
