@@ -2464,9 +2464,10 @@ whispera://IP_СЕРВЕРА:ПОРТ?pub=ПУБЛИЧНЫЙ_КЛЮЧ&key=ПРИ
         if (serverPubKey) {
             params.set('pub', serverPubKey);
         }
-        if (privateKey) {
-            params.set('key', privateKey);
-        }
+        // Private key removed from URL for security
+        // if (privateKey) {
+        //     params.set('key', privateKey);
+        // }
 
         // Add default parameters for better connectivity and evasion
         params.set('transport', 'tcp');
