@@ -102,6 +102,24 @@ func (s *Server) handleAddInbound(w http.ResponseWriter, r *http.Request) {
 		log.Printf("[API] Auto-generated unique Private Key for inbound %s (Security: %s)", req.Tag, req.StreamSettings.Security)
 	}
 
+	// Ensure DEST is set (inherit from global if missing)
+	if isPhantomOrReality && req.StreamSettings.Phantom.Dest == "" {
+		// Try to find global config to copy dest
+		if module, ok := s.registry.Get("config.provider"); ok {
+			if cfgProvider, ok := module.(*config.Provider); ok {
+				globalCfg := cfgProvider.GetConfig()
+				if globalCfg != nil && globalCfg.Phantom.Dest != "" {
+					req.StreamSettings.Phantom.Dest = globalCfg.Phantom.Dest
+					log.Printf("[API] Inherited global Phantom Dest: %s", req.StreamSettings.Phantom.Dest)
+				}
+			}
+		}
+		// Fallback if still empty
+		if req.StreamSettings.Phantom.Dest == "" {
+			req.StreamSettings.Phantom.Dest = "cloudflare.com:443"
+		}
+	}
+
 	module, ok := s.registry.Get("config.provider")
 	if !ok {
 		log.Printf("[API] Config provider not found in registry")
