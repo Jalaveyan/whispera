@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strings"
 	"sync"
 	"time"
 
@@ -436,13 +437,20 @@ func (s *Stream) readUDPFromTarget() {
 		default:
 		}
 
-		s.udpConn.SetReadDeadline(time.Now().Add(300 * time.Second))
+		// Optimize: Use longer deadline and check for specific errors
+		s.udpConn.SetReadDeadline(time.Now().Add(5 * time.Minute)) // Keepalive is 30s-60s, so 5m is safe
 		// Read into payload offset
 		n, err := s.udpConn.Read(buf[Headroom:])
 		if err != nil {
 			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				// Timeout is fine for UDP, just check closeChan and loop
 				continue
 			}
+			// Check for closed connection
+			if isClosedConnError(err) {
+				return
+			}
+			// Other errors might be temporary, but typically fatal for a connected UDP socket
 			s.fsm.Event(EventError)
 			return
 		}
@@ -782,4 +790,13 @@ func (sm *StreamManager) cleanup() {
 			delete(sm.streams, id)
 		}
 	}
+}
+
+// isClosedConnError checks if the error is due to a closed connection
+func isClosedConnError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(err.Error(), "use of closed network connection") ||
+		strings.Contains(err.Error(), "io: read/write on closed pipe")
 }

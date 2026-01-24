@@ -49,7 +49,7 @@ type Config struct {
 func DefaultConfig() *Config {
 	return &Config{
 		Enabled:    true,
-		ListenAddr: ":8080",
+		ListenAddr: ":8081",
 		EnableCORS: true,
 	}
 }
@@ -57,7 +57,7 @@ func DefaultConfig() *Config {
 // Validate validates the configuration
 func (c *Config) Validate() error {
 	if c.ListenAddr == "" {
-		c.ListenAddr = ":8080"
+		c.ListenAddr = ":8081"
 	}
 	return nil
 }
