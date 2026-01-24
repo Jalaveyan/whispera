@@ -230,12 +230,12 @@ func (h *Handler) acceptLoop() {
 		}
 
 		h.stats.TotalConnections++
-		go h.handleConnection(conn)
+		go h.HandleConnection(conn)
 	}
 }
 
-// handleConnection processes an incoming connection
-func (h *Handler) handleConnection(conn net.Conn) {
+// HandleConnection processes an incoming connection
+func (h *Handler) HandleConnection(conn net.Conn) {
 	defer conn.Close()
 
 	remoteAddr := conn.RemoteAddr().String()
@@ -311,9 +311,53 @@ func (h *Handler) handleConnection(conn net.Conn) {
 // sendFakeHandshake is a no-op now - client is already authenticated via HMAC
 // No need to proxy real TLS handshake, just return success
 func (h *Handler) sendFakeHandshake(clientConn net.Conn, clientHello []byte, sni string) error {
-	// Client is already authenticated via HMAC in SessionID
-	// No need to proxy any TLS data - client can start sending VPN traffic immediately
-	return nil
+	// 1. Connect to real destination
+	destConn, err := h.dialDestination()
+	if err != nil {
+		return fmt.Errorf("failed to dial dest: %w", err)
+	}
+	defer destConn.Close()
+
+	// 2. Forward ClientHello
+	if _, err := destConn.Write(clientHello); err != nil {
+		return fmt.Errorf("failed to write ClientHello: %w", err)
+	}
+
+	// 3. Relay ServerHello/Cert/Done back to client
+	// We read until the server stops sending (waits for client)
+	buf := make([]byte, 4096)
+
+	// Initial read with reasonable timeout
+	destConn.SetReadDeadline(time.Now().Add(5 * time.Second))
+
+	first := true
+	for {
+		n, err := destConn.Read(buf)
+		if n > 0 {
+			if _, wErr := clientConn.Write(buf[:n]); wErr != nil {
+				return wErr
+			}
+			// If we successfully read data, make subsequent reads faster
+			// to detect end of flight
+			destConn.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
+			first = false
+		}
+
+		if err != nil {
+			// Timeout is expected after the server finishes its flight
+			if netErr, ok := err.(net.Error); ok && netErr.Timeout() && !first {
+				return nil
+			}
+			if err == io.EOF {
+				return nil
+			}
+			// Only error if we haven't read anything
+			if first {
+				return err
+			}
+			return nil
+		}
+	}
 }
 
 // readClientHello reads the TLS ClientHello from connection

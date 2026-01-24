@@ -149,21 +149,70 @@ func StartInbound(inbound modconfig.InboundConfig, serverConfig *modconfig.Serve
 		return fmt.Errorf("failed to listen on %s: %w", listenAddr, err)
 	}
 
-	// Determine handshake handler for this inbound
+	// Setup Handlers based on Security type
 	var hsHandler *handshake.Handler
-	privKey := ""
-	if inbound.StreamSettings.Phantom.PrivateKey != "" {
-		privKey = inbound.StreamSettings.Phantom.PrivateKey
-	} else if serverConfig.Server.PrivateKey != "" {
-		privKey = serverConfig.Server.PrivateKey
-		log.Printf("[Dynamic] Inbound %s using global server key", inbound.Tag)
-	}
+	var phantomHandler *phantom.Handler
 
-	if privKey != "" {
-		hsHandler = createHandshakeHandler(privKey, serverConfig)
-		if hsHandler == nil {
+	isPhantom := inbound.StreamSettings.Security == "phantom" || inbound.StreamSettings.Security == "reality"
+
+	if isPhantom {
+		// --- Phantom/Reality Setup ---
+		pPrivKey := inbound.StreamSettings.Phantom.PrivateKey
+		if pPrivKey == "" {
+			pPrivKey = serverConfig.Server.PrivateKey // Fallback to global
+		}
+
+		// Create Phantom Config
+		// We inherit global settings for SNI lists etc if not specified in inbound (simplified)
+		pCfg := &phantom.Config{
+			Enabled:     true,
+			ListenAddr:  listenAddr,
+			Dest:        inbound.StreamSettings.Phantom.Dest,
+			PrivateKey:  pPrivKey,
+			ServerNames: serverConfig.Phantom.ServerNames, // Use global allowlist
+			ShortIds:    serverConfig.Phantom.ShortIds,
+			MaxTimeDiff: serverConfig.Phantom.MaxTimeDiff,
+			Fingerprint: serverConfig.Phantom.Fingerprint,
+			OnAuthenticated: func(conn net.Conn, clientID string) {
+				// Phantom Authentication Callback
+				log.Printf("[Dynamic-Phantom] Authenticated: %s on inbound %s", clientID, inbound.Tag)
+				if globalRelay != nil {
+					globalRelay.ServeTunnel(conn, nil) // No obfuscator for Phantom
+				} else {
+					conn.Close()
+				}
+			},
+		}
+
+		// Fallback Dest
+		if pCfg.Dest == "" {
+			pCfg.Dest = serverConfig.Phantom.Dest
+		}
+
+		// Instantiate Handler (but don't Start() it, just use HandleConnection)
+		var err error
+		phantomHandler, err = phantom.New(pCfg)
+		if err != nil {
 			listener.Close()
-			return fmt.Errorf("failed to create handshake handler for %s", inbound.Tag)
+			return fmt.Errorf("failed to create phantom handler: %w", err)
+		}
+		log.Printf("  ✨ [Dynamic] Enabled Phantom/Reality on inbound %s", inbound.Tag)
+
+	} else {
+		// --- Standard TCP/Noise Setup ---
+		privKey := ""
+		if inbound.StreamSettings.Phantom.PrivateKey != "" {
+			privKey = inbound.StreamSettings.Phantom.PrivateKey
+		} else if serverConfig.Server.PrivateKey != "" {
+			privKey = serverConfig.Server.PrivateKey
+		}
+
+		if privKey != "" {
+			hsHandler = createHandshakeHandler(privKey, serverConfig)
+			if hsHandler == nil {
+				listener.Close()
+				return fmt.Errorf("failed to create handshake handler for %s", inbound.Tag)
+			}
 		}
 	}
 
@@ -192,8 +241,12 @@ func StartInbound(inbound modconfig.InboundConfig, serverConfig *modconfig.Serve
 				continue
 			}
 
-			// Handle connection
-			go handleTCPConnection(conn, hsHandler)
+			// Route connection to appropriate handler
+			if phantomHandler != nil {
+				go phantomHandler.HandleConnection(conn)
+			} else {
+				go handleTCPConnection(conn, hsHandler)
+			}
 		}
 	}()
 
