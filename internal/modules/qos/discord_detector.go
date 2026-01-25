@@ -2,6 +2,7 @@ package qos
 
 import (
 	"encoding/binary"
+	"fmt"
 	"net"
 	"sync"
 	"time"
@@ -257,7 +258,7 @@ func (dd *DiscordDetector) calculateConfidenceScore(flow *DiscordFlow) float64 {
 
 // getFlowKey генерирует уникальный ключ для потока
 func (dd *DiscordDetector) getFlowKey(addr net.Addr, port uint16, ssrc uint32) string {
-	return addr.String() + ":" + string(rune(port)) + ":" + string(rune(ssrc))
+	return fmt.Sprintf("%s:%d:%d", addr.String(), port, ssrc)
 }
 
 // RecommendOptimization рекомендует применить оптимизацию для потока

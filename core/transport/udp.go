@@ -1,24 +1,44 @@
 package transport
 
 import (
+	"context"
 	"net"
+	"sync"
 	"time"
+
+	"whispera/internal/modules/qos"
 )
 
 // UDPTransport реализует UDP транспорт с VoIP оптимизацией
 type UDPTransport struct {
-	conn           net.Conn
-	config         *Config
-	listener       net.PacketConn
+	conn            net.Conn
+	config          *Config
+	listener        net.PacketConn
 	isVoIPOptimized bool
+	voipQoS         *qos.VoIPQoS
+	discordDetector *qos.DiscordDetector
+	mu              sync.RWMutex
 }
 
 // NewUDPTransport создает новый UDP транспорт
 func NewUDPTransport(config *Config) *UDPTransport {
-	return &UDPTransport{
+	// **CRITICAL**: Включаем VoIP QoS ПО УМОЛЧАНИЮ для всех UDP подключений
+	// Discord будет автоматически обнаружен DiscordDetector
+	// это решает problem с высоким пингом когда трафик идет через обычные каналы
+	
+	t := &UDPTransport{
 		config:          config,
-		isVoIPOptimized: config.Metadata != nil && config.Metadata["voip"] == "true",
+		isVoIPOptimized: true, // Всегда включено для лучшей производительности голоса
+		voipQoS:         qos.NewVoIPQoS(),
+		discordDetector: qos.NewDiscordDetector(),
 	}
+
+	// Разрешаем отключение если явно указано в конфиге
+	if config.Metadata != nil && config.Metadata["voip"] == "false" {
+		t.isVoIPOptimized = false
+	}
+
+	return t
 }
 
 // Dial устанавливает UDP соединение с VoIP оптимизацией
@@ -41,6 +61,10 @@ func (t *UDPTransport) Dial(addr string) error {
 	// Применяем VoIP оптимизации
 	if t.isVoIPOptimized {
 		t.optimizeForVoIP(conn)
+		// Включаем VoIP QoS обработку
+		if t.voipQoS != nil {
+			t.voipQoS.Enable()
+		}
 	}
 
 	t.conn = conn
@@ -62,6 +86,10 @@ func (t *UDPTransport) Listen() error {
 	// Применяем VoIP оптимизации для слушателя
 	if t.isVoIPOptimized {
 		t.optimizeListenerForVoIP(conn)
+		// Включаем VoIP QoS обработку и Discord детектор
+		if t.voipQoS != nil {
+			t.voipQoS.Enable()
+		}
 	}
 
 	t.listener = conn
@@ -85,20 +113,42 @@ func (t *UDPTransport) ReadRaw(buf []byte) (int, error) {
 	return t.conn.Read(buf)
 }
 
-// WriteTo отправляет данные на указанный адрес
+// WriteTo отправляет данные на указанный адрес с VoIP приоритизацией
 func (t *UDPTransport) WriteTo(pkt []byte, addr net.Addr) (int, error) {
 	if t.listener == nil {
 		return 0, ErrNotListening
 	}
+
+	// Применяем VoIP QoS обработку если включено
+	if t.isVoIPOptimized && t.voipQoS != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Millisecond)
+		defer cancel()
+
+		// Обрабатываем пакет через QoS систему
+		queuedPkt, err := t.voipQoS.ProcessPacket(ctx, pkt, addr)
+		if err == nil && queuedPkt != nil {
+			// Используем обработанный пакет если он был модифицирован
+			return t.listener.WriteTo(queuedPkt.Data, addr)
+		}
+	}
+
+	// Обычная отправка без QoS обработки
 	return t.listener.WriteTo(pkt, addr)
 }
 
-// ReadFrom читает данные с адресом отправителя
+// ReadFrom читает данные с адресом отправителя и анализирует Discord VoIP
 func (t *UDPTransport) ReadFrom(buf []byte) (int, net.Addr, error) {
 	if t.listener == nil {
 		return 0, nil, ErrNotListening
 	}
-	return t.listener.ReadFrom(buf)
+
+	n, addr, err := t.listener.ReadFrom(buf)
+	if err == nil && n > 0 && t.isVoIPOptimized && t.discordDetector != nil {
+		// Анализируем входящий пакет для обнаружения Discord VoIP
+		go t.discordDetector.AnalyzePacket(buf[:n], addr, t.LocalAddr())
+	}
+
+	return n, addr, err
 }
 
 // Close закрывает UDP соединение и/или слушатель
