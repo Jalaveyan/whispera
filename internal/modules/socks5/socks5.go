@@ -650,9 +650,9 @@ func (m *Module) handleUDPConnection(tcpConn net.Conn) error {
 	}
 
 	// Create UDP listener for relay
-	// BIND FIX: Listen on 0.0.0.0 to allow traffic from containers/VMs/LAN
+	// BIND FIX: Listen on 127.0.0.1 to match Source IP expectation of localhost clients.
 	// Force IPv4 (udp4) to prevent Windows "wsasendto" errors when writing to IPv4 from IPv6 socket
-	udpListener, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.ParseIP("0.0.0.0"), Port: 0})
+	udpListener, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
 	if err != nil {
 		return fmt.Errorf("failed to create UDP listener: %w", err)
 	}
@@ -907,22 +907,8 @@ func (m *Module) handleUDPConnection(tcpConn net.Conn) error {
 				// if the packet exceeds standard Ethernet MTU (1500) due to driver/stack limits.
 				// Also, if the tunnel sends padded data, we must strip it.
 
-				realLen := len(payload)
-				for realLen > 0 && payload[realLen-1] == 0 {
-					realLen--
-				}
-
-				if realLen < len(payload) {
-					payload = payload[:realLen]
-				}
-
-				// Safety cap to MTU (1200 bytes for maximum compatibility)
-				// Discord/Mihomo buffers might be small, and 1200 covers all Voice frames (~200b)
-				// while truncating only large Jumbo/Probe packets (which is fine).
-				if len(payload) > 1200 {
-					payload = payload[:1200]
-				}
-
+				// Send payload directly without modification.
+				// Removing "trailing zero strip" and "1200 cap" because it corrupts valid binary data.
 				sendFunc(payload)
 
 				// If we stripped significant data (zeros), sends specific variations if needed
