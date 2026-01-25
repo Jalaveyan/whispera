@@ -431,8 +431,10 @@ func (s *Stream) readUDPFromTarget() {
 		s.Close()
 	}()
 
+	// Buffer configuration
+	const Headroom = 300
+
 	for {
-		const Headroom = 300
 		select {
 		case <-s.closeChan:
 			return
