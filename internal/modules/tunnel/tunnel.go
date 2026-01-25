@@ -523,17 +523,10 @@ func (m *Manager) dial(ctx context.Context) (net.Conn, error) {
 	var conn net.Conn
 	var err error
 
-	// Phantom / ASN Bypass / Secure Mode
+	// Phantom / ASN Bypass
 	targetSNI := m.getRotationSNI()
-	usePhantom := m.config.EnablePhantom
-
-	// Determine transport preference
-	// If ServerAddr equals ServerAddrTCP, it means main.go selected TCP as primary
-	preferTCP := (m.config.ServerAddr == m.config.ServerAddrTCP) || usePhantom
-
-	// 1. Phantom / ASN Bypass (Always TCP/TLS)
-	if usePhantom && m.phantomAuth != nil {
-		log.Info("Phantom protocol active (TCP/TLS) - using SNI: %s", targetSNI)
+	if m.config.EnablePhantom && m.phantomAuth != nil {
+		log.Info("Phantom protocol active - using SNI: %s", targetSNI)
 		if m.asnBypassDialer != nil {
 			m.asnBypassDialer.SetPhantomConfig(targetSNI, m.phantomAuth)
 		}
@@ -548,13 +541,14 @@ func (m *Manager) dial(ctx context.Context) (net.Conn, error) {
 
 	if m.asnBypassDialer != nil && m.config.EnableASNBypass {
 		log.Info("Dialing via ASN Bypass...")
-		// ASN Bypass is inherently TCP based
 		conn, err = m.asnBypassDialer.DialContext(ctx, "tcp", m.config.ServerAddr)
 		if err != nil {
 			log.Warn("ASN bypass dial failed: %v", err)
 		} else {
 			log.Info("ASN bypass connection established")
+			// CRITICAL: Apply TCP Buffer Optimizations to ASN Connection
 			if tcpConn, ok := conn.(*net.TCPConn); ok {
+				log.Info("[TUNNEL] Applying 12MB buffers to ASN connection (High Performance)")
 				tcpConn.SetReadBuffer(12 * 1024 * 1024)
 				tcpConn.SetWriteBuffer(12 * 1024 * 1024)
 				tcpConn.SetNoDelay(true)
@@ -564,29 +558,13 @@ func (m *Manager) dial(ctx context.Context) (net.Conn, error) {
 		}
 	}
 
-	// 2. Primary Transport (TCP or UDP based on config)
-	if preferTCP {
-		log.Info("Connecting via TCP to %s", m.config.ServerAddr)
-		conn, err = net.DialTimeout("tcp4", m.config.ServerAddr, m.config.ConnectionTimeout)
-		if err == nil {
-			if tcpConn, ok := conn.(*net.TCPConn); ok {
-				tcpConn.SetReadBuffer(20 * 1024 * 1024)
-				tcpConn.SetWriteBuffer(20 * 1024 * 1024)
-				tcpConn.SetNoDelay(true)
-			}
-			m.isTransportSecure = true
-			return conn, nil
-		}
-		log.Warn("TCP connection failed: %v. Attempting UDP fallback if different...", err)
-	}
-
-	// 3. UDP (Primary if configured, or Fallback)
-	if !preferTCP || m.config.ServerAddr != m.config.ServerAddrTCP {
-		// Only try UDP if we didn't just try it as TCP (unless addrs differ)
+	// Fallback Logic
+	// 1. UDP
+	if !m.config.EnablePhantom {
 		log.Info("Connecting via UDP to %s", m.config.ServerAddr)
-		udpAddr, resolveErr := net.ResolveUDPAddr("udp4", m.config.ServerAddr)
+		udpAddr, resolveErr := net.ResolveUDPAddr("udp", m.config.ServerAddr)
 		if resolveErr == nil {
-			conn, err = net.DialUDP("udp4", nil, udpAddr)
+			conn, err = net.DialUDP("udp", nil, udpAddr)
 			if err == nil {
 				m.isTransportSecure = false
 				return conn, nil
@@ -595,15 +573,18 @@ func (m *Manager) dial(ctx context.Context) (net.Conn, error) {
 		err = fmt.Errorf("UDP failed: %v", err)
 	}
 
-	// 4. TCP Fallback (Explicit)
-	if m.config.ServerAddrTCP != "" && !preferTCP {
-		log.Warn("Falling back to separate TCP address: %s", m.config.ServerAddrTCP)
-		conn, err = net.DialTimeout("tcp4", m.config.ServerAddrTCP, 10*time.Second)
+	// 2. TCP Fallback
+	if m.config.ServerAddrTCP != "" && !m.config.EnablePhantom {
+		log.Warn("Falling back to TCP: %s", m.config.ServerAddrTCP)
+		conn, err = net.DialTimeout("tcp", m.config.ServerAddrTCP, 10*time.Second)
 		if err == nil {
+			// OPTIMIZATION: Increase TCP buffers for high throughput
+			// Default 64KB is often insufficient for >100Mbps
+			// User requested 20MB buffers for maximum throughput
 			if tcpConn, ok := conn.(*net.TCPConn); ok {
-				tcpConn.SetReadBuffer(20 * 1024 * 1024)
-				tcpConn.SetWriteBuffer(20 * 1024 * 1024)
-				tcpConn.SetNoDelay(true)
+				tcpConn.SetReadBuffer(20 * 1024 * 1024)  // 20MB
+				tcpConn.SetWriteBuffer(20 * 1024 * 1024) // 20MB
+				tcpConn.SetNoDelay(true)                 // Low latency
 			}
 			m.isTransportSecure = true
 			return conn, nil
@@ -1203,15 +1184,7 @@ func (m *Manager) Receive(buf []byte) (int, error) {
 	}
 
 	n := len(packet)
-
-	if m.obfuscator != nil && !m.isTransportSecure {
-		deobfuscated, _, err := m.obfuscator.Process(buf[:n], interfaces.DirectionInbound)
-		if err == nil && deobfuscated != nil {
-			copy(buf, deobfuscated)
-			n = len(deobfuscated)
-		}
-	}
-
+	// Deobfuscation is handled in readLoop via deobfuscatingReader
 	return n, nil
 }
 
@@ -1266,101 +1239,70 @@ func (m *Manager) Send(data []byte) error {
 	var lastErr error
 
 	for attempt := 0; attempt < maxRetries; attempt++ {
-		var targetConn *managedConn
+		targetConn := m.activeConn
 
-		// STREAM ROUTING LOGIC (Seamless Rotation Support)
 		if len(data) >= 8 {
 			m.connMu.Lock()
 			if frameType == FrameTypeConnect {
-				// New Stream: Always bind to ACTIVE connection (the new one)
 				if m.activeConn != nil {
 					m.streamConns[streamID] = m.activeConn
 					targetConn = m.activeConn
 				}
 			} else {
-				// Existing Stream: Use BOUND connection (even if draining)
 				if c, ok := m.streamConns[streamID]; ok {
 					targetConn = c
-				} else {
-					// Stream not found? (Maybe new UDP packet for unknown stream)
-					// Fallback to active, and bind it.
-					// Note: UDP_DATA often comes without Connect phase in some SOCKS impls,
-					// but here socks5 module sends explicit CONNECT first.
-					// If we missed it, assume Active.
-					if m.activeConn != nil {
-						m.streamConns[streamID] = m.activeConn
-						targetConn = m.activeConn
-					}
 				}
-
-				// Cleanup on Close
 				if frameType == FrameTypeClose {
 					delete(m.streamConns, streamID)
 				}
 			}
 			m.connMu.Unlock()
-		} else {
-			// Non-frame data (shouldn't happen in this architecture, but safe fallback)
-			m.connMu.RLock()
-			targetConn = m.activeConn
-			m.connMu.RUnlock()
 		}
 
+		m.connMu.RLock()
 		if targetConn == nil {
+			m.connMu.RUnlock()
+
 			// If reconnecting, wait and retry
 			state := m.GetState()
-			// Check if we are truly disconnected or just rotating
 			if state == StateReconnecting || state == StateRotating || state == StateConnecting {
-				// Only backoff if we really have NO connection to send to.
-				// If we are rotating, activeConn might be nil briefly during swap,
-				// but draining conns are valid. If targetConn is nil here, it means
-				// either no active conn AND stream not bound to draining.
-				log.Debug("Send: waiting for connection (attempt %d/%d)", attempt+1, maxRetries)
+				log.Debug("Send: waiting for reconnect (attempt %d/%d)", attempt+1, maxRetries)
 				time.Sleep(500 * time.Millisecond)
 				continue
 			}
-			return fmt.Errorf("not connected and no bound connection for stream")
+			return fmt.Errorf("not connected")
 		}
+		conn := targetConn
+		m.connMu.RUnlock()
 
-		// Write to the specific connection
-		n, err := targetConn.Write(data)
+		n, err := conn.Write(data)
 		if err != nil {
 			lastErr = err
 
 			// Check if it's a "use of closed network connection" error
+			// Also handle "connection reset" and "EOF" which imply connection death
 			errMsg := err.Error()
 			isClosed := strings.Contains(errMsg, "closed") || strings.Contains(errMsg, "broken pipe") || strings.Contains(errMsg, "connection reset") || strings.Contains(errMsg, "EOF")
 
 			if isClosed {
-				// If the specific connection failed...
-				m.connMu.Lock()
-				// If it was the Active connection, trigger reconnect
-				if targetConn == m.activeConn {
-					// Only trigger if we are supposed to be connected
-					if m.GetState() == StateConnected {
-						log.Warn("Send: Active connection closed. Triggering Reconnect... (Err: %v)", err)
-						go m.Reconnect(context.Background())
-					}
-				} else {
-					// It was a draining connection. Just log and maybe cleanup?
-					// monitorDrainingConn handles cleanup, but we can't send data anymore.
-					// Return error so caller knows stream is dead.
-					log.Warn("Send: Draining connection %s died. Stream %d lost.", targetConn.id, streamID)
-					// We can't migrate TCP streams to new connection transparently without server support.
-					// So this stream is dead.
-					delete(m.streamConns, streamID)
-				}
-				m.connMu.Unlock()
+				state := m.GetState()
 
-				// If it was Active, loop will retry with new connection (after wait)
-				// If Draining, we break and fail (cannot resume on new conn)
-				if targetConn != m.activeConn {
-					return err
+				// If we encounter a closed connection while supposedly Connected, trigger Reconnect immediately
+				if state == StateConnected {
+					// Only trigger if this was the active connection (or we can't tell)
+					// handleReadError checks if it's activeConn
+					log.Warn("Send: connection unexpectedly closed/reset. Triggering Reconnect... (Err: %v)", err)
+					m.handleReadError(conn, err)
 				}
 
-				// Wait for reconnect
-				time.Sleep(500 * time.Millisecond)
-				continue
+				// Wait and retry if we are (now) reconnecting
+				// We check state again because handleReadError might have changed it
+				state = m.GetState()
+				if state == StateReconnecting || state == StateRotating || state == StateConnecting {
+					log.Debug("Send: connection closed during reconnect (attempt %d/%d). Waiting...", attempt+1, maxRetries)
+					time.Sleep(500 * time.Millisecond)
+					continue
+				}
 			}
 			return err
 		}
