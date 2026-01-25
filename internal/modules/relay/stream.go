@@ -176,6 +176,8 @@ func (s *Stream) Connect(ctx context.Context) error {
 				s.fsm.Event(EventConnectFail)
 				return err
 			}
+			conn.SetReadBuffer(4 * 1024 * 1024)
+			conn.SetWriteBuffer(4 * 1024 * 1024)
 			s.udpConn = conn
 
 			if err := s.fsm.Event(EventConnectOK); err != nil {
@@ -198,6 +200,8 @@ func (s *Stream) Connect(ctx context.Context) error {
 				s.fsm.Event(EventConnectFail)
 				return err
 			}
+			conn.SetReadBuffer(4 * 1024 * 1024)
+			conn.SetWriteBuffer(4 * 1024 * 1024)
 			s.udpConn = conn
 
 			if err := s.fsm.Event(EventConnectOK); err != nil {
@@ -273,11 +277,12 @@ func (s *Stream) HandleUDPData(data []byte) error {
 	s.lastT = time.Now()
 
 	// Parse payload: [AddrType][Addr][Port][Data]
-	if len(data) < 7 {
+	// Note: Client uses optimized format without RSV/FRAG headers
+	if len(data) < 4 {
 		return fmt.Errorf("short UDP data")
 	}
 
-	offset := 3 // Skip SOCKS5 UDP Header [RSV:2][FRAG:1]
+	offset := 0
 	atyp := data[offset]
 	offset++
 
@@ -632,14 +637,33 @@ func NewStreamManager(dialer proxy.Dialer) *StreamManager {
 	return sm
 }
 
-// HandleConnect handles incoming CONNECT frame (server-side)
-func (sm *StreamManager) HandleConnect(streamID uint16, payload *ConnectPayload, writer ResponseWriter) error {
+// RegisterStream creates and registers a new stream (Synchronous)
+func (sm *StreamManager) RegisterStream(streamID uint16, payload *ConnectPayload, writer ResponseWriter) error {
 	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	// Check for existing
+	if _, exists := sm.streams[streamID]; exists {
+		return fmt.Errorf("stream id %d collision", streamID)
+	}
 
 	// Create stream with default profile (Backward compatibility)
+	// Note: We don't dial here.
 	stream := NewStream(streamID, payload.Protocol, payload.Addr, payload.Port, ProfileBalanced, writer, sm.dialer)
 	sm.streams[streamID] = stream
-	sm.mu.Unlock()
+
+	return nil
+}
+
+// CompleteConnect performs the dialect (Asynchronous)
+func (sm *StreamManager) CompleteConnect(streamID uint16, payload *ConnectPayload) error {
+	sm.mu.RLock()
+	stream, ok := sm.streams[streamID]
+	sm.mu.RUnlock()
+
+	if !ok {
+		return ErrStreamNotFound
+	}
 
 	// Connect to target
 	ctx, cancel := context.WithTimeout(sm.ctx, 10*time.Second)

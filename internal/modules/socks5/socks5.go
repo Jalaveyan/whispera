@@ -630,18 +630,29 @@ func (m *Module) handleUDPConnection(tcpConn net.Conn) error {
 	}
 
 	// Create UDP listener for relay
-	udpListener, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	// BIND FIX: Listen on 0.0.0.0 to allow traffic from containers/VMs/LAN
+	udpListener, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("0.0.0.0"), Port: 0})
 	if err != nil {
 		return fmt.Errorf("failed to create UDP listener: %w", err)
 	}
+	udpListener.SetReadBuffer(4 * 1024 * 1024)
+	udpListener.SetWriteBuffer(4 * 1024 * 1024)
 	defer udpListener.Close()
 
 	localAddr := udpListener.LocalAddr().(*net.UDPAddr)
 
 	// Send success reply with relay address
 	// SOCKS5 reply: VER REP RSV ATYP BND.ADDR BND.PORT
+	// Note: We reply with the interface IP we listened on (or 127.0.0.1 if 0.0.0.0)
+	// to tell the client where to send packets.
 	reply := []byte{0x05, 0x00, 0x00, 0x01}
-	reply = append(reply, localAddr.IP.To4()...)
+
+	// If bound to 0.0.0.0, we should tell client to send to 127.0.0.1 (or local LAN IP, but 127.0.0.1 is safest for local apps)
+	if localAddr.IP.IsUnspecified() {
+		reply = append(reply, net.ParseIP("127.0.0.1").To4()...)
+	} else {
+		reply = append(reply, localAddr.IP.To4()...)
+	}
 	portBuf := make([]byte, 2)
 	binary.BigEndian.PutUint16(portBuf, uint16(localAddr.Port))
 	reply = append(reply, portBuf...)
@@ -681,9 +692,19 @@ func (m *Module) handleUDPConnection(tcpConn net.Conn) error {
 
 	// Monitor TCP connection closing (signals end of association)
 	go func() {
-		buf := make([]byte, 1)
-		tcpConn.Read(buf)
-		udpListener.Close() // Force close listener to break loop
+		buf := make([]byte, 1024)
+		for {
+			// SOCKS5 UDP Associate check:
+			// The TCP connection must be kept alive. If it closes, we close UDP.
+			// Users might send Keep-Alive data, so we must drain it, not exit on first byte.
+			_, err := tcpConn.Read(buf)
+			if err != nil {
+				// EOF or Error -> Connection closed
+				udpListener.Close()
+				break
+			}
+			// Received data (KeepAlive?) -> Ignore and continue monitoring
+		}
 	}()
 
 	// Bidirectional Copy
@@ -751,12 +772,8 @@ func (m *Module) handleUDPConnection(tcpConn net.Conn) error {
 				continue
 			}
 
-			// Extract FRAG (byte 2 of original buf which is not in udpPayload)
-			// Actually udpPayload = buf[3:n], so FRAG was at buf[2]
-			frag := buf[2]
-
 			data := udpPayload[dataOffset:]
-			frame := relay.NewUDPDataFrame(streamID, frag, atyp, dstAddr, dstPort, data)
+			frame := relay.NewUDPDataFrame(streamID, atyp, dstAddr, dstPort, data)
 
 			// Send to tunnel
 			// For UDP/RTC: NO RETRY with Sleep. If congestion occurs, we drop.
@@ -772,22 +789,30 @@ func (m *Module) handleUDPConnection(tcpConn net.Conn) error {
 			select {
 			case dp := <-stream.dataChan:
 				payload := dp.Payload
+				if len(payload) == 0 {
+					continue
+				}
 
-				// Payload is [ATYP][ADDR][PORT][DATA]
+				// Reconstruct SOCKS5 UDP header (RSV:2, FRAG:1)
+				// The tunnel sends [ATYP][ADDR][PORT][DATA]
+				// We need [RSV][RSV][FRAG][ATYP][ADDR][PORT][DATA]
+				packet := make([]byte, 3+len(payload))
+				packet[0] = 0x00 // RSV
+				packet[1] = 0x00 // RSV
+				packet[2] = 0x00 // FRAG
+				copy(packet[3:], payload)
 
-				// Get Client Address
-				addrVal := clientAddr.Load()
-				if addrVal == nil {
-					// Drop if we don't know where to send yet
+				// Determine client addr (use stored or remote addr)
+				val := clientAddr.Load()
+				if val == nil {
 					tunnel.Recycle(dp.Raw)
 					continue
 				}
-				addr := addrVal.(*net.UDPAddr)
+				addr := val.(net.Addr)
 
-				// Construct SOCKS5 Packet: Payload already has [RSV, FRAG, ATYP...] from server
-				_, err := udpListener.WriteToUDP(payload, addr)
+				_, err := udpListener.WriteToUDP(packet, addr.(*net.UDPAddr))
 				if err != nil {
-					// log or ignore
+					// log.Error("Failed to write to UDP", "error", err)
 				}
 				tunnel.Recycle(dp.Raw)
 

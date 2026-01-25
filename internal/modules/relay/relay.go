@@ -246,13 +246,27 @@ func (s *Server) handleConnect(frame *Frame, writer ResponseWriter) error {
 	}
 
 	// Delegate connection handling to StreamManager
-	if err := s.streamManager.HandleConnect(frame.StreamID, payload, writer); err != nil {
+	// Sync creation
+	if err := s.streamManager.RegisterStream(frame.StreamID, payload, writer); err != nil {
 		atomic.AddUint64(&s.connectFailed, 1)
 		if s.config.Debug {
-			s.log.Debug("Failed to connect stream %d: %v", frame.StreamID, err)
+			s.log.Debug("Failed to register stream %d: %v", frame.StreamID, err)
 		}
 		return err
 	}
+
+	// Async dial
+	// Note: We launch this in a goroutine because handleConnect itself is called synchronously
+	// from ProcessFrame -> handleConnect. We must not block the frame processor.
+	go func() {
+		if err := s.streamManager.CompleteConnect(frame.StreamID, payload); err != nil {
+			atomic.AddUint64(&s.connectFailed, 1)
+			if s.config.Debug {
+				s.log.Debug("Failed to connect stream %d: %v", frame.StreamID, err)
+			}
+			s.sendFrameToWriter(NewConnectFailFrame(frame.StreamID, err.Error()), writer)
+		}
+	}()
 
 	atomic.AddUint64(&s.connectSuccess, 1)
 	return nil
@@ -481,46 +495,80 @@ func (s *Server) ServeTunnel(conn net.Conn, obfuscator interfaces.Obfuscator) {
 			// Handle Frame via StreamManager
 			switch f.Type {
 			case FrameConnect:
-				// Handle Connect Async to avoid blocking the tunnel read loop
-				// Payload parsing and stream creation happens here
-				go func(fr *Frame) {
-					// Recover from panic to prevent crashing the server
-					defer func() {
-						if r := recover(); r != nil {
-							s.log.Error("Panic in Connect handler: %v", r)
-							sendFrame(NewConnectFailFrame(fr.StreamID, "Internal Error"))
+				// PARTIAL ASYNC HANDLER:
+				// 1. Parse payload SYNC
+				// 2. Create/Register stream in StreamManager SYNC (to prevent race with early DATA)
+				// 3. Dial ASYNC
+
+				// Deep copy payload as the buffer is reused
+				payloadCopy := make([]byte, len(f.Payload))
+				copy(payloadCopy, f.Payload)
+				f.Payload = payloadCopy
+
+				connPayload, err := DecodeConnectPayload(f.Payload)
+				if err != nil {
+					sendFrame(NewConnectFailFrame(f.StreamID, "InvPayload: "+err.Error()))
+					continue // Break switch, continue loop
+				}
+
+				// Permission check
+				if connPayload.Protocol == ProtoUDP && !s.config.EnableUDP {
+					sendFrame(NewConnectFailFrame(f.StreamID, "UDP disabled"))
+					continue
+				}
+
+				// Synchronous Registration
+				// We assume sm.RegisterStream checks if IDs exist and creates the state object
+				if err := sm.RegisterStream(f.StreamID, connPayload, writer); err != nil {
+					sendFrame(NewConnectFailFrame(f.StreamID, "RegFail: "+err.Error()))
+					continue
+				}
+
+				// Auto-Detect Fast Path for UDP Relay
+				// UDP Relay (ListenUDP) is non-blocking/instant, so we can do it SYNC
+				// to avoid Race Conditions where Data arrives before Goroutine starts.
+				isFastPath := false
+				if connPayload.Protocol == ProtoUDP && (connPayload.Addr == "0.0.0.0" || connPayload.Addr == "::") {
+					isFastPath = true
+				}
+
+				if isFastPath {
+					// Synchronous Dial (Fast Path)
+					if err := sm.CompleteConnect(f.StreamID, connPayload); err != nil {
+						s.log.Warn("Stream %d connect failed (Sync): %v", f.StreamID, err)
+						sendFrame(NewConnectFailFrame(f.StreamID, err.Error()))
+					}
+				} else {
+					// Async Dialing (Standard Path)
+					go func(sid uint16, cp *ConnectPayload) {
+						// Recover
+						defer func() {
+							if r := recover(); r != nil {
+								s.log.Error("Panic in Async Dial: %v", r)
+								sendFrame(NewConnectFailFrame(sid, "Internal Error"))
+								sm.HandleClose(sid) // Cleanup
+							}
+						}()
+
+						// Perform the blocking dial
+						if err := sm.CompleteConnect(sid, cp); err != nil {
+							s.log.Warn("Stream %d connect failed: %v", sid, err)
+							sendFrame(NewConnectFailFrame(sid, err.Error()))
+							// StreamManager cleans up on failure
 						}
-					}()
-
-					// Deep copy payload as the buffer is reused
-					payloadCopy := make([]byte, len(fr.Payload))
-					copy(payloadCopy, fr.Payload)
-					fr.Payload = payloadCopy // Swap with copy
-
-					connPayload, err := DecodeConnectPayload(fr.Payload)
-					if err != nil {
-						sendFrame(NewConnectFailFrame(fr.StreamID, "InvPayload: "+err.Error()))
-						return
-					}
-					// Permission check (optional, but good practice)
-					if connPayload.Protocol == ProtoUDP && !s.config.EnableUDP {
-						sendFrame(NewConnectFailFrame(fr.StreamID, "UDP disabled"))
-						return
-					}
-
-					// Delegate to SM
-					if err := sm.HandleConnect(fr.StreamID, connPayload, writer); err != nil {
-						s.log.Warn("Stream %d connect failed: %v", fr.StreamID, err)
-						sendFrame(NewConnectFailFrame(fr.StreamID, err.Error()))
-					}
-				}(f)
+					}(f.StreamID, connPayload)
+				}
 
 			case FrameData:
 				sm.HandleData(f.StreamID, f.Payload)
 
 			case FrameUDPData:
 				// UDP Support!
-				sm.HandleUDPData(f.StreamID, f.Payload)
+				// Handle Async to prevent DNS resolution (in HandleUDPData) or socket writes
+				// from blocking the main Tunnel Read Loop.
+				go func(sid uint16, pay []byte) {
+					sm.HandleUDPData(sid, pay)
+				}(f.StreamID, f.Payload)
 
 			case FrameClose:
 				sm.HandleClose(f.StreamID)

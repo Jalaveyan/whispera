@@ -460,7 +460,7 @@ func NewPongFrame() *Frame {
 }
 
 // NewUDPDataFrame creates a UDP_DATA frame
-func NewUDPDataFrame(streamID uint16, frag uint8, addrType uint8, addr string, port uint16, data []byte) *Frame {
+func NewUDPDataFrame(streamID uint16, addrType uint8, addr string, port uint16, data []byte) *Frame {
 	// Format: [RSV:2][FRAG:1][AddrType:1][Addr:N][Port:2][Data:N]
 
 	// Calculate size
@@ -474,18 +474,11 @@ func NewUDPDataFrame(streamID uint16, frag uint8, addrType uint8, addr string, p
 		addrLen = 1 + len(addr)
 	}
 
-	size := 2 + 1 + 1 + addrLen + 2 + len(data) // RSV(2) + FRAG(1) + ATYP(1) + ...
+	size := 1 + addrLen + 2 + len(data) // ATYP(1) + ADDR(N) + PORT(2) + DATA(N)
 	payload := make([]byte, size)
 
 	offset := 0
-	// RSV (2 bytes)
-	payload[offset] = 0x00
-	offset++
-	payload[offset] = 0x00
-	offset++
-	// FRAG (1 byte)
-	payload[offset] = frag
-	offset++
+	// NO RSV/FRAG for optimized UDP tunnel (Shadowsocks style)
 
 	// Address type
 	payload[offset] = addrType
@@ -630,9 +623,9 @@ func SealUDPData(buf []byte, streamID uint16, addrType uint8, addr string, port 
 
 	dataLen := len(buf) - dataOffset
 
-	// Calculate UDP Header Size (SOCKS5 UDP Header)
-	// RSV(2) + FRAG(1) + ATYP(1) + ADDR + PORT(2)
-	udpHeaderLen := 2 + 1 + 1 + 2
+	// Calculate UDP Header Size (Optimized: No RSV/FRAG)
+	// ATYP(1) + ADDR + PORT(2)
+	udpHeaderLen := 1 + 2
 	switch addrType {
 	case AddrTypeIPv4:
 		udpHeaderLen += 4
@@ -653,15 +646,6 @@ func SealUDPData(buf []byte, streamID uint16, addrType uint8, addr string, port 
 	// Write UDP Header components
 	udpStart := frameStart + HeaderSize
 	current := udpStart
-
-	// RSV
-	buf[current] = 0x00
-	current++
-	buf[current] = 0x00
-	current++
-	// FRAG
-	buf[current] = 0x00
-	current++
 
 	// ATYP
 	buf[current] = addrType
