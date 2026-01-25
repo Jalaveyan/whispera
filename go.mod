@@ -4,7 +4,7 @@ go 1.24.1
 
 require (
 	github.com/pion/stun v0.6.1
-	github.com/quic-go/quic-go v0.58.0
+	github.com/quic-go/quic-go v0.59.0
 	github.com/refraction-networking/utls v1.8.1
 	github.com/xtaci/smux v1.5.50
 	golang.org/x/crypto v0.43.0
