@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strings"
 	"sync"
 	"time"
 
@@ -260,9 +261,14 @@ func (h *Handler) HandleConnection(conn net.Conn) {
 	conn.SetReadDeadline(time.Now().Add(10 * time.Second))
 
 	// Read TLS ClientHello
+	// Read TLS ClientHello
 	clientHello, err := h.readClientHello(conn)
 	if err != nil {
-		log.Printf("Failed to read ClientHello from %s: %v", remoteAddr, err)
+		if strings.Contains(err.Error(), "non-TLS") {
+			log.Debug("Ignored non-TLS traffic from %s: %v", remoteAddr, err)
+		} else {
+			log.Printf("Failed to read ClientHello from %s: %v", remoteAddr, err)
+		}
 		return
 	}
 
@@ -376,7 +382,11 @@ func (h *Handler) readClientHello(conn net.Conn) ([]byte, error) {
 	}
 
 	// Validate TLS record
+	// Validate TLS record
 	if header[0] != tlsRecordHandshake {
+		if isHTTP(header[0]) {
+			return nil, fmt.Errorf("non-TLS (HTTP) traffic detected: %02x", header[0])
+		}
 		return nil, fmt.Errorf("not a handshake record: %02x", header[0])
 	}
 
@@ -704,6 +714,16 @@ func detectFormat(s string) string {
 		return "Base64"
 	}
 	return "Unknown"
+}
+
+// isHTTP checks if the byte corresponds to the first letter of an HTTP method
+func isHTTP(b byte) bool {
+	// GET, POST, HEAD, PUT, DELETE, CONNECT, OPTIONS, TRACE, PATCH
+	switch b {
+	case 'G', 'P', 'C', 'H', 'O', 'D', 'T':
+		return true
+	}
+	return false
 }
 
 // Ensure Handler implements TLS check
