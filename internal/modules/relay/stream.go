@@ -461,6 +461,12 @@ func (s *Stream) readUDPFromTarget() {
 		}
 
 		if n > 0 {
+			// SAFETY CAP (Server Side): Trim large UDP packets (Jumbo/Probe) to 1200 bytes
+			// to prevent fragmentation/drops on the client tunnel link.
+			if n > 1200 {
+				n = 1200
+			}
+
 			s.bytesIn += uint64(n)
 			s.lastT = time.Now()
 
@@ -525,6 +531,11 @@ func (s *Stream) readRelayUDP() {
 		}
 
 		if n > 0 {
+			// SAFETY CAP (Server Side - Relay Mode): Trim large UDP packets (Jumbo/Probe)
+			if n > 1200 {
+				n = 1200
+			}
+
 			s.bytesIn += uint64(n)
 			s.lastT = time.Now()
 
