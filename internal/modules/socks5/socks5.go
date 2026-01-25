@@ -55,9 +55,9 @@ type Module struct {
 // streamBufferPool recycles 64KB+ buffers for individual client streams
 var streamBufferPool = sync.Pool{
 	New: func() interface{} {
-		// 64KB (Max Payload) + 8B (Header)
-		// Using 66KB to be safe and aligned
-		return make([]byte, 66*1024)
+		// 1350 bytes (Safe MTU) + 8B (Header)
+		// Using ~1400 bytes to be safe and aligned
+		return make([]byte, 1400)
 	},
 }
 
@@ -504,8 +504,8 @@ Loop:
 		// Optimize MTU: Limit read size to prevent fragmentation/drops in tunnel
 		// Optimize MTU: Limit read size to prevent fragmentation/drops in tunnel
 		// Optimize MTU: Limit read size to prevent fragmentation/drops in tunnel
-		// Standard MTU 1500 - overheads = ~1350 is safe.
-		const safeMTU = 1350
+		// Standard MTU 1500 - QUIC/IP overheads. 1280 is safest minimum.
+		const safeMTU = 1280
 		const headerSize = 8 // relay.HeaderSize
 
 		for {

@@ -44,8 +44,8 @@ func DefaultConfig() *Config {
 	return &Config{
 		ListenAddr:          ":8443",
 		MaxStreams:          100,
-		MaxIdleTimeout:      30 * time.Second,
-		KeepAlivePeriod:     15 * time.Second,
+		MaxIdleTimeout:      300 * time.Second, // 5 minutes
+		KeepAlivePeriod:     10 * time.Second,  // More aggressive keepalive for UDP flow stability
 		HandshakeTimeout:    10 * time.Second,
 		MaxConns:            10000,
 		EnableEarlyData:     true,
