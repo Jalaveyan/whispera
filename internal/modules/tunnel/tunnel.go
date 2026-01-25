@@ -831,7 +831,9 @@ func (m *Manager) readLoop(mc *managedConn) {
 	// Use bufio.NewReader for Peek capability
 	// Increase buffer to 256KB to maximize throughput on high-speed links (500Mbps+)
 	var inputReader io.Reader = mc
-	if m.obfuscator != nil {
+	// Only apply Obfuscator if transport is NOT secure.
+	// If ASN Bypass (TLS) is active, data is already encrypted/decrypted by the transport layer.
+	if m.obfuscator != nil && !m.isTransportSecure {
 		inputReader = &deobfuscatingReader{r: mc, obf: m.obfuscator}
 	}
 	reader := bufio.NewReaderSize(inputReader, 262144)
@@ -853,154 +855,161 @@ func (m *Manager) readLoop(mc *managedConn) {
 		default:
 		}
 
-		// 1. Check for TLS data using Peek
+		// 1. Check for TLS data using Peek (ONLY for non-secure raw/obfuscated links)
 		// TLS Header is 5 bytes. Frame Header is 8 bytes.
 		// If we blindly read 8 bytes, we might swallow a short TLS packet (like CCS, 6 bytes)
 		// and parts of the next packet, breaking sync.
-		peek, err := reader.Peek(5)
-		if err != nil {
-			m.handleReadError(mc, err)
-			return
-		}
-
-		// Check for TLS signature: Type (20-23) + Version (00 xx - 04 xx)
-		if tlsDrainCount < maxTLSDrain && peek[0] >= 0x14 && peek[0] <= 0x17 && peek[1] <= 0x04 {
-			tlsLen := int(peek[3])<<8 | int(peek[4])
-			log.Debug("Detected TLS data (type=0x%02x, ver=0x%02x, len=%d)", peek[0], peek[1], tlsLen)
-
-			// Discard the 5-byte header
-			if _, err := reader.Discard(5); err != nil {
+		//
+		// CRITICAL: Disable this check for 'isTransportSecure' (ASN Bypass/TLS).
+		// The net.Conn is already a tls.Conn which handles decryption. We receive raw frames.
+		// Random data (e.g. StreamID 0x1703) can mimic a TLS header (0x17 0x03), triggering
+		// false positives and discarding valid data.
+		if !m.isTransportSecure {
+			peek, err := reader.Peek(5)
+			if err != nil {
 				m.handleReadError(mc, err)
 				return
 			}
 
-			// Handle payload (Unwrap or Drain)
-			if tlsLen > 0 {
-				isWrappedFrame := false
+			// Check for TLS signature: Type (20-23) + Version (00 xx - 04 xx)
+			if tlsDrainCount < maxTLSDrain && peek[0] >= 0x14 && peek[0] <= 0x17 && peek[1] <= 0x04 {
+				tlsLen := int(peek[3])<<8 | int(peek[4])
+				log.Debug("Detected TLS data (type=0x%02x, ver=0x%02x, len=%d)", peek[0], peek[1], tlsLen)
 
-				// Optimization: If it's Application Data (0x17), it might contain our VPN Frames wrapped
-				if peek[0] == 0x17 {
-					// Read the full TLS payload to check contents
-					buf := make([]byte, tlsLen)
-					if _, err := io.ReadFull(reader, buf); err != nil {
-						m.handleReadError(mc, err)
-						return
-					}
+				// Discard the 5-byte header
+				if _, err := reader.Discard(5); err != nil {
+					m.handleReadError(mc, err)
+					return
+				}
 
-					// Recursive check: Handle up to 5 layers of TLS wrapping (Triple+ TLS)
-					processBuf := buf
-					for layer := 0; layer < 5; layer++ {
-						if len(processBuf) >= FrameHeaderSize {
-							// Validate as Frame
-							pLen := binary.BigEndian.Uint32(processBuf[4:8])
-							fType := processBuf[2]
+				// Handle payload (Unwrap or Drain)
+				if tlsLen > 0 {
+					isWrappedFrame := false
 
-							// Heuristic: Type must be valid (0-10, 0=Padding) and length must be reasonable
-							if fType <= 0x0A && int(pLen) <= 65535 && FrameHeaderSize+int(pLen) <= len(processBuf) {
-								log.Debug("Unwrapped TLS ApplicationData containing valid Frame (Layer %d, StreamID=%d, Type=%d, Len=%d)",
-									layer, binary.BigEndian.Uint16(processBuf[0:2]), fType, pLen)
-								isWrappedFrame = true
+					// Optimization: If it's Application Data (0x17), it might contain our VPN Frames wrapped
+					if peek[0] == 0x17 {
+						// Read the full TLS payload to check contents
+						buf := make([]byte, tlsLen)
+						if _, err := io.ReadFull(reader, buf); err != nil {
+							m.handleReadError(mc, err)
+							return
+						}
 
-								// Process frames from processBuf
-								offset := 0
-								for offset+FrameHeaderSize <= len(processBuf) {
-									if offset+FrameHeaderSize > len(processBuf) {
-										break
-									}
+						// Recursive check: Handle up to 5 layers of TLS wrapping (Triple+ TLS)
+						processBuf := buf
+						for layer := 0; layer < 5; layer++ {
+							if len(processBuf) >= FrameHeaderSize {
+								// Validate as Frame
+								pLen := binary.BigEndian.Uint32(processBuf[4:8])
+								fType := processBuf[2]
 
-									pLen := binary.BigEndian.Uint32(processBuf[offset+4 : offset+8])
-									fType := processBuf[offset+2]
-									frameTotal := FrameHeaderSize + int(pLen)
+								// Heuristic: Type must be valid (0-10, 0=Padding) and length must be reasonable
+								if fType <= 0x0A && int(pLen) <= 65535 && FrameHeaderSize+int(pLen) <= len(processBuf) {
+									log.Debug("Unwrapped TLS ApplicationData containing valid Frame (Layer %d, StreamID=%d, Type=%d, Len=%d)",
+										layer, binary.BigEndian.Uint16(processBuf[0:2]), fType, pLen)
+									isWrappedFrame = true
 
-									// Validate subsequent frames in batch
-									if fType > 0x0A || offset+frameTotal > len(processBuf) {
-										log.Warn("Invalid frame in TLS batch at offset %d (Type=%d, Len=%d)", offset, fType, pLen)
-										break
-									}
+									// Process frames from processBuf
+									offset := 0
+									for offset+FrameHeaderSize <= len(processBuf) {
+										if offset+FrameHeaderSize > len(processBuf) {
+											break
+										}
 
-									// Handle Padding/Ping frames (Type 0x00)
-									if fType == 0x00 {
-										log.Debug("Skipping Padding frame (Len=%d)", pLen)
+										pLen := binary.BigEndian.Uint32(processBuf[offset+4 : offset+8])
+										fType := processBuf[offset+2]
+										frameTotal := FrameHeaderSize + int(pLen)
+
+										// Validate subsequent frames in batch
+										if fType > 0x0A || offset+frameTotal > len(processBuf) {
+											log.Warn("Invalid frame in TLS batch at offset %d (Type=%d, Len=%d)", offset, fType, pLen)
+											break
+										}
+
+										// Handle Padding/Ping frames (Type 0x00)
+										if fType == 0x00 {
+											log.Debug("Skipping Padding frame (Len=%d)", pLen)
+											offset += frameTotal
+											continue
+										}
+
+										frameData := make([]byte, frameTotal)
+										copy(frameData, processBuf[offset:offset+frameTotal])
+
+										select {
+										case m.readCh <- frameData:
+											atomic.AddUint64(&m.bytesDown, uint64(len(frameData)))
+											m.UpdateActivity()
+										case <-mc.closing:
+											return
+										}
+
 										offset += frameTotal
-										continue
 									}
 
-									frameData := make([]byte, frameTotal)
-									copy(frameData, processBuf[offset:offset+frameTotal])
-
-									select {
-									case m.readCh <- frameData:
-										atomic.AddUint64(&m.bytesDown, uint64(len(frameData)))
-										m.UpdateActivity()
-									case <-mc.closing:
-										return
-									}
-
-									offset += frameTotal
+									tlsDrainCount = 0 // Valid data processed
+									break             // Exit layer loop, we are done
 								}
-
-								tlsDrainCount = 0 // Valid data processed
-								break             // Exit layer loop, we are done
 							}
-						}
 
-						// If not a frame, check if it is nested TLS (e.g. [17][03][03][LenHigh][LenLow]...)
-						if len(processBuf) > 5 && processBuf[0] == 0x17 && processBuf[1] == 0x03 {
-							innerLen := int(processBuf[3])<<8 | int(processBuf[4])
-							if innerLen+5 <= len(processBuf) {
-								log.Debug("Detected nested TLS record inside AppData (Layer %d), unwrapping %d bytes...", layer, innerLen)
-								processBuf = processBuf[5 : 5+innerLen]
-								continue // Try next layer
+							// If not a frame, check if it is nested TLS (e.g. [17][03][03][LenHigh][LenLow]...)
+							if len(processBuf) > 5 && processBuf[0] == 0x17 && processBuf[1] == 0x03 {
+								innerLen := int(processBuf[3])<<8 | int(processBuf[4])
+								if innerLen+5 <= len(processBuf) {
+									log.Debug("Detected nested TLS record inside AppData (Layer %d), unwrapping %d bytes...", layer, innerLen)
+									processBuf = processBuf[5 : 5+innerLen]
+									continue // Try next layer
+								}
 							}
+
+							break // Not a frame and not nested TLS, give up
 						}
 
-						break // Not a frame and not nested TLS, give up
-					}
-
-					if isWrappedFrame {
-						consecutiveGarbage = 0 // Reset garbage counter
-						continue               // Check next packet (outer loop)
-					}
-
-					// If we reached here, we failed to identify a frame.
-					// Log the header for debugging
-					if len(buf) > 0 {
-						headerPeek := buf
-						if len(headerPeek) > 16 {
-							headerPeek = headerPeek[:16]
+						if isWrappedFrame {
+							consecutiveGarbage = 0 // Reset garbage counter
+							continue               // Check next packet (outer loop)
 						}
-						log.Warn("Failed to unwrap TLS AppData (Len=%d). First 16 bytes: %x", len(buf), headerPeek)
+
+						// If we reached here, we failed to identify a frame.
+						// Log the header for debugging
+						if len(buf) > 0 {
+							headerPeek := buf
+							if len(headerPeek) > 16 {
+								headerPeek = headerPeek[:16]
+							}
+							log.Warn("Failed to unwrap TLS AppData (Len=%d). First 16 bytes: %x", len(buf), headerPeek)
+						}
+						// If verification failed, we effectively 'drained' it by reading into buf and doing nothing.
 					}
-					// If verification failed, we effectively 'drained' it by reading into buf and doing nothing.
+
+					// If not an unwrapped frame (either not 0x17, or 0x17 but garbage), drain it.
+					if !isWrappedFrame && peek[0] != 0x17 {
+						// Cap drain to avoid huge allocations/reads on bad data if we haven't read it yet
+						if tlsLen > 65535 {
+							tlsLen = 65535
+						}
+						if _, err := io.CopyN(io.Discard, reader, int64(tlsLen)); err != nil {
+							m.handleReadError(mc, err)
+							return
+						}
+					}
+
+					// Failure tracking
+					if !isWrappedFrame {
+						consecutiveGarbage++
+						if consecutiveGarbage > 20 {
+							log.Error("Too much garbage data (%d packets), triggering reconnect", consecutiveGarbage)
+							go m.Reconnect(context.Background())
+							return
+						}
+					}
 				}
 
-				// If not an unwrapped frame (either not 0x17, or 0x17 but garbage), drain it.
-				if !isWrappedFrame && peek[0] != 0x17 {
-					// Cap drain to avoid huge allocations/reads on bad data if we haven't read it yet
-					if tlsLen > 65535 {
-						tlsLen = 65535
-					}
-					if _, err := io.CopyN(io.Discard, reader, int64(tlsLen)); err != nil {
-						m.handleReadError(mc, err)
-						return
-					}
-				}
-
-				// Failure tracking
-				if !isWrappedFrame {
-					consecutiveGarbage++
-					if consecutiveGarbage > 20 {
-						log.Error("Too much garbage data (%d packets), triggering reconnect", consecutiveGarbage)
-						go m.Reconnect(context.Background())
-						return
-					}
-				}
+				tlsDrainCount++
+				continue // Check next packet
 			}
 
-			tlsDrainCount++
-			continue // Check next packet
 		}
-
 		consecutiveGarbage = 0 // Reset on non-TLS (Frame)
 		tlsDrainCount = 0      // Reset on non-TLS (Frame)
 

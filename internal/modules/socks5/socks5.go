@@ -503,9 +503,9 @@ Loop:
 		// Use pooled buffer to avoid GC on every new connection
 		// Optimize MTU: Limit read size to prevent fragmentation/drops in tunnel
 		// Optimize MTU: Limit read size to prevent fragmentation/drops in tunnel
-		// Optimize MTU: Use standard 32KB buffer.
-		// Small buffers (1350) cause too much fragmentation overhead.
-		const safeMTU = 32768
+		// Optimize MTU: Limit read size to prevent fragmentation/drops in tunnel
+		// Standard MTU 1500 - overheads = ~1350 is safe.
+		const safeMTU = 1350
 		const headerSize = 8 // relay.HeaderSize
 
 		for {

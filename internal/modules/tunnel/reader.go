@@ -12,17 +12,21 @@ type deobfuscatingReader struct {
 }
 
 func (dr *deobfuscatingReader) Read(p []byte) (int, error) {
-	// 1. Read raw data
-	n, err := dr.r.Read(p)
+	// Paranoid Mode: Allocate a temporary buffer to ensure memory isolation.
+	// This prevents any potential in-place decryption artifacts or buffer overlaps
+	// that could corrupt data (causing TCP Checksum failures downstream).
+	tempBuf := make([]byte, len(p))
+
+	// 1. Read raw data into temp buffer
+	n, err := dr.r.Read(tempBuf)
 	if n > 0 {
-		// fmt.Printf("[DEBUG] DR: Read %d bytes from TCP\n", n)
-		// 2. Deobfuscate in-place
-		res, _, derr := dr.obf.Process(p[:n], interfaces.DirectionInbound)
+		// 2. Deobfuscate
+		res, _, derr := dr.obf.Process(tempBuf[:n], interfaces.DirectionInbound)
 		if derr != nil {
 			// fmt.Printf("[ERROR] DR: Deobfuscation failed: %v\n", derr)
 			return 0, derr
 		}
-		// fmt.Printf("[DEBUG] DR: Decrypted %d bytes\n", len(res))
+		// 3. Copy result to caller's buffer
 		copy(p, res)
 		return len(res), err
 	}
