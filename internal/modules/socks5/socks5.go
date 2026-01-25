@@ -894,8 +894,6 @@ func (m *Module) handleUDPConnection(tcpConn net.Conn) error {
 
 				tunnel.Recycle(dp.Raw)
 
-				tunnel.Recycle(dp.Raw)
-
 			case <-stream.closeChan:
 				return
 			}
