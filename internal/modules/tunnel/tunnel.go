@@ -849,7 +849,11 @@ func (m *Manager) readLoop(mc *managedConn) {
 
 	// Use bufio.NewReader for Peek capability
 	// Increase buffer to 256KB to maximize throughput on high-speed links (500Mbps+)
-	reader := bufio.NewReaderSize(mc, 262144)
+	var inputReader io.Reader = mc
+	if m.obfuscator != nil {
+		inputReader = &deobfuscatingReader{r: mc, obf: m.obfuscator}
+	}
+	reader := bufio.NewReaderSize(inputReader, 262144)
 
 	// Buffer for header
 	header := make([]byte, FrameHeaderSize)

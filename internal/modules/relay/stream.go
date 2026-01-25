@@ -362,18 +362,12 @@ func (s *Stream) readFromTarget() {
 	}()
 
 	for {
+
 		// ALLOC PER PACKET: Essential for Safe Zero-Copy with Async Writers (QoS).
 		// We cannot reuse a buffer because the writer might queue the slice
 		// and return immediately. Reusing would overwrite the queued data.
 		// GC handles the cleanup.
 		buf := make([]byte, HeaderSize+32*1024)
-
-		// Check if closed (non-blocking)
-		select {
-		case <-s.closeChan:
-			return
-		default:
-		}
 
 		// Read with deadline
 		s.conn.SetReadDeadline(time.Now().Add(180 * time.Second))
