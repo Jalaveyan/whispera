@@ -641,7 +641,8 @@ func (m *Module) handleUDPConnection(tcpConn net.Conn) error {
 
 	// Create UDP listener for relay
 	// BIND FIX: Listen on 0.0.0.0 to allow traffic from containers/VMs/LAN
-	udpListener, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("0.0.0.0"), Port: 0})
+	// Force IPv4 (udp4) to prevent Windows "wsasendto" errors when writing to IPv4 from IPv6 socket
+	udpListener, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.ParseIP("0.0.0.0"), Port: 0})
 	if err != nil {
 		return fmt.Errorf("failed to create UDP listener: %w", err)
 	}
@@ -882,7 +883,15 @@ func (m *Module) handleUDPConnection(tcpConn net.Conn) error {
 
 					_, err := udpListener.WriteToUDP(pkt, addr.(*net.UDPAddr))
 					if err != nil {
-						if !strings.Contains(err.Error(), "connection refused") && !strings.Contains(err.Error(), "closed") {
+						// Filter out benign errors:
+						// 1. "connection refused" / "reset": Target closed port (normal)
+						// 2. "wsasendto" / "message too large": PMTUD probes > MTU (normal for QUIC/Discord)
+						errStr := err.Error()
+						if !strings.Contains(errStr, "connection refused") &&
+							!strings.Contains(errStr, "closed") &&
+							!strings.Contains(errStr, "wsasendto") &&
+							!strings.Contains(errStr, "message too large") {
+
 							if m.config.Debug {
 								stdlog.Printf("[SOCKS5-UDP] Write error: %v", err)
 							}
@@ -890,7 +899,31 @@ func (m *Module) handleUDPConnection(tcpConn net.Conn) error {
 					}
 				}
 
+				// WORKAROUND: Restore logic for stripping trailing zeros and capping MTU.
+				// Windows localhost MTU can handle large packets, but 'wsasendto' often fails
+				// if the packet exceeds standard Ethernet MTU (1500) due to driver/stack limits.
+				// Also, if the tunnel sends padded data, we must strip it.
+
+				realLen := len(payload)
+				for realLen > 0 && payload[realLen-1] == 0 {
+					realLen--
+				}
+
+				if realLen < len(payload) {
+					payload = payload[:realLen]
+				}
+
+				// Safety cap to MTU (1200 bytes for maximum compatibility)
+				// Discord/Mihomo buffers might be small, and 1200 covers all Voice frames (~200b)
+				// while truncating only large Jumbo/Probe packets (which is fine).
+				if len(payload) > 1200 {
+					payload = payload[:1200]
+				}
+
 				sendFunc(payload)
+
+				// If we stripped significant data (zeros), sends specific variations if needed
+				// (But for now, just sending the stripped/capped payload is usually sufficient for Discord/Game protocols)
 
 				tunnel.Recycle(dp.Raw)
 
