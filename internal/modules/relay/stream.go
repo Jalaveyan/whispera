@@ -372,7 +372,7 @@ func (s *Stream) readFromTarget() {
 		// Read with deadline
 		s.conn.SetReadDeadline(time.Now().Add(180 * time.Second))
 
-		// Read into payload area
+		// Read into payload offset
 		n, err := s.conn.Read(buf[HeaderSize:])
 		if err != nil {
 			if err != io.EOF {
@@ -620,42 +620,27 @@ func NewStreamManager(dialer proxy.Dialer) *StreamManager {
 	return sm
 }
 
-// RegisterStream creates and registers a new stream (Synchronous)
-func (sm *StreamManager) RegisterStream(streamID uint16, payload *ConnectPayload, writer ResponseWriter) error {
+// HandleConnect creates, registers, and dials a new stream (Unified)
+func (sm *StreamManager) HandleConnect(streamID uint16, payload *ConnectPayload, writer ResponseWriter) error {
 	sm.mu.Lock()
-	defer sm.mu.Unlock()
-
 	// Check for existing
 	if _, exists := sm.streams[streamID]; exists {
+		sm.mu.Unlock()
 		return fmt.Errorf("stream id %d collision", streamID)
 	}
 
-	// Create stream with default profile (Backward compatibility)
-	// Note: We don't dial here.
+	// Create stream
 	stream := NewStream(streamID, payload.Protocol, payload.Addr, payload.Port, ProfileBalanced, writer, sm.dialer)
 	sm.streams[streamID] = stream
+	sm.mu.Unlock() // Unlock early for dial
 
-	return nil
-}
-
-// CompleteConnect performs the dialect (Asynchronous)
-func (sm *StreamManager) CompleteConnect(streamID uint16, payload *ConnectPayload) error {
-	sm.mu.RLock()
-	stream, ok := sm.streams[streamID]
-	sm.mu.RUnlock()
-
-	if !ok {
-		return ErrStreamNotFound
-	}
-
-	// Connect to target
+	// Dial (can be blocking, so we unlock first)
+	// Usually this is called in a goroutine by the server
 	ctx, cancel := context.WithTimeout(sm.ctx, 10*time.Second)
 	defer cancel()
 
 	if err := stream.Connect(ctx); err != nil {
-		sm.mu.Lock()
-		delete(sm.streams, streamID)
-		sm.mu.Unlock()
+		sm.RemoveStream(streamID)
 		return err
 	}
 
@@ -701,16 +686,7 @@ func (sm *StreamManager) HandleWindowUpdate(streamID uint16, increment uint32) {
 
 // HandleClose handles incoming CLOSE frame
 func (sm *StreamManager) HandleClose(streamID uint16) {
-	sm.mu.Lock()
-	stream, ok := sm.streams[streamID]
-	if ok {
-		delete(sm.streams, streamID)
-	}
-	sm.mu.Unlock()
-
-	if stream != nil {
-		stream.Close()
-	}
+	sm.RemoveStream(streamID)
 }
 
 // GetStream returns a stream by ID
@@ -731,6 +707,7 @@ func (sm *StreamManager) RemoveStream(id uint16) {
 	sm.mu.Unlock()
 
 	if stream != nil {
+		// Close logic likely handled by cleanupResources via FSM, but explicitly call Close -> EventLocalClose
 		stream.Close()
 	}
 }
@@ -804,6 +781,5 @@ func isClosedConnError(err error) bool {
 	if err == nil {
 		return false
 	}
-	return strings.Contains(err.Error(), "use of closed network connection") ||
-		strings.Contains(err.Error(), "io: read/write on closed pipe")
+	return strings.Contains(err.Error(), "use of closed network connection")
 }

@@ -15,7 +15,6 @@ import (
 	"whispera/internal/core/base"
 	"whispera/internal/core/interfaces"
 	"whispera/internal/logger"
-	"whispera/internal/modules/qos"
 
 	"golang.org/x/net/proxy"
 )
@@ -247,27 +246,13 @@ func (s *Server) handleConnect(frame *Frame, writer ResponseWriter) error {
 	}
 
 	// Delegate connection handling to StreamManager
-	// Sync creation
-	if err := s.streamManager.RegisterStream(frame.StreamID, payload, writer); err != nil {
+	if err := s.streamManager.HandleConnect(frame.StreamID, payload, writer); err != nil {
 		atomic.AddUint64(&s.connectFailed, 1)
 		if s.config.Debug {
-			s.log.Debug("Failed to register stream %d: %v", frame.StreamID, err)
+			s.log.Debug("Failed to connect stream %d: %v", frame.StreamID, err)
 		}
 		return err
 	}
-
-	// Async dial
-	// Note: We launch this in a goroutine because handleConnect itself is called synchronously
-	// from ProcessFrame -> handleConnect. We must not block the frame processor.
-	go func() {
-		if err := s.streamManager.CompleteConnect(frame.StreamID, payload); err != nil {
-			atomic.AddUint64(&s.connectFailed, 1)
-			if s.config.Debug {
-				s.log.Debug("Failed to connect stream %d: %v", frame.StreamID, err)
-			}
-			s.sendFrameToWriter(NewConnectFailFrame(frame.StreamID, err.Error()), writer)
-		}
-	}()
 
 	atomic.AddUint64(&s.connectSuccess, 1)
 	return nil
@@ -377,29 +362,11 @@ func (s *Server) ServeTunnel(conn net.Conn, obfuscator interfaces.Obfuscator) {
 	var writeMu sync.Mutex
 
 	// Create ResponseWriter wrapper for this tunnel
-	baseWriter := &tunnelWriter{
+	writer := &tunnelWriter{
 		conn:       conn,
 		obfuscator: obfuscator,
 		mu:         &writeMu,
 	}
-
-	// QoS Integration
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	// Instance per tunnel
-	voipQoS := qos.NewVoIPQoS()
-	voipQoS.Enable()
-
-	// Wrap with QoS Writer
-	writer := &qosWriter{
-		realWriter: baseWriter,
-		qos:        voipQoS,
-		ctx:        ctx,
-	}
-
-	// Start Pump
-	go s.pumpQoS(ctx, voipQoS, baseWriter)
 
 	// Create LOCAL StreamManager for this tunnel to ensure isolation and features (UDP)
 	sm := NewStreamManager(s.proxyDialer)
@@ -408,7 +375,6 @@ func (s *Server) ServeTunnel(conn net.Conn, obfuscator interfaces.Obfuscator) {
 		s.log.Info("Tunnel closed for %s", clientID)
 	}()
 
-	// Helper to send frame
 	// Helper to send frame
 	sendFrame := func(f *Frame) error {
 		encoded, err := f.Encode()
@@ -423,9 +389,12 @@ func (s *Server) ServeTunnel(conn net.Conn, obfuscator interfaces.Obfuscator) {
 	var packetBuf []byte // Accumulator for partial frames
 
 	// Send immediate PONG to break potential deadlock
+	// Client's readLoop is waiting for data, and we're waiting for client data
+	// By sending PONG first, we unblock the client's readLoop
 	welcomeFrame := NewPongFrame()
 	if err := sendFrame(welcomeFrame); err != nil {
 		s.log.Warn("Failed to send welcome PONG: %v", err)
+		// Continue anyway - client might send PING first
 	} else {
 		s.log.Debug("Sent welcome PONG to %s", clientID)
 	}
@@ -442,14 +411,22 @@ func (s *Server) ServeTunnel(conn net.Conn, obfuscator interfaces.Obfuscator) {
 
 		data := buf[:n]
 
+		// DEBUG: Log first bytes of incoming data
+		if n >= 8 {
+			s.log.Debug("Tunnel data from %s: first 8 bytes = [%02x %02x %02x %02x %02x %02x %02x %02x]",
+				clientID, data[0], data[1], data[2], data[3], data[4], data[5], data[6], data[7])
+		}
+
 		// Check for TLS data (leftover from masquerade handshake)
+		// TLS record types: 0x14 (ChangeCipherSpec), 0x15 (Alert), 0x16 (Handshake), 0x17 (ApplicationData)
 		if n >= 5 && data[0] >= 0x14 && data[0] <= 0x17 && data[1] == 0x03 {
 			tlsLen := int(data[3])<<8 | int(data[4])
 			s.log.Warn("Detected TLS data from %s (type=0x%02x, len=%d), skipping...", clientID, data[0], tlsLen)
+			// Skip this TLS record - don't add to packetBuf
 			continue
 		}
 
-		// De-obfuscate (CRITICAL RESTORE)
+		// De-obfuscate
 		if obfuscator != nil {
 			deobfuscated, _, err := obfuscator.Process(data, interfaces.DirectionInbound)
 			if err != nil {
@@ -480,81 +457,70 @@ func (s *Server) ServeTunnel(conn net.Conn, obfuscator interfaces.Obfuscator) {
 			payloadLen := binary.BigEndian.Uint32(packetBuf[4:8])
 			frameSize := HeaderSize + int(payloadLen)
 
+			// Sanity check for frame size
 			if frameSize > MaxPayloadLen+HeaderSize {
 				s.log.Error("Frame too large from %s: %d", clientID, frameSize)
 				return
 			}
 
 			if len(packetBuf) < frameSize {
-				break // Wait for more data
+				// Wait for more data
+				break
 			}
 
-			// Extract frame data into strict buffer for Zero Copy safety
-			// We allocate a dedicated buffer for this frame to decouple it from 'packetBuf'
-			// This performs 1 allocation + copy, but enables safe async handling downstream.
-			frameBuf := make([]byte, frameSize)
-			copy(frameBuf, packetBuf[:frameSize])
+			// Extract frame data
+			frameData := packetBuf[:frameSize]
+			packetBuf = packetBuf[frameSize:] // Shift buffer
 
-			// Shift accumulator
-			packetBuf = packetBuf[frameSize:]
-
-			// Decode safe buffer
-			f, err := Decode(frameBuf)
+			f, err := Decode(frameData)
 			if err != nil {
 				s.log.Error("Frame decode error from %s: %v", clientID, err)
-				return
+				return // Protocol violation
 			}
 
 			// Handle Frame via StreamManager
 			switch f.Type {
 			case FrameConnect:
-				connPayload, err := DecodeConnectPayload(f.Payload)
-				if err != nil {
-					sendFrame(NewConnectFailFrame(f.StreamID, "InvPayload: "+err.Error()))
-					continue
-				}
-
-				if connPayload.Protocol == ProtoUDP && !s.config.EnableUDP {
-					sendFrame(NewConnectFailFrame(f.StreamID, "UDP disabled"))
-					continue
-				}
-				if connPayload.Protocol == ProtoTCP && !s.config.EnableTCP {
-					sendFrame(NewConnectFailFrame(f.StreamID, "TCP disabled"))
-					continue
-				}
-
-				if err := sm.RegisterStream(f.StreamID, connPayload, writer); err != nil {
-					sendFrame(NewConnectFailFrame(f.StreamID, "RegFail: "+err.Error()))
-					continue
-				}
-
-				isFastPath := (connPayload.Protocol == ProtoUDP && (connPayload.Addr == "0.0.0.0" || connPayload.Addr == "::"))
-				if isFastPath {
-					if err := sm.CompleteConnect(f.StreamID, connPayload); err != nil {
-						sendFrame(NewConnectFailFrame(f.StreamID, err.Error()))
-					}
-				} else {
-					go func(sid uint16, cp *ConnectPayload) {
-						defer func() {
-							if r := recover(); r != nil {
-								sm.HandleClose(sid)
-							}
-						}()
-						if err := sm.CompleteConnect(sid, cp); err != nil {
-							sendFrame(NewConnectFailFrame(sid, err.Error()))
+				// Handle Connect Async to avoid blocking the tunnel read loop
+				// Payload parsing and stream creation happens here
+				go func(fr *Frame) {
+					// Recover from panic to prevent crashing the server
+					defer func() {
+						if r := recover(); r != nil {
+							s.log.Error("Panic in Connect handler: %v", r)
+							sendFrame(NewConnectFailFrame(fr.StreamID, "Internal Error"))
 						}
-					}(f.StreamID, connPayload)
-				}
+					}()
+
+					// Deep copy payload as the buffer is reused
+					payloadCopy := make([]byte, len(fr.Payload))
+					copy(payloadCopy, fr.Payload)
+					fr.Payload = payloadCopy // Swap with copy
+
+					connPayload, err := DecodeConnectPayload(fr.Payload)
+					if err != nil {
+						sendFrame(NewConnectFailFrame(fr.StreamID, "InvPayload: "+err.Error()))
+						return
+					}
+					// Permission check (optional, but good practice)
+					if connPayload.Protocol == ProtoUDP && !s.config.EnableUDP {
+						sendFrame(NewConnectFailFrame(fr.StreamID, "UDP disabled"))
+						return
+					}
+
+					// Delegate to SM
+					if err := sm.HandleConnect(fr.StreamID, connPayload, writer); err != nil {
+						s.log.Warn("Stream %d connect failed: %v", fr.StreamID, err)
+						sendFrame(NewConnectFailFrame(fr.StreamID, err.Error()))
+					}
+				}(f)
 
 			case FrameData:
 				sm.HandleData(f.StreamID, f.Payload)
 
 			case FrameUDPData:
-				// ZERO-COPY: f.Payload is slice of 'frameBuf' (allocated above).
-				// 'frameBuf' is not reused. Ownership transfers to goroutine. Safe.
-				go func(sid uint16, pay []byte) {
-					sm.HandleUDPData(sid, pay)
-				}(f.StreamID, f.Payload)
+				// UDP Support!
+				sm.HandleUDPData(f.StreamID, f.Payload)
 
 			case FrameClose:
 				sm.HandleClose(f.StreamID)
@@ -570,78 +536,10 @@ func (s *Server) ServeTunnel(conn net.Conn, obfuscator interfaces.Obfuscator) {
 			}
 		}
 
-		// Protection against buffer bloat
+		// Protection against buffer bloat attack
 		if len(packetBuf) > 80*1024*1024 {
 			s.log.Warn("Buffer overflow from %s, disconnecting", clientID)
 			return
-		}
-	}
-}
-
-// --- QoS Integration ---
-
-type qosWriter struct {
-	realWriter ResponseWriter
-	qos        *qos.VoIPQoS
-	ctx        context.Context
-}
-
-func (w *qosWriter) Write(data []byte) error {
-	// Parse Frame to find payload for inspection
-	var payload []byte
-
-	if len(data) >= 8 {
-		frameType := data[2]
-		if frameType == FrameUDPData {
-			// Find UDP payload
-			// Header(8) + ATYP(1) + ADDR(?) + PORT(2)
-			offset := 8 + 1
-			if len(data) > offset {
-				atyp := data[8]
-				switch atyp {
-				case AddrTypeIPv4:
-					offset += 4
-				case AddrTypeIPv6:
-					offset += 16
-				case AddrTypeDomain:
-					if len(data) > offset {
-						l := int(data[offset])
-						offset += 1 + l
-					}
-				}
-
-				offset += 2 // Port
-
-				if len(data) > offset {
-					payload = data[offset:]
-				}
-			}
-		}
-	}
-
-	// Process and Enqueue
-	qp, err := w.qos.ProcessPacket(w.ctx, data, payload, w.realWriter.RemoteAddr())
-	if err != nil {
-		return err
-	}
-
-	w.qos.EnqueuePacket(qp)
-	return nil
-}
-
-func (w *qosWriter) RemoteAddr() net.Addr {
-	return w.realWriter.RemoteAddr()
-}
-
-func (s *Server) pumpQoS(ctx context.Context, voipQoS *qos.VoIPQoS, writer ResponseWriter) {
-	for {
-		qp, err := voipQoS.ReadPacket(ctx)
-		if err != nil {
-			return
-		}
-
-		if qp != nil {
-			writer.Write(qp.Data)
 		}
 	}
 }
