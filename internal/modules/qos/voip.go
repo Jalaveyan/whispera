@@ -140,12 +140,12 @@ func NewVoIPQoS() *VoIPQoS {
 			minLatency: time.Hour,
 		},
 		bandwidthLimiter: &BandwidthLimiter{
-			maxBitrate:   384000, // 384 kbps для voice
-			tokensPerSec: 384000 / 8,
+			maxBitrate:   100 * 1024 * 1024, // 100 Mbps (effectively disabled)
+			tokensPerSec: 100 * 1024 * 1024 / 8,
 			window:       time.Second,
 		},
 		metrics: &VoIPMetrics{
-			TargetBitrate: 128000, // 128 kbps optimal для Discord
+			TargetBitrate: 512000, // 512 kbps target
 		},
 	}
 }
