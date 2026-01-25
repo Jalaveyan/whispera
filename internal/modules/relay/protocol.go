@@ -142,6 +142,9 @@ func (f *Frame) Encode() ([]byte, error) {
 }
 
 // Decode deserializes a frame from bytes
+// NOTE: This performs a ZERO-COPY decode. The returned Frame.Payload
+// is a slice of the input 'data'. Do not modify 'data' while using the Frame.
+// If you need to keep the payload async, you must copy it.
 func Decode(data []byte) (*Frame, error) {
 	if len(data) < HeaderSize {
 		return nil, ErrInvalidFrame
@@ -164,8 +167,8 @@ func Decode(data []byte) (*Frame, error) {
 	}
 
 	if payloadLen > 0 {
-		f.Payload = make([]byte, payloadLen)
-		copy(f.Payload, data[HeaderSize:expectedLen])
+		// ZERO-COPY: Reference the slice directly
+		f.Payload = data[HeaderSize:expectedLen]
 	}
 
 	return f, nil
@@ -234,35 +237,43 @@ const (
 
 // Encode serializes the connect payload
 func (p *ConnectPayload) Encode() []byte {
-	var buf []byte
+	// Calculate size first to avoid reallocations
+	size := 1 + 1 + 1 // Profile + Protocol + AddrType
 
-	// Profile (NEW field to match main branch likely)
-	buf = append(buf, p.Profile)
-
-	// Protocol
-	buf = append(buf, p.Protocol)
-
-	// Address type
-	buf = append(buf, p.AddrType)
-
-	// Address
 	switch p.AddrType {
 	case AddrTypeIPv4:
-		// IPv4: 4 bytes
-		ip := parseIPv4(p.Addr)
-		buf = append(buf, ip...)
+		size += 4
 	case AddrTypeIPv6:
-		// IPv6: 16 bytes
-		ip := parseIPv6(p.Addr)
-		buf = append(buf, ip...)
+		size += 16
 	case AddrTypeDomain:
-		// Domain: 1 byte length + domain
-		buf = append(buf, byte(len(p.Addr)))
-		buf = append(buf, []byte(p.Addr)...)
+		size += 1 + len(p.Addr)
 	}
 
-	// Port (big-endian)
-	buf = append(buf, byte(p.Port>>8), byte(p.Port&0xff))
+	size += 2 // Port
+
+	buf := make([]byte, size)
+
+	// Write data
+	buf[0] = p.Profile
+	buf[1] = p.Protocol
+	buf[2] = p.AddrType
+
+	offset := 3
+	switch p.AddrType {
+	case AddrTypeIPv4:
+		copy(buf[offset:], parseIPv4(p.Addr))
+		offset += 4
+	case AddrTypeIPv6:
+		copy(buf[offset:], parseIPv6(p.Addr))
+		offset += 16
+	case AddrTypeDomain:
+		buf[offset] = byte(len(p.Addr))
+		offset++
+		copy(buf[offset:], p.Addr)
+		offset += len(p.Addr)
+	}
+
+	binary.BigEndian.PutUint16(buf[offset:], p.Port)
 
 	return buf
 }
@@ -384,18 +395,21 @@ func parseIPv6(addr string) []byte {
 
 // NewConnectFrame creates a CONNECT frame
 func NewConnectFrame(streamID uint16, proto uint8, addrType uint8, addr string, port uint16) *Frame {
-	payload := &ConnectPayload{
+	// Use stack-allocated payload struct to avoid heap allocation
+	payload := ConnectPayload{
 		Profile:  ProfileBalanced, // Default profile
 		Protocol: proto,
 		AddrType: addrType,
 		Addr:     addr,
 		Port:     port,
 	}
+	encodedPayload := payload.Encode()
+
 	return &Frame{
 		StreamID: streamID,
 		Type:     FrameConnect,
 		Flags:    0,
-		Payload:  payload.Encode(),
+		Payload:  encodedPayload,
 	}
 }
 

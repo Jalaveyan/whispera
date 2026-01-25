@@ -25,7 +25,7 @@ func NewUDPTransport(config *Config) *UDPTransport {
 	// **CRITICAL**: Включаем VoIP QoS ПО УМОЛЧАНИЮ для всех UDP подключений
 	// Discord будет автоматически обнаружен DiscordDetector
 	// это решает problem с высоким пингом когда трафик идет через обычные каналы
-	
+
 	t := &UDPTransport{
 		config:          config,
 		isVoIPOptimized: true, // Всегда включено для лучшей производительности голоса
@@ -125,7 +125,7 @@ func (t *UDPTransport) WriteTo(pkt []byte, addr net.Addr) (int, error) {
 		defer cancel()
 
 		// Обрабатываем пакет через QoS систему
-		queuedPkt, err := t.voipQoS.ProcessPacket(ctx, pkt, addr)
+		queuedPkt, err := t.voipQoS.ProcessPacket(ctx, pkt, pkt, addr)
 		if err == nil && queuedPkt != nil {
 			// Используем обработанный пакет если он был модифицирован
 			return t.listener.WriteTo(queuedPkt.Data, addr)
@@ -204,7 +204,7 @@ func (t *UDPTransport) optimizeForVoIP(conn *net.UDPConn) error {
 	if file, err := conn.File(); err == nil {
 		defer file.Close()
 		fd := int(file.Fd())
-		
+
 		// IP_TOS for IPv4
 		// IPTOS_DSCP_EF = 0xB8 (11 10 0000)
 		if err := setIPTOS(fd, 0xB8); err == nil {
@@ -242,7 +242,7 @@ func setIPTOS(fd int, tos int) error {
 	// На Linux: syscall.SetsockoptInt(fd, syscall.IPPROTO_IP, syscall.IP_TOS, tos)
 	// На Windows: нужен WSASetSocketExclusiveAddrUse
 	// На macOS: использовать SO_PRIORITY
-	
+
 	// Плейсхолдер - реальная реализация зависит от ОС
 	return nil
 }

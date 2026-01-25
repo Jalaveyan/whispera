@@ -161,6 +161,57 @@ func NewPriorityPacketQueue(rtpCapacity, otherCapacity int) *PriorityPacketQueue
 	}
 }
 
+// Enqueue adds a packet to the appropriate queue
+func (pq *PriorityPacketQueue) Enqueue(pkt *QueuedPacket) {
+	pq.mu.Lock()
+	defer pq.mu.Unlock()
+
+	var targetQueue chan *QueuedPacket
+
+	switch pkt.Priority {
+	case PriorityRTPVoice, PriorityRTPVideo, PriorityRTCP:
+		targetQueue = pq.rtpQueue
+	case PriorityData, PriorityDefault:
+		targetQueue = pq.defaultQueue
+	default:
+		targetQueue = pq.defaultQueue
+	}
+
+	// Non-blocking write to avoid stalling
+	select {
+	case targetQueue <- pkt:
+	default:
+		// Drop if full (Tail Drop)
+		// For RTP we might want Head Drop but Tail Drop is simpler for now
+	}
+}
+
+// Dequeue reads the next packet based on priority
+func (pq *PriorityPacketQueue) Dequeue(ctx context.Context) (*QueuedPacket, error) {
+	// Strict Priority: RTP > Default
+	// We use select to prioritize
+
+	// First check RTP (non-blocking)
+	select {
+	case pkt := <-pq.rtpQueue:
+		return pkt, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+	}
+
+	// WRR or strict priority?
+	// Let's do a blocking wait on both, but prioritize RTP in the select
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case pkt := <-pq.rtpQueue:
+		return pkt, nil
+	case pkt := <-pq.defaultQueue:
+		return pkt, nil
+	}
+}
+
 // NewRTPDetector создает новый RTP детектор
 func NewRTPDetector() *RTPDetector {
 	return &RTPDetector{
@@ -191,7 +242,9 @@ func NewJitterBuffer() *JitterBuffer {
 }
 
 // ProcessPacket обрабатывает пакет с применением VoIP QoS
-func (v *VoIPQoS) ProcessPacket(ctx context.Context, pkt []byte, dest net.Addr) (*QueuedPacket, error) {
+// pkt - данные для отправки (весь фрейм)
+// inspectionData - данные для анализа (payload), если nil, используется pkt
+func (v *VoIPQoS) ProcessPacket(ctx context.Context, pkt []byte, inspectionData []byte, dest net.Addr) (*QueuedPacket, error) {
 	v.mu.RLock()
 	if !v.enabled {
 		v.mu.RUnlock()
@@ -204,12 +257,17 @@ func (v *VoIPQoS) ProcessPacket(ctx context.Context, pkt []byte, dest net.Addr) 
 	}
 	v.mu.RUnlock()
 
+	dataToInspect := inspectionData
+	if dataToInspect == nil {
+		dataToInspect = pkt
+	}
+
 	// Определяем тип пакета
-	priority := v.classifyPacket(pkt, dest)
+	priority := v.classifyPacket(dataToInspect, dest)
 
 	// Детектируем RTP поток
 	if priority == PriorityRTPVoice || priority == PriorityRTPVideo {
-		v.rtpDetector.TrackFlow(pkt)
+		v.rtpDetector.TrackFlow(dataToInspect)
 	}
 
 	// Измеряем задержку
@@ -231,6 +289,16 @@ func (v *VoIPQoS) ProcessPacket(ctx context.Context, pkt []byte, dest net.Addr) 
 	}
 
 	return queued, nil
+}
+
+// EnqueuePacket добавляет пакет в очередь
+func (v *VoIPQoS) EnqueuePacket(pkt *QueuedPacket) {
+	v.priorityQueue.Enqueue(pkt)
+}
+
+// ReadPacket читает пакет из очереди (блокирует до появления пакета)
+func (v *VoIPQoS) ReadPacket(ctx context.Context) (*QueuedPacket, error) {
+	return v.priorityQueue.Dequeue(ctx)
 }
 
 // classifyPacket классифицирует тип пакета

@@ -361,12 +361,13 @@ func (s *Stream) readFromTarget() {
 		s.Close()
 	}()
 
-	// Zero-Copy Optimization:
-	// Allocate buffer with headroom for Frame Header (8 bytes)
-	// We read directly into buf[HeaderSize:] and prepend header.
-	buf := make([]byte, HeaderSize+32*1024)
-
 	for {
+		// ALLOC PER PACKET: Essential for Safe Zero-Copy with Async Writers (QoS).
+		// We cannot reuse a buffer because the writer might queue the slice
+		// and return immediately. Reusing would overwrite the queued data.
+		// GC handles the cleanup.
+		buf := make([]byte, HeaderSize+32*1024)
+
 		// Check if closed (non-blocking)
 		select {
 		case <-s.closeChan:
@@ -430,17 +431,16 @@ func (s *Stream) readUDPFromTarget() {
 		s.Close()
 	}()
 
-	// Buffer with large headroom for FrameHeader + UDP Header (IPv6+Domain)
-	// Max UDP header ~260 bytes, FrameHeader 8 bytes. 300 bytes headroom is safe.
-	const Headroom = 300
-	buf := make([]byte, Headroom+65535)
-
 	for {
+		const Headroom = 300
 		select {
 		case <-s.closeChan:
 			return
 		default:
 		}
+
+		// ALLOC PER PACKET: Safe Zero-Copy for Async Writers
+		buf := make([]byte, Headroom+65535)
 
 		// Optimize: Use longer deadline and check for specific errors
 		s.udpConn.SetReadDeadline(time.Now().Add(5 * time.Minute)) // Keepalive is 30s-60s, so 5m is safe
@@ -508,10 +508,7 @@ func (s *Stream) readRelayUDP() {
 		s.Close()
 	}()
 
-	// Buffer with large headroom for FrameHeader + UDP Header (IPv6+Domain)
-	// Max UDP header ~260 bytes, FrameHeader 8 bytes. 300 bytes headroom is safe.
 	const Headroom = 300
-	buf := make([]byte, Headroom+65535)
 
 	for {
 		select {
@@ -519,6 +516,9 @@ func (s *Stream) readRelayUDP() {
 			return
 		default:
 		}
+
+		// ALLOC PER PACKET: Safe Zero-Copy for Async Writers
+		buf := make([]byte, Headroom+65535)
 
 		s.udpConn.SetReadDeadline(time.Now().Add(300 * time.Second))
 		n, addr, err := s.udpConn.ReadFromUDP(buf[Headroom:])

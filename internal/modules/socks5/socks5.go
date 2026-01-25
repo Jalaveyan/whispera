@@ -653,29 +653,33 @@ func (m *Module) handleUDPConnection(tcpConn net.Conn) error {
 	localAddr := udpListener.LocalAddr().(*net.UDPAddr)
 
 	// Send success reply with relay address
+	// Send success reply with relay address
 	// SOCKS5 reply: VER REP RSV ATYP BND.ADDR BND.PORT
-	// Note: We reply with the interface IP we listened on.
-	// If listening on 0.0.0.0, we must report the specific IP the client connected to (from control TCP),
-	// otherwise clients on LAN/VMs will try to send to their own localhost (127.0.0.1) and fail.
-	reply := []byte{0x05, 0x00, 0x00, 0x01}
+	// Fixed size for IPv4: 10 bytes (4 header + 4 IP + 2 Port)
+	// We only support/detected IPv4 bind in the logic below usually.
 
+	// Determine Bind IP
 	var bindIP net.IP
 	if localAddr.IP.IsUnspecified() {
-		// Dynamic IP detection: Use the LocalAddr of the control TCP connection
 		if tcpAddr, ok := tcpConn.LocalAddr().(*net.TCPAddr); ok && tcpAddr.IP.To4() != nil {
 			bindIP = tcpAddr.IP.To4()
 		} else {
-			// Fallback if detection fails or is IPv6 (while using ATYP 0x01)
 			bindIP = net.ParseIP("127.0.0.1").To4()
 		}
 	} else {
 		bindIP = localAddr.IP.To4()
 	}
-	reply = append(reply, bindIP...)
 
-	portBuf := make([]byte, 2)
-	binary.BigEndian.PutUint16(portBuf, uint16(localAddr.Port))
-	reply = append(reply, portBuf...)
+	// Construct reply buffer (10 bytes for IPv4)
+	reply := make([]byte, 10)
+	reply[0] = 0x05 // VER
+	reply[1] = 0x00 // REP (Success)
+	reply[2] = 0x00 // RSV
+	reply[3] = 0x01 // ATYP (IPv4)
+
+	copy(reply[4:8], bindIP)
+
+	binary.BigEndian.PutUint16(reply[8:10], uint16(localAddr.Port))
 
 	if _, err := tcpConn.Write(reply); err != nil {
 		return err
@@ -735,17 +739,36 @@ func (m *Module) handleUDPConnection(tcpConn net.Conn) error {
 
 	// UDP -> Tunnel
 	go func() {
-		buf := make([]byte, 65535)
+		// ZERO-COPY UDP ALIGNMENT MAGIC:
+		// SOCKS5 UDP Packet: [RSV:2][FRAG:1][ATYP:1][ADDR:L][PORT:2][DATA...]
+		// Relay UDP Frame:   [FrameHeader:8][ATYP:1][ADDR:L][PORT:2][DATA...]
+		//
+		// We want 'DATA' to align.
+		// SOCKS Data starts at: ReadOffset + 3 (RSV+FRAG) + UDP_HDR_LEN
+		// Relay Data starts at: 8 (FrameHeader) + UDP_HDR_LEN
+		// Equation: ReadOffset + 3 = 8  =>  ReadOffset = 5
+		//
+		// If we read SOCKS packet into buf[5:], the ATYP/ADDR/PORT fields
+		// align perfectly with where Relay expects them at buf[8:].
+		// We just need to overwrite buf[0:8] with the FrameHeader,
+		// putting the header "on top" of the unused pre-read space and SOCKS RSV/FRAG.
+
+		const ReadOffset = 5
+		const SOCKS_RSV_FRAG = 3
+		const FrameHeaderSize = 8
+
+		// Max UDP payload safe size + headroom
+		buf := make([]byte, 65535+ReadOffset)
+
 		for {
-			n, addr, err := udpListener.ReadFromUDP(buf)
+			// Read at Offset 5
+			n, addr, err := udpListener.ReadFromUDP(buf[ReadOffset:])
 			if err != nil {
 				errChan <- err
 				return
 			}
 
 			// Store/Update client address
-			// Only update on first packet or if we decide to support roaming (not recommended for strict SOCKS5)
-			// But since we bind 0.0.0.0, we must be careful not to forward random noise.
 			currentClient := clientAddr.Load()
 			if currentClient == nil {
 				clientAddr.Store(addr)
@@ -753,102 +776,72 @@ func (m *Module) handleUDPConnection(tcpConn net.Conn) error {
 					stdlog.Printf("[SOCKS5-UDP] Associated client: %s", addr.String())
 				}
 			} else {
-				// Verify sender matches associated client
-				// Note: Some clients might switch ports slightly (NAT), but strictly it should match.
-				// For now, we trust the stored address. If different, we might be receiving our own echo or noise.
 				cAddr := currentClient.(*net.UDPAddr)
 				if !cAddr.IP.Equal(addr.IP) || cAddr.Port != addr.Port {
-					// Check if it's loop protection (don't forward own packets if we somehow read them)
-					// But we are reading from the listener, so valid packets come from client.
-					// Just log for debug.
-					// stdlog.Printf("[SOCKS5-UDP] Packet from unknown source: %s (Expected: %s)", addr, cAddr)
-					// Verify IP at least
+					// Update client for NAT/roaming if IP matches
 					if !cAddr.IP.Equal(addr.IP) {
 						if m.config.Debug {
-							stdlog.Printf("[SOCKS5-UDP] Dropping packet from foreign IP: %s (Client: %s)", addr, cAddr)
+							stdlog.Printf("[SOCKS5-UDP] Dropping foreign packet: %s", addr)
 						}
 						continue
 					}
-					// If Port differs, allow it (NAT traversal / Client socket change), just update.
 					clientAddr.Store(addr)
 				}
 			}
 
-			// SOCKS5 UDP Header: RSV(2) FRAG(1) ATYP(1) ...
-			if n < 3 {
+			// Sanity check SOCKS header (RSV+FRAG+ATYP)
+			if n < 4 {
+				continue
+			}
+
+			// Bytes read start at buf[5]
+			// SOCKS Header:
+			// buf[5]: RSV
+			// buf[6]: RSV
+			// buf[7]: FRAG
+			// buf[8]: ATYP (This MUST correspond to Relay ATYP)
+
+			// Validate FRAG (Must be 0 for standard SOCKS5 UDP)
+			if buf[7] != 0 {
 				if m.config.Debug {
-					stdlog.Printf("[SOCKS5-UDP] Dropping short packet: len=%d", n)
+					stdlog.Printf("[SOCKS5-UDP] Dropping fragmented packet")
 				}
 				continue
 			}
 
-			udpPayload := buf[3:n]
+			// Calculate Total Frame Length
+			// Input N = 3 (RSV/FRAG) + UDP_HDR + DATA
+			// Relay N = 8 (Frame) + UDP_HDR + DATA
+			// Diff = 5 bytes
+			// TotalLen = N + 5
+			totalLen := n + 5
 
-			// Parse SOCKS5 header from udpPayload
-			if len(udpPayload) < 4 {
-				if m.config.Debug {
-					stdlog.Printf("[SOCKS5-UDP] Dropping short payload: len=%d", len(udpPayload))
-				}
-				continue
-			}
-			atyp := udpPayload[0]
-			var dstAddr string
-			var dstPort uint16
-			var dataOffset int
+			// Construct FrameHeader at buf[0:8]
+			// StreamID (big-endian)
+			binary.BigEndian.PutUint16(buf[0:2], streamID)
+			// Type (FrameUDPData)
+			buf[2] = relay.FrameUDPData
+			// Flags
+			buf[3] = 0
+			// Length (Payload Length)
+			// Payload = UDP_HDR + DATA
+			// UDP_HDR starts at buf[8] (ATYP)
+			// SOCKS read N bytes. PayloadLen for Relay = N - 3 (RSV/FRAG)
+			payloadLen := n - 3
+			binary.BigEndian.PutUint32(buf[4:8], uint32(payloadLen))
 
-			switch atyp {
-			case 0x01: // IPv4
-				if len(udpPayload) < 1+4+2 {
-					if m.config.Debug {
-						stdlog.Printf("[SOCKS5-UDP] Short IPv4 header")
-					}
-					continue
-				}
-				dstAddr = net.IP(udpPayload[1:5]).String()
-				dstPort = binary.BigEndian.Uint16(udpPayload[5:7])
-				dataOffset = 7
-			case 0x03: // Domain
-				if len(udpPayload) < 2 {
-					continue
-				}
-				dlen := int(udpPayload[1])
-				if len(udpPayload) < 2+dlen+2 {
-					if m.config.Debug {
-						stdlog.Printf("[SOCKS5-UDP] Short Domain header")
-					}
-					continue
-				}
-				dstAddr = string(udpPayload[2 : 2+dlen])
-				dstPort = binary.BigEndian.Uint16(udpPayload[2+dlen : 2+dlen+2])
-				dataOffset = 2 + dlen + 2
-			case 0x04: // IPv6
-				if len(udpPayload) < 1+16+2 {
-					if m.config.Debug {
-						stdlog.Printf("[SOCKS5-UDP] Short IPv6 header")
-					}
-					continue
-				}
-				dstAddr = net.IP(udpPayload[1:17]).String()
-				dstPort = binary.BigEndian.Uint16(udpPayload[17:19])
-				dataOffset = 19
-			default:
-				if m.config.Debug {
-					stdlog.Printf("[SOCKS5-UDP] Unknown ATYP: 0x%02x (Packet Header: %x)", atyp, buf[:min(n, 16)])
-				}
-				continue
-			}
+			// Buffer is now a valid Relay Frame!
+			// [0-7] FrameHeader
+			// [8]   ATYP
+			// ...   ADDR/PORT/DATA
 
-			data := udpPayload[dataOffset:]
-
-			// QUIC unblocked to allow YouTube/Browsers to negotiate HTTP/3
-			// Previous optimization removed to fix "slow video load" issues.
-
-			frame := relay.NewUDPDataFrame(streamID, atyp, dstAddr, dstPort, data)
-
-			// Send to tunnel
-			// For UDP/RTC: NO RETRY with Sleep. If congestion occurs, we drop.
-			if enc, err := frame.Encode(); err == nil {
-				_ = tunnel.Send(enc)
+			// Zero-Copy Send
+			if err := tunnel.Send(buf[:totalLen]); err != nil {
+				// Retry / Log logic omitted for speed in this block
+				// Just UDP, safe to drop or retry once
+				if !tunnel.IsConnected() {
+					time.Sleep(100 * time.Millisecond)
+				}
 			}
 		}
 	}()
