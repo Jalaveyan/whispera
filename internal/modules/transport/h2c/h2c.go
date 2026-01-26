@@ -61,11 +61,11 @@ type Config struct {
 func DefaultConfig() *Config {
 	return &Config{
 		Path:                 "/",
-		MaxConcurrentStreams: 100,
-		InitialWindowSize:    65535,
-		MaxFrameSize:         16384,
-		ReadTimeout:          30 * time.Second,
-		WriteTimeout:         30 * time.Second,
+		MaxConcurrentStreams: 2000,              // Increased from 100
+		InitialWindowSize:    64 * 1024 * 1024,  // 64MB window for high throughput
+		MaxFrameSize:         16 * 1024 * 1024,  // 16MB jumbo frames (max allowed)
+		ReadTimeout:          120 * time.Second, // Increased timeout
+		WriteTimeout:         120 * time.Second, // Increased timeout
 		Headers:              make(map[string]string),
 	}
 }
@@ -152,8 +152,10 @@ func (t *Transport) Listen(addr string) error {
 // listenInternal starts the listener (internal helper)
 func (t *Transport) listenInternal(ctx context.Context) error {
 	h2s := &http2.Server{
-		MaxConcurrentStreams: t.config.MaxConcurrentStreams,
-		// InitialWindowSize not directly available, handled by transport
+		MaxConcurrentStreams:         t.config.MaxConcurrentStreams,
+		MaxReadFrameSize:             t.config.MaxFrameSize, // Match config
+		PermitProhibitedCipherSuites: true,                  // Allow cleartext ciphers if needed
+		IdleTimeout:                  120 * time.Second,
 	}
 
 	handler := http.HandlerFunc(t.handleRequest)
@@ -241,7 +243,8 @@ func (t *Transport) handleRequest(w http.ResponseWriter, r *http.Request) {
 	// Keep handler alive and relay data from pipe to response
 	// Copy from pipe reader 'pr' to 'w'
 	// This blocks until 'conn' is closed or error
-	buf := make([]byte, 32*1024)
+	// Use 1MB buffer for high throughput copying
+	buf := make([]byte, 1024*1024)
 	io.CopyBuffer(w, pr, buf)
 }
 
@@ -298,6 +301,11 @@ func NewClient(cfg *Config) (*H2CClient, error) {
 			// For h2c, we use a regular TCP connection
 			return net.Dial(network, addr)
 		},
+		MaxHeaderListSize:          1024 * 1024 * 10, // 10MB
+		StrictMaxConcurrentStreams: false,
+		ReadIdleTimeout:            120 * time.Second,
+		PingTimeout:                15 * time.Second,
+		WriteByteTimeout:           120 * time.Second,
 	}
 
 	client := &http.Client{
