@@ -548,10 +548,12 @@ func (m *Manager) dial(ctx context.Context) (net.Conn, error) {
 		} else {
 			log.Info("ASN bypass connection established")
 			// CRITICAL: Apply TCP Buffer Optimizations to ASN Connection
+			// Reverted from 12MB to 64KB to fix TCP Retransmission/Fragmentation issues
+			// Large buffers can cause Window Scaling issues and buffer bloat in some networks
 			if tcpConn, ok := conn.(*net.TCPConn); ok {
-				log.Info("[TUNNEL] Applying 12MB buffers to ASN connection (High Performance)")
-				tcpConn.SetReadBuffer(12 * 1024 * 1024)
-				tcpConn.SetWriteBuffer(12 * 1024 * 1024)
+				log.Info("[TUNNEL] Applying 64KB buffers to ASN connection (Standard)")
+				tcpConn.SetReadBuffer(64 * 1024)
+				tcpConn.SetWriteBuffer(64 * 1024)
 				tcpConn.SetNoDelay(true)
 			}
 			m.isTransportSecure = true
@@ -607,13 +609,11 @@ func (m *Manager) dial(ctx context.Context) (net.Conn, error) {
 		log.Warn("Falling back to TCP: %s", m.config.ServerAddrTCP)
 		conn, err = net.DialTimeout("tcp4", m.config.ServerAddrTCP, 10*time.Second)
 		if err == nil {
-			// OPTIMIZATION: Increase TCP buffers for high throughput
-			// Default 64KB is often insufficient for >100Mbps
-			// User requested 20MB buffers for maximum throughput
+			// OPTIMIZATION: Use standard buffers to avoid fragmentation/window scaling issues
 			if tcpConn, ok := conn.(*net.TCPConn); ok {
-				tcpConn.SetReadBuffer(12 * 1024 * 1024)  // 20MB
-				tcpConn.SetWriteBuffer(12 * 1024 * 1024) // 20MB
-				tcpConn.SetNoDelay(true)                 // Low latency
+				tcpConn.SetReadBuffer(64 * 1024)  // 64KB
+				tcpConn.SetWriteBuffer(64 * 1024) // 64KB
+				tcpConn.SetNoDelay(true)          // Low latency
 			}
 			m.isTransportSecure = true
 			return conn, nil

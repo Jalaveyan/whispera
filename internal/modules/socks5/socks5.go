@@ -139,6 +139,11 @@ func (m *Module) Start() error {
 
 	// Start listening in a goroutine
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				stdlog.Printf("[SOCKS5] CRITICAL PANIC in Listener: %v", r)
+			}
+		}()
 		stdlog.Printf("[SOCKS5] Starting server on %s (relay mode)", m.config.ListenAddr)
 		if err := m.server.ListenAndServe(); err != nil {
 			stdlog.Printf("[SOCKS5] Server error: %v", err)
@@ -704,8 +709,14 @@ func (m *Module) handleUDPConnection(tcpConn net.Conn) error {
 
 	// Monitor TCP connection closing (signals end of association)
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				stdlog.Printf("[SOCKS5] PANIC in TCP Monitor: %v", r)
+			}
+		}()
 		buf := make([]byte, 1)
-		tcpConn.Read(buf)
+		_, err := tcpConn.Read(buf)
+		stdlog.Printf("[SOCKS5] TCP Association Monitor exited for %v: %v (Closing UDP)", tcpConn.RemoteAddr(), err)
 		udpListener.Close() // Force close listener to break loop
 	}()
 
@@ -717,6 +728,11 @@ func (m *Module) handleUDPConnection(tcpConn net.Conn) error {
 
 	// UDP -> Tunnel
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				stdlog.Printf("[SOCKS5] PANIC in UDP->Tunnel: %v", r)
+			}
+		}()
 		buf := make([]byte, 65535)
 		for {
 			n, addr, err := udpListener.ReadFromUDP(buf)
@@ -792,6 +808,11 @@ func (m *Module) handleUDPConnection(tcpConn net.Conn) error {
 
 	// Tunnel -> UDP
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				stdlog.Printf("[SOCKS5] PANIC in Tunnel->UDP: %v", r)
+			}
+		}()
 		for {
 			select {
 			case dp := <-stream.dataChan:
@@ -816,6 +837,8 @@ func (m *Module) handleUDPConnection(tcpConn net.Conn) error {
 				_, err := udpListener.WriteToUDP(pkt, addr)
 				if err != nil {
 					stdlog.Printf("[SOCKS5] UDP Write Error to %v (len=%d): %v", addr, len(pkt), err)
+				} else {
+					stdlog.Printf("[SOCKS5] Wrote UDP packet to %v (len=%d)", addr, len(pkt))
 				}
 				tunnel.Recycle(dp.Raw)
 

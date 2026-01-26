@@ -550,21 +550,17 @@ func (s *Stream) readRelayUDP() {
 
 			// SealUDPData writes headers BEFORE buf[Headroom]
 			// It returns the full frame slice starting from the header
+			// SealUDPData writes headers BEFORE buf[Headroom]
+			// It returns the full frame slice starting from the header
 			packet, err := SealUDPData(buf, s.ID, atyp, addr.IP.String(), uint16(addr.Port), Headroom)
 			if err != nil {
+				fmt.Printf("[RELAY] UDP Seal Error: %v\n", err)
 				return
 			}
 
 			if err := s.writer.Write(packet); err != nil {
-				// UDP Strategy: Drop if congested.
-				// Do NOT block or retry for long periods. Real-time traffic (Voice/Games)
-				// prefers packet loss over high latency (Bufferbloat).
-
-				// Optional: Short retry (e.g. 1ms) just in case of lock contention,
-				// but avoiding channel/network checking loop.
-
-				// For now: Just drop. The tunnel (TCP) is likely backing off.
-				// Pushing more data will just increase latency.
+				// UDP Strategy: Drop if congested, but LOG IT
+				// fmt.Printf("[RELAY] UDP Write Drop: %v\n", err)
 				return
 			}
 		}
