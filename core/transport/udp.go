@@ -65,6 +65,9 @@ func (t *UDPTransport) Dial(addr string) error {
 		if t.voipQoS != nil {
 			t.voipQoS.Enable()
 		}
+	} else {
+		// Применяем базовые оптимизации буфера даже без VoIP
+		t.optimizeForVoIP(conn)
 	}
 
 	t.conn = conn
@@ -191,12 +194,23 @@ func (t *UDPTransport) RemoteAddr() net.Addr {
 
 // optimizeForVoIP применяет сокет опции для VoIP
 func (t *UDPTransport) optimizeForVoIP(conn *net.UDPConn) error {
-	// Увеличиваем буферы для гладкой передачи голоса
-	if err := conn.SetReadBuffer(2097152); err != nil { // 2MB recv buffer
-		// Ignore error, may not be available on all platforms
+	// Увеличиваем буферы для гладкой передачи голоса и предотвращения потери пакетов
+	// Используем максимально возможные значения для высокоскоростных сетей
+	if err := conn.SetReadBuffer(67108864); err != nil { // 64MB recv buffer - максимальное рекомендуемое
+		// Fallback на меньшее значение если OS не поддерживает
+		if err := conn.SetReadBuffer(16777216); err != nil { // 16MB
+			if err := conn.SetReadBuffer(8388608); err != nil { // 8MB
+				// Ignore if can't increase
+			}
+		}
 	}
-	if err := conn.SetWriteBuffer(2097152); err != nil { // 2MB send buffer
-		// Ignore error
+	if err := conn.SetWriteBuffer(67108864); err != nil { // 64MB send buffer
+		// Fallback на меньшее значение если OS не поддерживает
+		if err := conn.SetWriteBuffer(16777216); err != nil { // 16MB
+			if err := conn.SetWriteBuffer(8388608); err != nil { // 8MB
+				// Ignore if can't increase
+			}
+		}
 	}
 
 	// Попытка установить DSCP для приоритета voice (EF = 0xB8)
@@ -217,11 +231,20 @@ func (t *UDPTransport) optimizeForVoIP(conn *net.UDPConn) error {
 
 // optimizeListenerForVoIP оптимизирует слушатель для VoIP
 func (t *UDPTransport) optimizeListenerForVoIP(conn *net.UDPConn) error {
-	if err := conn.SetReadBuffer(2097152); err != nil {
-		// Ignore error
+	// Применяем те же оптимизации буфера что и для обычного соединения
+	if err := conn.SetReadBuffer(67108864); err != nil { // 64MB recv buffer
+		if err := conn.SetReadBuffer(16777216); err != nil { // 16MB fallback
+			if err := conn.SetReadBuffer(8388608); err != nil { // 8MB fallback
+				// Ignore
+			}
+		}
 	}
-	if err := conn.SetWriteBuffer(2097152); err != nil {
-		// Ignore error
+	if err := conn.SetWriteBuffer(67108864); err != nil { // 64MB send buffer
+		if err := conn.SetWriteBuffer(16777216); err != nil { // 16MB fallback
+			if err := conn.SetWriteBuffer(8388608); err != nil { // 8MB fallback
+				// Ignore
+			}
+		}
 	}
 
 	if file, err := conn.File(); err == nil {

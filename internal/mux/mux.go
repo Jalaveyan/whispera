@@ -33,12 +33,12 @@ type Config struct {
 // DefaultConfig returns default mux configuration
 func DefaultConfig() *Config {
 	return &Config{
-		MaxFrameSize:         32768,
-		MaxReceiveBuffer:     4194304, // 4MB
-		MaxStreamBuffer:      65536,
+		MaxFrameSize:         65536,              // Увеличено с 32768 для уменьшения overhead на фрагментацию
+		MaxReceiveBuffer:     67108864,           // Увеличено с 4MB до 64MB для предотвращения потери пакетов
+		MaxStreamBuffer:      16777216,           // Увеличено с 65536 до 16MB для лучшей буферизации потоков
 		KeepAliveInterval:    10 * time.Second,
 		KeepAliveTimeout:     30 * time.Second,
-		MaxConcurrentStreams: 1024,
+		MaxConcurrentStreams: 4096,               // Увеличено с 1024 для высоконагруженных сценариев
 	}
 }
 

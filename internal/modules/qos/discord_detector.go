@@ -134,7 +134,7 @@ func (dd *DiscordDetector) AnalyzePacket(pkt []byte, srcAddr, dstAddr net.Addr) 
 	flow.IsVoice = dd.isVoicePacket(packetSize, payloadType)
 
 	if payloadType == dd.detectionCriteria.OpusPayloadType ||
-		(payloadType >= 0 && payloadType <= 20) {
+		(payloadType <= 20) {
 		flow.CodecHint = "opus"
 	}
 

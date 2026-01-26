@@ -290,7 +290,7 @@ func (t *Transport) Dial(ctx context.Context, addr string) (net.Conn, error) {
 		return nil, err
 	case <-ctx.Done():
 		return nil, ctx.Err()
-	case <-time.After(10 * time.Second):
+	case <-time.After(5 * time.Second):  // УЛУЧШЕНИЕ: Снижено с 10s до 5s для ускорения
 		return nil, fmt.Errorf("timeout waiting for handshake")
 	}
 }

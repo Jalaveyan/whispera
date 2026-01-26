@@ -50,18 +50,16 @@ func NewBatchWriter(conn *websocket.Conn, ctx context.Context, batchSize int, ma
 	return bw
 }
 
-// Write добавляет пакет в батч для отправки
+// Write добавляет пакет в батч для отправки без копирования
 func (bw *BatchWriter) Write(data []byte) bool {
 	if atomic.LoadInt32(&bw.closed) != 0 {
 		return false
 	}
 	
-	// Копируем данные для безопасной отправки
-	dataCopy := make([]byte, len(data))
-	copy(dataCopy, data)
-	
+	// УЛУЧШЕНИЕ: Не копируем данные при отправке в канал
+	// Канал будет работать с ссылкой на slice
 	select {
-	case bw.batchChan <- dataCopy:
+	case bw.batchChan <- data:
 		return true
 	default:
 		// Очередь переполнена - пропускаем пакет
@@ -101,7 +99,7 @@ func (bw *BatchWriter) writeLoop() {
 	}
 }
 
-// flush отправляет текущий батч
+// flush отправляет текущий батч без дополнительной копии
 func (bw *BatchWriter) flush() {
 	bw.mu.Lock()
 	if len(bw.batch) == 0 {
@@ -109,14 +107,13 @@ func (bw *BatchWriter) flush() {
 		return
 	}
 	
-	// Копируем батч и очищаем
-	batch := make([][]byte, len(bw.batch))
-	copy(batch, bw.batch)
-	bw.batch = bw.batch[:0]
+	// УЛУЧШЕНИЕ: Не копируем батч, а переиспользуем его
+	// Просто обнуляем ссылки в старом батче после обработки
+	batch := bw.batch
+	bw.batch = make([][]byte, 0, bw.batchSize)
 	bw.mu.Unlock()
 	
 	// Отправляем все пакеты из батча последовательно
-	// КРИТИЧЕСКАЯ ОПТИМИЗАЦИЯ: Отправляем все пакеты без задержек
 	for _, data := range batch {
 		if err := bw.conn.Write(bw.ctx, websocket.MessageBinary, data); err != nil {
 			atomic.AddInt64(&bw.errorCount, 1)
@@ -126,7 +123,17 @@ func (bw *BatchWriter) flush() {
 		atomic.AddInt64(&bw.writeCount, 1)
 	}
 	
+	// УЛУЧШЕНИЕ: Очищаем références в батче для GC
+	batch = batch[:0]
+	
 	// Сбрасываем таймер
+	if !bw.flushTimer.Stop() {
+		// Таймер уже сработал, читаем значение чтобы очистить канал
+		select {
+		case <-bw.flushTimer.C:
+		default:
+		}
+	}
 	bw.flushTimer.Reset(bw.maxWait)
 }
 

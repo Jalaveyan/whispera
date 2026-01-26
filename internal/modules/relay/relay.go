@@ -518,7 +518,6 @@ func (s *Server) ServeTunnel(conn net.Conn, obfuscator interfaces.Obfuscator) {
 				}
 				break // Wait for more data
 			}
-
 			// Check frame length
 			payloadLen := binary.BigEndian.Uint32(currentBuf[4:8])
 			frameSize := HeaderSize + int(payloadLen)

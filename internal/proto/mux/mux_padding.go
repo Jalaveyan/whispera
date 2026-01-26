@@ -99,12 +99,17 @@ func (mp *MuxPadding) ApplyPadding(data []byte) []byte {
 	// Генерируем случайный padding
 	padding := mp.generatePadding(padSize)
 
-	// ОПТИМИЗАЦИЯ: Используем пул буферов для результата
+	// ОПТИМИЗАЦИЯ: Stack-allocated buffer для типичного случая (<512 bytes)
 	realLen := uint16(len(data))
 	totalSize := 2 + len(data) + len(padding)
 
 	var result []byte
-	if totalSize <= 4096 {
+	if totalSize <= 512 {
+		// Используем stack для малых пакетов - избегаем heap allocation
+		var stackBuf [512]byte
+		result = stackBuf[:totalSize]
+	} else if totalSize <= 4096 {
+		// Для средних пакетов используем пул
 		result = resultBufferPool.Get().([]byte)
 		if cap(result) < totalSize {
 			result = make([]byte, totalSize)
@@ -112,6 +117,7 @@ func (mp *MuxPadding) ApplyPadding(data []byte) []byte {
 			result = result[:totalSize]
 		}
 	} else {
+		// Для больших пакетов напрямую выделяем память
 		result = make([]byte, totalSize)
 	}
 
@@ -120,8 +126,15 @@ func (mp *MuxPadding) ApplyPadding(data []byte) []byte {
 	copy(result[2:], data)
 	copy(result[2+len(data):], padding)
 
-	// ОПТИМИЗАЦИЯ: Не возвращаем буфер в пул здесь, так как он будет использован вызывающим кодом
-	// Вызывающий код должен вернуть буфер в пул после использования
+	// ОПТИМИЗАЦИЯ: Для stack буфера нужна копия (stack escaping), для heap - возвращаем напрямую
+	if totalSize <= 512 {
+		// Stack буфер - нужна копия для heap return
+		resultCopy := make([]byte, totalSize)
+		copy(resultCopy, result)
+		return resultCopy
+	}
+	
+	// Heap буфер - возвращаем БЕЗ доп копирования
 	return result
 }
 

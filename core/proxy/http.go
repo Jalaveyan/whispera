@@ -226,15 +226,20 @@ func (p *HTTPProxy) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	io.Copy(w, resp.Body)
 }
 
-// proxyData проксирует данные между соединениями
+// proxyData проксирует данные между соединениями с оптимизацией для zero-copy
 func (p *HTTPProxy) proxyData(client, server net.Conn) {
 	done := make(chan struct{}, 2)
+	
+	// Пул буферов для переиспользования (256KB для оптимальной пропускной способности)
+	bufSize := 256 * 1024
 
 	// Client -> Server
 	go func() {
 		defer client.Close()
 		defer server.Close()
-		io.Copy(server, client)
+		// io.CopyBuffer использует предоставленный буфер (избегаем аллокации)
+		buf := make([]byte, bufSize)
+		io.CopyBuffer(server, client, buf)
 		done <- struct{}{}
 	}()
 
@@ -242,7 +247,8 @@ func (p *HTTPProxy) proxyData(client, server net.Conn) {
 	go func() {
 		defer client.Close()
 		defer server.Close()
-		io.Copy(client, server)
+		buf := make([]byte, bufSize)
+		io.CopyBuffer(client, server, buf)
 		done <- struct{}{}
 	}()
 

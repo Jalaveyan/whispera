@@ -313,7 +313,7 @@ func (v *VoIPQoS) classifyPacket(pkt []byte, dest net.Addr) PacketPriority {
 
 		// Discord voice обычно использует PT 111 (dynamic) для Opus
 		// или PT 0-20 для других кодеков
-		if payloadType >= 0 && payloadType <= 20 {
+		if payloadType <= 20 {
 			return PriorityRTPVoice
 		} else if payloadType >= 96 && payloadType <= 127 {
 			// Dynamic payload types - обычно voice/video

@@ -271,7 +271,8 @@ func MarshalFragment(frag Fragment) ([]byte, error) {
 		return nil, err
 	}
 
-	// Объединяем заголовок и данные
+	// ОПТИМИЗАЦИЯ: Объединяем заголовок и данные в один allocation с двумя copy операциями
+	// (это эффективнее чем 3+ операции на построение слайса)
 	result := make([]byte, len(headerBytes)+len(frag.Chunk))
 	copy(result, headerBytes)
 	copy(result[len(headerBytes):], frag.Chunk)

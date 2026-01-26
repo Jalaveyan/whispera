@@ -59,7 +59,7 @@ func NewEncryptWorkerPool(ctx context.Context, workers int, state *cryptopkg.AEA
 	poolCtx, cancel := context.WithCancel(ctx)
 	pool := &EncryptWorkerPool{
 		workers:    workers,
-		jobQueue:   make(chan *EncryptJob, 32768),
+		jobQueue:   make(chan *EncryptJob, 262144), // Увеличено с 32768 до 262144 для предотвращения переполнения при высокой нагрузке
 		workerPool: make(chan chan *EncryptJob, workers),
 		quit:       make(chan struct{}),
 		ctx:        poolCtx,
@@ -84,7 +84,7 @@ func GetGlobalEncryptWorkerPool() *EncryptWorkerPool {
 		ctx, cancel := context.WithCancel(context.Background())
 		globalEncryptWorkerPool = &EncryptWorkerPool{
 			workers:    workers,
-			jobQueue:   make(chan *EncryptJob, 32768), // КРИТИЧЕСКАЯ ОПТИМИЗАЦИЯ: Увеличено до 32768 для высокой пропускной способности
+			jobQueue:   make(chan *EncryptJob, 262144), // Увеличено до 262144 для предотвращения потери пакетов при переполнении очереди
 			workerPool: make(chan chan *EncryptJob, workers),
 			quit:       make(chan struct{}),
 			ctx:        ctx,
@@ -169,7 +169,7 @@ func (p *EncryptWorkerPool) worker() {
 // EncryptAsync отправляет задачу шифрования в пул воркеров
 func (p *EncryptWorkerPool) EncryptAsync(seq uint32, aad, plaintext []byte, aeadState *cryptopkg.AEADState, timeout time.Duration) ([]byte, error) {
 	if timeout <= 0 {
-		timeout = 5 * time.Millisecond // КРИТИЧЕСКАЯ ОПТИМИЗАЦИЯ: Уменьшено до 5ms для максимальной производительности
+		timeout = 50 * time.Millisecond // Увеличено до 50ms для предотвращения таймаутов при congested сетях
 	}
 
 	job := &EncryptJob{

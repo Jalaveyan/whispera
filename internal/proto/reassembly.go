@@ -90,33 +90,42 @@ func (r *Reassembler) Insert(id uint32, idx int, cnt int, chunk []byte, now time
 			r.metrics.FragmentsDropped++
 			return false, nil, expired
 		}
-		// capacity check
+		// capacity check - УЛУЧШЕНО: Aggressively evict multiple old entries
 		if r.capacity > 0 && len(r.byID) >= r.capacity {
-			// ОПТИМИЗАЦИЯ: Evict oldest single entry - используем более эффективный алгоритм
-			// Вместо полного сканирования, удаляем первый найденный старый элемент
-			var oldestID uint32
-			var oldestTime time.Time
-			found := false
-			// ОПТИМИЗАЦИЯ: Останавливаемся после первого найденного элемента для O(1) в среднем
+			// УЛУЧШЕНИЕ: Удаляем 10% самых старых элементов вместо одного для предотвращения частых evictions
+			toEvict := (r.capacity / 10)
+			if toEvict < 1 {
+				toEvict = 1
+			}
+			
+			type entry struct {
+				id   uint32
+				time time.Time
+			}
+			entries := make([]entry, 0, len(r.byID))
+			// Собираем все элементы с их временем создания
 			for k, v := range r.byID {
-				if !found || v.created.Before(oldestTime) {
-					oldestTime = v.created
-					oldestID = k
-					found = true
-					// ОПТИМИЗАЦИЯ: Для больших map можно прервать после нескольких итераций
-					if len(r.byID) > 100 {
-						break
+				entries = append(entries, entry{id: k, time: v.created})
+			}
+			
+			// Простая сортировка по времени для поиска N самых старых
+			for i := 0; i < toEvict && len(entries) > 0; i++ {
+				oldestIdx := 0
+				for j := 1; j < len(entries); j++ {
+					if entries[j].time.Before(entries[oldestIdx].time) {
+						oldestIdx = j
 					}
 				}
-			}
-			if found {
-			delete(r.byID, oldestID)
-			// ОПТИМИЗАЦИЯ: expired может быть nil, поэтому проверяем
-			if expired == nil {
-				expired = make([]uint32, 0, 1)
-			}
-			expired = append(expired, oldestID)
-			r.metrics.CapacityEvictions++
+				oldestID := entries[oldestIdx].id
+				delete(r.byID, oldestID)
+				if expired == nil {
+					expired = make([]uint32, 0, toEvict)
+				}
+				expired = append(expired, oldestID)
+				r.metrics.CapacityEvictions++
+				
+				// Удаляем из списка для следующей итерации
+				entries = append(entries[:oldestIdx], entries[oldestIdx+1:]...)
 			}
 		}
 		fb = &fragBuf{created: now, cnt: cnt, chunks: make([][]byte, cnt)}
@@ -128,9 +137,8 @@ func (r *Reassembler) Insert(id uint32, idx int, cnt int, chunk []byte, now time
 	}
 
 	if fb.chunks[idx] == nil {
-		// ОПТИМИЗАЦИЯ: Копируем chunk более эффективно
-		fb.chunks[idx] = make([]byte, len(chunk))
-		copy(fb.chunks[idx], chunk)
+		// ОПТИМИЗАЦИЯ: Сохраняем ссылку на chunk без копирования
+		fb.chunks[idx] = chunk // Zero-copy: just store slice reference
 		fb.have++
 	}
 	if fb.have < fb.cnt {
@@ -142,24 +150,12 @@ func (r *Reassembler) Insert(id uint32, idx int, cnt int, chunk []byte, now time
 		total += len(fb.chunks[i])
 	}
 	
-	// ОПТИМИЗАЦИЯ: Используем пул буферов для переиспользования памяти
-	out := reassemblyBufferPool.Get().([]byte)
-	if cap(out) < total {
-		out = make([]byte, 0, total)
-	} else {
-		out = out[:0]
-	}
-	
+	// ОПТИМИЗАЦИЯ: Прямое копирование в результирующий буфер без промежуточных аллокаций
+	result := make([]byte, total)
+	pos := 0
 	for i := 0; i < fb.cnt; i++ {
-		out = append(out, fb.chunks[i]...)
+		pos += copy(result[pos:], fb.chunks[i])
 	}
-	
-	// Создаем копию для возврата, так как буфер будет возвращен в пул
-	result := make([]byte, len(out))
-	copy(result, out)
-	
-	// Возвращаем буфер в пул
-	reassemblyBufferPool.Put(out[:0])
 	
 	delete(r.byID, id)
 	
@@ -181,7 +177,13 @@ func (r *Reassembler) evictLocked(now time.Time) []uint32 {
 	for id, fb := range r.byID {
 		if now.Sub(fb.created) > r.ttl {
 			delete(r.byID, id)
-			expired = append(expired, id)
+			// ОПТИМИЗАЦИЯ: Используем reslice вместо append если возможно
+			if len(expired) < cap(expired) {
+				expired = expired[:len(expired)+1]
+				expired[len(expired)-1] = id
+			} else {
+				expired = append(expired, id)
+			}
 		}
 	}
 	
@@ -191,10 +193,8 @@ func (r *Reassembler) evictLocked(now time.Time) []uint32 {
 		return nil
 	}
 	
-	// Создаем копию для возврата, так как буфер будет возвращен в пул при следующем вызове
-	result := make([]uint32, len(expired))
-	copy(result, expired)
-	expiredIDsPool.Put(expired[:0])
-	
+	// ОПТИМИЗАЦИЯ: Возвращаем результат БЕЗ копирования - используем пул буфер напрямую
+	// (caller обработает и не будет его переиспользовать)
+	result := expired
 	return result
 }

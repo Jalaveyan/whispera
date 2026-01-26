@@ -29,6 +29,13 @@ const (
 	MagicByte = 0x57 // 'W' for Whispera
 )
 
+// Пул буферов для handshake ответов (УЛУЧШЕНИЕ: избегаем аллокаций на горячем пути)
+var handshakeBufferPool = sync.Pool{
+	New: func() interface{} {
+		return make([]byte, 1024)
+	},
+}
+
 // HandshakeType represents the type of handshake
 type HandshakeType byte
 
@@ -52,7 +59,7 @@ func DefaultConfig() *Config {
 	return &Config{
 		RateLimit:        100,
 		RateBurst:        50,
-		Timeout:          10 * time.Second,
+		Timeout:          2 * time.Second,  // УЛУЧШЕНИЕ: Снижено с 10s до 2s для быстрого handshake
 		MaxPending:       1000,
 		EnableAntiReplay: true,
 	}
@@ -464,12 +471,18 @@ func (h *Handler) InitiateHandshake(ctx context.Context, conn net.Conn, addr net
 		return nil, fmt.Errorf("failed to send handshake init: %w", err)
 	}
 
-	// Wait for Response
-	// Set read deadline
-	conn.SetReadDeadline(time.Now().Add(h.config.Timeout))
+	// Wait for Response with optimized timeout and buffering
+	// УЛУЧШЕНИЕ: Используем пул буферов и адаптивный таймаут
+	readTimeout := h.config.Timeout
+	if readTimeout == 0 || readTimeout > 5*time.Second {
+		readTimeout = 2 * time.Second  // Capped at 2s for faster response
+	}
+	conn.SetReadDeadline(time.Now().Add(readTimeout))
 	defer conn.SetReadDeadline(time.Time{})
 
-	respBuf := make([]byte, 1024)
+	respBuf := handshakeBufferPool.Get().([]byte)
+	defer handshakeBufferPool.Put(respBuf)
+	
 	n, err := conn.Read(respBuf)
 	if err != nil {
 		atomic.AddUint64(&h.handshakesFailed, 1)

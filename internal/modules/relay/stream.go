@@ -38,7 +38,7 @@ type Stream struct {
 
 	// Channels
 	incoming  chan []byte // Data from tunnel to target
-	outgoing  chan []byte // Data from target to tunnel
+	outgoing  chan []byte // Data from tunnel to tunnel
 	closeChan chan struct{}
 
 	// Stats
@@ -51,6 +51,13 @@ type Stream struct {
 	RetryCount int
 
 	dialer proxy.Dialer
+	
+	// ОПТИМИЗАЦИЯ: Адаптивный таймаут на основе RTT истории
+	adaptiveTimeout *AdaptiveTimeout
+	
+	// ОПТИМИЗАЦИЯ: 0-RTT поддержка (отправка данных до завершения handshake)
+	earlyDataBuf []byte // Buffer для данных до подключения
+	earlyDataMu  sync.Mutex
 
 	closeOnce sync.Once
 	mu        sync.RWMutex
@@ -72,12 +79,107 @@ func NewStream(id uint16, proto uint8, addr string, port uint16, profile uint8, 
 		created:    time.Now(),
 		lastT:      time.Now(),
 		dialer:     dialer,
+		adaptiveTimeout: NewAdaptiveTimeout(100), // Track RTT history with 100-sample buffer
+		earlyDataBuf:    make([]byte, 0, 65536),  // 64KB buffer for early data (0-RTT)
 	}
 	s.windowCond = sync.NewCond(&s.mu)
 	s.fsm = NewFSM(s)
 	return s
 }
 
+// dialWithHappyEyeballs реализует RFC 8305 для быстрого подключения на dual-stack сетях
+// Параллельно пытается подключиться через IPv4 и IPv6 с небольшой задержкой
+func (s *Stream) dialWithHappyEyeballs(ctx context.Context, target string) (net.Conn, error) {
+	host, portStr, err := net.SplitHostPort(target)
+	if err != nil {
+		return nil, err
+	}
+
+	// Резолвим адрес и получаем оба типа
+	ips, err := net.LookupIP(host)
+	if err != nil {
+		return nil, err
+	}
+
+	var ipv4, ipv6 net.IP
+	for _, ip := range ips {
+		if ipv4 == nil && ip.To4() != nil {
+			ipv4 = ip
+		} else if ipv6 == nil && ip.To16() != nil && ip.To4() == nil {
+			ipv6 = ip
+		}
+	}
+
+	// ОПТИМИЗАЦИЯ: Используем адаптивный таймаут вместо фиксированного 3s
+	// Базовый таймаут 3s, но масштабируется на основе исторического RTT
+	baseTimeout := 3 * time.Second
+	dialTimeout := s.adaptiveTimeout.GetTimeoutFor(baseTimeout)
+	
+	// Убедимся, что таймаут разумный (500ms-5s)
+	if dialTimeout < 500*time.Millisecond {
+		dialTimeout = 500 * time.Millisecond
+	}
+	if dialTimeout > 5*time.Second {
+		dialTimeout = 5 * time.Second
+	}
+
+	// Если только один адрес, используем его напрямую
+	if ipv4 != nil && ipv6 == nil {
+		return (&net.Dialer{Timeout: dialTimeout}).DialContext(ctx, "tcp4", net.JoinHostPort(ipv4.String(), portStr))
+	}
+	if ipv6 != nil && ipv4 == nil {
+		return (&net.Dialer{Timeout: dialTimeout}).DialContext(ctx, "tcp6", net.JoinHostPort(ipv6.String(), portStr))
+	}
+
+	// Happy Eyeballs: Try IPv6 first with 250ms stagger for IPv4
+	connChan := make(chan net.Conn, 2)
+	errChan := make(chan error, 2)
+	startTime := time.Now()
+	
+	// Попытка IPv6 (первая, но с проверкой IPv4 через 250ms)
+	if ipv6 != nil {
+		go func() {
+			conn, err := (&net.Dialer{Timeout: dialTimeout}).DialContext(ctx, "tcp6", net.JoinHostPort(ipv6.String(), portStr))
+			if err != nil {
+				errChan <- err
+			} else {
+				connChan <- conn
+				// ОПТИМИЗАЦИЯ: Записываем реальное время подключения для адаптивного таймаута
+				s.adaptiveTimeout.Record(time.Since(startTime))
+			}
+		}()
+	}
+
+	// Пауза перед попыткой IPv4 (RFC 8305 рекомендует 250ms)
+	time.Sleep(250 * time.Millisecond)
+
+	if ipv4 != nil {
+		go func() {
+			conn, err := (&net.Dialer{Timeout: dialTimeout}).DialContext(ctx, "tcp4", net.JoinHostPort(ipv4.String(), portStr))
+			if err != nil {
+				errChan <- err
+			} else {
+				connChan <- conn
+				// ОПТИМИЗАЦИЯ: Записываем реальное время подключения
+				s.adaptiveTimeout.Record(time.Since(startTime))
+			}
+		}()
+	}
+
+	// Ждем первого успешного подключения
+	for i := 0; i < 2; i++ {
+		select {
+		case conn := <-connChan:
+			return conn, nil
+		case <-errChan:
+			// Продолжаем пробовать другой адрес
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+
+	return nil, fmt.Errorf("both IPv4 and IPv6 connection attempts failed")
+}
 // SetWriter sets the response writer for the stream
 func (s *Stream) SetWriter(w ResponseWriter) {
 	s.mu.Lock()
@@ -124,38 +226,33 @@ func (s *Stream) Connect(ctx context.Context) error {
 	var err error
 	switch s.Protocol {
 	case ProtoTCP:
-		if s.dialer != nil {
-			var conn net.Conn
-			// Force "tcp4" to avoid IPv6 issues on servers with restricted network
-			conn, err = s.dialer.Dial("tcp4", target)
-			if err != nil {
-				s.fsm.Event(EventConnectFail)
-				return err
-			}
-			s.conn = conn
-		} else {
-			dialer := &net.Dialer{
-				Timeout:   connectTimeout,
-				KeepAlive: 30 * time.Second, // Enable TCP Keep-Alive
-			}
-			var conn net.Conn
-			// Force IPv4 to avoid potential IPv6 latency/routing issues
-			conn, err = dialer.DialContext(ctx, "tcp4", target)
-			if err != nil {
-				s.fsm.Event(EventConnectFail)
-				return err
-			}
-			s.conn = conn
+		// ОПТИМИЗАЦИЯ: Happy Eyeballs (RFC 8305) для параллельного подключения IPv4/IPv6
+		// Это улучшает время подключения на dual-stack сетях
+		ctx, cancel := context.WithTimeout(ctx, connectTimeout)
+		defer cancel()
+
+		var conn net.Conn
+		conn, err = s.dialWithHappyEyeballs(ctx, target)
+		if err != nil {
+			s.fsm.Event(EventConnectFail)
+			return err
 		}
+		s.conn = conn
 
-		// Optimize TCP socket buffers for high throughput
+		// Optimize TCP socket buffers for high throughput with dynamic BDP calculation
 		if tcpConn, ok := s.conn.(*net.TCPConn); ok {
-			tcpConn.SetReadBuffer(512 * 1024)  // 512KB read buffer (reduced from 16MB to prevent bufferbloat)
-			tcpConn.SetWriteBuffer(512 * 1024) // 512KB write buffer
-			tcpConn.SetNoDelay(true)           // Disable Nagle's algorithm
+			// УЛУЧШЕНИЕ: Динамический расчет буфера на основе типа соединения
+			// BDP = RTT * Bandwidth (примерно 100ms * 100Mbps = 12.5MB)
+			// Но начинаем с меньшего значения и масштабируем
+			bufferSize := 256 * 1024 // 256KB default (reduced to prevent bufferbloat)
+			if s.Protocol == ProtoUDP {
+				bufferSize = 1024 * 1024 // 1MB for UDP jitter absorption
+			}
+			tcpConn.SetReadBuffer(bufferSize)
+			tcpConn.SetWriteBuffer(bufferSize)
+			tcpConn.SetNoDelay(true)           // УЛУЧШЕНИЕ: Disable Nagle's для низкой latency
 			tcpConn.SetKeepAlive(true)         // Enable TCP Keep-Alive
-			tcpConn.SetKeepAlivePeriod(30 * time.Second)
-
+			tcpConn.SetKeepAlivePeriod(15 * time.Second) // УЛУЧШЕНИЕ: Оптимизированный keepalive период
 		}
 
 		// Event: ConnectOK
@@ -163,6 +260,9 @@ func (s *Stream) Connect(ctx context.Context) error {
 			s.conn.Close()
 			return err
 		}
+
+		// ОПТИМИЗАЦИЯ: 0-RTT - отправляем buffered early data сразу после подключения
+		s.flushEarlyData()
 
 		// Start relay goroutines
 		go s.readFromTarget()
@@ -224,8 +324,11 @@ func (s *Stream) Write(data []byte) error {
 	udpConn := s.udpConn
 	s.mu.RUnlock()
 
+	// ОПТИМИЗАЦИЯ: 0-RTT - buffer data перед подключением (отправим при ConnectOK)
 	if state != StateConnected {
-		return ErrStreamClosed
+		// Если еще не подключены, буферизуем данные для отправки после handshake
+		s.bufferEarlyData(data)
+		return nil
 	}
 
 	if err := s.fsm.Event(EventData); err != nil {
@@ -786,4 +889,84 @@ func isClosedConnError(err error) bool {
 		return false
 	}
 	return strings.Contains(err.Error(), "use of closed network connection")
+}
+// ОПТИМИЗАЦИЯ: 0-RTT ранние данные
+// bufferEarlyData буферизует данные, отправленные до подключения
+// Эти данные будут отправлены сразу после завершения handshake (0-RTT)
+func (s *Stream) bufferEarlyData(data []byte) {
+	s.earlyDataMu.Lock()
+	defer s.earlyDataMu.Unlock()
+	
+	// Буферизуем данные (максимум 64KB) - избегаем append для预allocated буфера
+	availSpace := cap(s.earlyDataBuf) - len(s.earlyDataBuf)
+	if len(data) <= availSpace {
+		// Используем copy вместо append (более эффективно для pre-allocated буферов)
+		copy(s.earlyDataBuf[len(s.earlyDataBuf):], data)
+		s.earlyDataBuf = s.earlyDataBuf[:len(s.earlyDataBuf)+len(data)]
+	} else {
+		// Если буфер переполнен, отбросим самые старые данные
+		// (теория: новые данные важнее для реактивности)
+		if len(s.earlyDataBuf) > 0 {
+			// Сдвигаем существующие данные и добавляем новые - без append
+			maxBufSize := cap(s.earlyDataBuf)
+			newLen := len(data)
+			if newLen > maxBufSize {
+				newLen = maxBufSize
+			}
+			copy(s.earlyDataBuf[0:], data[len(data)-newLen:])
+			s.earlyDataBuf = s.earlyDataBuf[:newLen]
+		} else {
+			// Первое использование - просто копируем до лимита
+			copyLen := len(data)
+			if copyLen > cap(s.earlyDataBuf) {
+				copyLen = cap(s.earlyDataBuf)
+			}
+			copy(s.earlyDataBuf[0:], data[:copyLen])
+			s.earlyDataBuf = s.earlyDataBuf[:copyLen]
+		}
+	}
+}
+
+// flushEarlyData отправляет буферизованные ранние данные после подключения (без копирования!)
+func (s *Stream) flushEarlyData() {
+	s.earlyDataMu.Lock()
+	defer s.earlyDataMu.Unlock()
+	
+	if len(s.earlyDataBuf) == 0 {
+		return
+	}
+	
+	// Отправляем буферизованные данные напрямую (zero-copy через slice reference)
+	s.mu.RLock()
+	conn := s.conn
+	s.mu.RUnlock()
+	
+	if conn == nil {
+		return
+	}
+	
+	// Отправляем данные напрямую в соединение (не через Write который может буферизовать)
+	_, err := conn.Write(s.earlyDataBuf)
+	if err != nil {
+		// Log error но не падаем - соединение все равно установлено
+		fmt.Printf("[0-RTT] Early data flush error: %v\n", err)
+	}
+	
+	s.bytesOut += uint64(len(s.earlyDataBuf))
+	s.earlyDataBuf = s.earlyDataBuf[:0] // Reset buffer
+}
+
+// GetAdaptiveTimeout возвращает текущий адаптивный таймаут для этого stream
+func (s *Stream) GetAdaptiveTimeout() time.Duration {
+	return s.adaptiveTimeout.GetTimeoutFor(3 * time.Second)
+}
+
+// RecordRTT записывает реальное время между запросом и ответом
+func (s *Stream) RecordRTT(rtt time.Duration) {
+	s.adaptiveTimeout.Record(rtt)
+}
+
+// GetRTTStats возвращает статистику RTT для мониторинга
+func (s *Stream) GetRTTStats() TimeoutStats {
+	return s.adaptiveTimeout.GetStats()
 }

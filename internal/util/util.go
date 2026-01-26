@@ -1,7 +1,7 @@
 package util
 
 import (
-	"sync"
+	"sync/atomic"
 	"time"
 
 	"whispera/internal/logger"
@@ -14,21 +14,21 @@ func SafeClose(name string, closer func() error) {
 	}
 }
 
-// TimeCache provides cached time for performance
+// TimeCache provides cached time for performance using atomics instead of RWMutex
 type TimeCache struct {
-	mu      sync.RWMutex
-	current time.Time
+	// УЛУЧШЕНИЕ: Используем atomic.Value вместо RWMutex для избежания задержек
+	current atomic.Value // содержит time.Time
 }
 
-var globalTimeCache = &TimeCache{current: time.Now()}
+var globalTimeCache = &TimeCache{}
 
 func init() {
+	globalTimeCache.current.Store(time.Now())
 	go func() {
 		ticker := time.NewTicker(100 * time.Millisecond)
 		for t := range ticker.C {
-			globalTimeCache.mu.Lock()
-			globalTimeCache.current = t
-			globalTimeCache.mu.Unlock()
+			// УЛУЧШЕНИЕ: Без лока - просто атомарное сохранение
+			globalTimeCache.current.Store(t)
 		}
 	}()
 }
@@ -38,16 +38,14 @@ func GetGlobalTimeCache() *TimeCache {
 	return globalTimeCache
 }
 
-// Now returns the cached current time
+// Now returns the cached current time without locking
 func (tc *TimeCache) Now() time.Time {
-	tc.mu.RLock()
-	defer tc.mu.RUnlock()
-	return tc.current
+	// УЛУЧШЕНИЕ: Без RLock - прямое atomics чтение O(1) без контенции
+	return tc.current.Load().(time.Time)
 }
 
-// NowNano returns the cached current time as nanoseconds
+// NowNano returns the cached current time as nanoseconds without locking
 func (tc *TimeCache) NowNano() int64 {
-	tc.mu.RLock()
-	defer tc.mu.RUnlock()
-	return tc.current.UnixNano()
+	// УЛУЧШЕНИЕ: Без RLock - прямое atomics чтение
+	return tc.current.Load().(time.Time).UnixNano()
 }

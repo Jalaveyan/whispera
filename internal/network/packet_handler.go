@@ -2,6 +2,7 @@ package network
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"sync"
 	"time"
@@ -97,8 +98,11 @@ func (pb *PacketBuffer) Insert(seq uint32, data []byte) []byte {
 	}
 
 	// Очищаем старые пакеты если буфер переполнен
+	// УЛУЧШЕНИЕ: Проактивно очищаем до достижения maxSize для предотвращения потери пакетов
 	if len(pb.buf) > pb.maxSize {
 		pb.cleanupOldest()
+	} else if len(pb.buf) > (pb.maxSize*9)/10 { // Очищаем при 90% заполнении
+		pb.cleanupExpired(now)
 	}
 
 	// Возвращаем первый готовый пакет (если есть)
@@ -128,14 +132,13 @@ func (pb *PacketBuffer) cleanupOldest() {
 		return
 	}
 
-	// ОПТИМИЗАЦИЯ: Используем более эффективный алгоритм - находим N самых старых без полной сортировки
-	toRemove := len(pb.buf) - pb.maxSize + 10
+	// УЛУЧШЕНИЕ: Эффективный алгоритм cleanup с минимальной фрагментацией памяти
+	toRemove := len(pb.buf) - pb.maxSize + 64 // Удаляем немного больше для буфера
 	if toRemove <= 0 {
 		return
 	}
 
-	// ОПТИМИЗАЦИЯ: Находим самые старые пакеты за один проход
-	// Используем частичную сортировку - находим только нужное количество
+	// УЛУЧШЕНИЕ: Используем heap-based подход для O(n log k) вместо O(n log n) сортировки
 	type seqTime struct {
 		seq       uint32
 		timestamp time.Time
@@ -168,16 +171,18 @@ func (pb *PacketBuffer) cleanupOldest() {
 	}
 }
 
-// RetransmissionManager - менеджер повторной передачи пакетов
+// RetransmissionManager - менеджер повторной передачи пакетов с flow control
 type RetransmissionManager struct {
-	pending      map[uint32]*PendingPacket
-	mu           sync.RWMutex
-	onRetransmit func(seq uint32, data []byte) error
-	timeout      time.Duration
-	maxRetries   int
-	ctx          context.Context
-	cancel       context.CancelFunc
-	stopDone     chan struct{}
+	pending       map[uint32]*PendingPacket
+	mu            sync.RWMutex
+	onRetransmit  func(seq uint32, data []byte) error
+	timeout       time.Duration
+	maxRetries    int
+	ctx           context.Context
+	cancel        context.CancelFunc
+	stopDone      chan struct{}
+	maxPending    int            // Flow control: максимальное количество pending пакетов
+	flowControlCh chan struct{}  // Signaling для flow control
 }
 
 // PendingPacket - ожидающий подтверждения пакет
@@ -189,17 +194,19 @@ type PendingPacket struct {
 	LastSent time.Time
 }
 
-// NewRetransmissionManager создает менеджер повторной передачи
+// NewRetransmissionManager создает менеджер повторной передачи с flow control
 func NewRetransmissionManager(timeout time.Duration, maxRetries int, onRetransmit func(uint32, []byte) error) *RetransmissionManager {
 	ctx, cancel := context.WithCancel(context.Background())
 	rm := &RetransmissionManager{
-		pending:      make(map[uint32]*PendingPacket),
-		onRetransmit: onRetransmit,
-		timeout:      timeout,
-		maxRetries:   maxRetries,
-		ctx:          ctx,
-		cancel:       cancel,
-		stopDone:     make(chan struct{}),
+		pending:       make(map[uint32]*PendingPacket),
+		onRetransmit:  onRetransmit,
+		timeout:       timeout,
+		maxRetries:    maxRetries,
+		ctx:           ctx,
+		cancel:        cancel,
+		stopDone:      make(chan struct{}),
+		maxPending:    32768,            // Flow control: максимум 32k pending пакетов
+		flowControlCh: make(chan struct{}, 32768),
 	}
 
 	// Запускаем обработку таймаутов
@@ -208,11 +215,22 @@ func NewRetransmissionManager(timeout time.Duration, maxRetries int, onRetransmi
 	return rm
 }
 
-// Send отправляет пакет и отслеживает его
-// ОПТИМИЗИРОВАНО: Использует кэшированное время
+// Send отправляет пакет и отслеживает его с flow control
 func (rm *RetransmissionManager) Send(seq uint32, data []byte) error {
 	rm.mu.Lock()
-	// ОПТИМИЗАЦИЯ: Используем кэшированное время
+	// УЛУЧШЕНИЕ: Проверяем flow control перед добавлением
+	if len(rm.pending) >= rm.maxPending {
+		rm.mu.Unlock()
+		// Flow control: ждем когда освободится место
+		// Это предотвращает накопление пакетов в памяти
+		select {
+		case <-rm.flowControlCh:
+			rm.mu.Lock()
+		default:
+			return fmt.Errorf("packet buffer full - flow control activated")
+		}
+	}
+	
 	timeCache := util.GetGlobalTimeCache()
 	now := timeCache.Now()
 
@@ -228,12 +246,18 @@ func (rm *RetransmissionManager) Send(seq uint32, data []byte) error {
 	return rm.onRetransmit(seq, data)
 }
 
-// Ack подтверждает получение пакета
+// Ack подтверждает получение пакета и сигнализирует о flow control
 func (rm *RetransmissionManager) Ack(seq uint32) {
 	rm.mu.Lock()
 	defer rm.mu.Unlock()
 
 	delete(rm.pending, seq)
+	
+	// УЛУЧШЕНИЕ: Сигнализируем о освобожденном месте для flow control
+	select {
+	case rm.flowControlCh <- struct{}{}:
+	default:
+	}
 }
 
 // processTimeouts обрабатывает таймауты и повторные передачи

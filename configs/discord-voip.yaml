@@ -17,9 +17,9 @@ connection:
   server_address: "${SERVER_ADDRESS:vpn.example.com:443}"
   
   # VoIP-specific timeouts
-  timeout: 10s                    # Aggressive timeout for voice
-  keepalive_interval: 5s          # Frequent keepalive to maintain connection
-  reconnect_interval: 2s          # Quick reconnection
+  timeout: 2s                     # УЛУЧШЕНИЕ: Снижено с 10s до 2s для быстрого handshake
+  keepalive_interval: 15s         # УЛУЧШЕНИЕ: Увеличено с 5s до 15s для снижения overhead
+  reconnect_interval: 1s          # УЛУЧШЕНИЕ: Быстрая переподготовка
   max_reconnect_attempts: 20
   
   # UDP specific options

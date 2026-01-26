@@ -23,6 +23,13 @@ import (
 
 var log = logger.Module("mtproto")
 
+// handshakeBufferPool для переиспользования буферов при handshake
+var handshakeBufferPool = sync.Pool{
+	New: func() interface{} {
+		return make([]byte, 128) // Достаточно для handshake
+	},
+}
+
 const (
 	ModuleName    = "transport.mtproto"
 	ModuleVersion = "1.0.0"
@@ -214,11 +221,12 @@ func (t *Transport) handleConnection(ctx context.Context, clientConn net.Conn) {
 		atomic.AddInt32(&t.activeConns, -1)
 	}()
 
-	// Set deadline for handshake
-	clientConn.SetDeadline(time.Now().Add(30 * time.Second))
+	// УЛУЧШЕНИЕ: Set reasonable deadline for handshake (5s вместо 30s)
+	clientConn.SetDeadline(time.Now().Add(5 * time.Second))
 
-	// Read initial data
-	header := make([]byte, nonceLen)
+	// УЛУЧШЕНИЕ: Используем пул буферов вместо аллокации
+	header := handshakeBufferPool.Get().([]byte)[:nonceLen]
+	defer func() { handshakeBufferPool.Put(header) }()
 	if _, err := io.ReadFull(clientConn, header); err != nil {
 		log.Debug("Failed to read header: %v", err)
 		return

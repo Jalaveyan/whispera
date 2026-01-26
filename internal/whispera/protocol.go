@@ -171,7 +171,7 @@ func ReadRequestHeader(r io.Reader) (*RequestHeader, error) {
 
 	// For TCP/UDP commands, read destination
 	if hdr.Command == CommandTCP || hdr.Command == CommandUDP {
-		// Read port (2 bytes, big endian)
+		// Read port (2 bytes, big endian) - используем stack buffer
 		var port [2]byte
 		if _, err := io.ReadFull(r, port[:]); err != nil {
 			return nil, err
@@ -185,19 +185,23 @@ func ReadRequestHeader(r io.Reader) (*RequestHeader, error) {
 		}
 		hdr.AddrType = AddressType(addrType[0])
 
-		// Read address
+		// УЛУЧШЕНИЕ: Pre-allocate buffer для адреса базируясь на типе
+		// Это избегает множественных аллокаций и append операций
 		switch hdr.AddrType {
 		case AddrTypeIPv4:
+			// IPv4: 4 байта
 			hdr.Address = make([]byte, 4)
 			if _, err := io.ReadFull(r, hdr.Address); err != nil {
 				return nil, err
 			}
 		case AddrTypeIPv6:
+			// IPv6: 16 байт
 			hdr.Address = make([]byte, 16)
 			if _, err := io.ReadFull(r, hdr.Address); err != nil {
 				return nil, err
 			}
 		case AddrTypeDomain:
+			// Domain: length byte + domain
 			var domainLen [1]byte
 			if _, err := io.ReadFull(r, domainLen[:]); err != nil {
 				return nil, err
@@ -217,9 +221,12 @@ func ReadRequestHeader(r io.Reader) (*RequestHeader, error) {
 	return hdr, nil
 }
 
-// readAddonData reads addon-specific data based on flags
+// readAddonData reads addon-specific data based on flags with minimal allocations
 func readAddonData(r io.Reader, addons Addon) (*AddonData, error) {
 	data := &AddonData{}
+
+	// УЛУЧШЕНИЕ: Используем stack-allocated arrays вместо отдельных аллокаций
+	var buf [256]byte // Максимум 255 байт padding + несколько байт для других данных
 
 	// Read obfuscation profile if addon present
 	if addons&AddonObfuscation != 0 || addons&AddonMLProfile != 0 {
@@ -247,10 +254,9 @@ func readAddonData(r io.Reader, addons Addon) (*AddonData, error) {
 		}
 		data.PaddingLength = padLen[0]
 
-		// Skip padding bytes
+		// УЛУЧШЕНИЕ: Читаем padding в stack buffer без аллокации
 		if data.PaddingLength > 0 {
-			padding := make([]byte, data.PaddingLength)
-			if _, err := io.ReadFull(r, padding); err != nil {
+			if _, err := io.ReadFull(r, buf[:data.PaddingLength]); err != nil {
 				return nil, err
 			}
 		}
@@ -301,10 +307,10 @@ func WriteRequestHeader(w io.Writer, hdr *RequestHeader) error {
 
 	// For TCP/UDP commands, write destination
 	if hdr.Command == CommandTCP || hdr.Command == CommandUDP {
-		// Write port
-		port := make([]byte, 2)
-		binary.BigEndian.PutUint16(port, hdr.Port)
-		if _, err := w.Write(port); err != nil {
+		// ОПТИМИЗАЦИЯ: Используем stack buffer вместо heap allocation для port
+		var port [2]byte
+		binary.BigEndian.PutUint16(port[:], hdr.Port)
+		if _, err := w.Write(port[:]); err != nil {
 			return err
 		}
 
@@ -353,9 +359,10 @@ func writeAddonData(w io.Writer, addons Addon, data *AddonData) error {
 			return err
 		}
 		if paddingLen > 0 {
-			padding := make([]byte, paddingLen)
-			rand.Read(padding) // Random padding
-			if _, err := w.Write(padding); err != nil {
+			// ОПТИМИЗАЦИЯ: Используем stack buffer (MaxPadding=64) вместо heap allocation
+			var padding [MaxPadding]byte
+			rand.Read(padding[:paddingLen]) // Random padding (only needed bytes)
+			if _, err := w.Write(padding[:paddingLen]); err != nil {
 				return err
 			}
 		}
@@ -363,11 +370,12 @@ func writeAddonData(w io.Writer, addons Addon, data *AddonData) error {
 
 	// Write fragmentation info
 	if addons&AddonFragmented != 0 {
-		fragInfo := make([]byte, 4)
+		// ОПТИМИЗАЦИЯ: Используем stack buffer вместо heap allocation для fragInfo
+		var fragInfo [4]byte
 		binary.BigEndian.PutUint16(fragInfo[0:2], data.FragmentID)
 		fragInfo[2] = data.FragmentTotal
 		fragInfo[3] = data.FragmentSeq
-		if _, err := w.Write(fragInfo); err != nil {
+		if _, err := w.Write(fragInfo[:]); err != nil {
 			return err
 		}
 	}
@@ -379,19 +387,20 @@ func writeAddonData(w io.Writer, addons Addon, data *AddonData) error {
 func ReadResponseHeader(r io.Reader) (*ResponseHeader, error) {
 	hdr := &ResponseHeader{}
 
+	// ОПТИМИЗАЦИЯ: Используем stack buffer для reading header bytes
+	var buf [2]byte // Максимум что нужно: version (1) + addons (1)
+	
 	// Read version
-	var version [1]byte
-	if _, err := io.ReadFull(r, version[:]); err != nil {
+	if _, err := io.ReadFull(r, buf[:1]); err != nil {
 		return nil, err
 	}
-	hdr.Version = version[0]
+	hdr.Version = buf[0]
 
 	// Read addons
-	var addons [1]byte
-	if _, err := io.ReadFull(r, addons[:]); err != nil {
+	if _, err := io.ReadFull(r, buf[:1]); err != nil {
 		return nil, err
 	}
-	hdr.Addons = Addon(addons[0])
+	hdr.Addons = Addon(buf[0])
 
 	// Read addon data if present
 	if hdr.Addons != AddonNone {

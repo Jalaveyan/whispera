@@ -41,7 +41,16 @@ func (bs *BatchSender) AddPacket(pkt multi.StreamPacket) {
 	bs.mu.Lock()
 	defer bs.mu.Unlock()
 
-	bs.batch = append(bs.batch, pkt)
+	// ОПТИМИЗАЦИЯ: Избегаем append если возможно - переиспользуем capacity
+	if len(bs.batch) < cap(bs.batch) {
+		// Есть место в pre-allocated slice - используем его без allocations
+		bs.batch = bs.batch[:len(bs.batch)+1]
+		bs.batch[len(bs.batch)-1] = pkt
+	} else {
+		// Нужно расширить - только тогда используем append
+		bs.batch = append(bs.batch, pkt)
+	}
+	
 	bs.currentSize += len(pkt.Payload)
 
 	// Если batch заполнен по количеству или размеру, отправляем его

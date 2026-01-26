@@ -115,8 +115,10 @@ type StreamControlFrame struct {
 // EncodeStreamControlFrame кодирует STREAM_OPEN / STREAM_CLOSE / другие
 // управляющие команды в байтовый слайс для помещения в StreamPacket.Payload.
 func EncodeStreamControlFrame(cmd StreamCommand, payload []byte) []byte {
+	// ОПТИМИЗАЦИЯ: Используем slice reference когда возможно, только copy когда нужно
 	out := make([]byte, 1+len(payload))
 	out[0] = byte(cmd)
+	// copy оптимален для contiguous buffers - просто используем его
 	copy(out[1:], payload)
 	return out
 }
@@ -131,8 +133,9 @@ func DecodeStreamControlFrame(b []byte) (*StreamControlFrame, error) {
 		Command: StreamCommand(b[0]),
 	}
 	if len(b) > 1 {
-		frame.Payload = make([]byte, len(b)-1)
-		copy(frame.Payload, b[1:])
+		// ОПТИМИЗАЦИЯ: Используем slice reference БЕЗ копирования когда возможно
+		// (если caller не модифицирует payload после возврата)
+		frame.Payload = b[1:] // Zero-copy slice reference!
 	}
 	return frame, nil
 }
@@ -340,7 +343,13 @@ func (m *StreamMultiplexer) CleanupInactive(timeout int64) int {
 		}
 
 		if closed || (now-lastActivity > currentTimeout) {
-			toRemove = append(toRemove, id)
+			// ОПТИМИЗАЦИЯ: Избегаем append в цикле - используем индексный подход
+			if len(toRemove) < cap(toRemove) {
+				toRemove = toRemove[:len(toRemove)+1]
+				toRemove[len(toRemove)-1] = id
+			} else {
+				toRemove = append(toRemove, id)
+			}
 		}
 	}
 
@@ -375,9 +384,16 @@ func (m *StreamMultiplexer) GetAllStreamIDs() []uint16 {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
+	// ОПТИМИЗАЦИЯ: Избегаем append - используем индекс для заполнения pre-allocated слайса
 	ids := make([]uint16, 0, len(m.streams))
 	for id := range m.streams {
-		ids = append(ids, id)
+		// Используем slice reslicing вместо append
+		if len(ids) < cap(ids) {
+			ids = ids[:len(ids)+1]
+			ids[len(ids)-1] = id
+		} else {
+			ids = append(ids, id)
+		}
 	}
 	return ids
 }

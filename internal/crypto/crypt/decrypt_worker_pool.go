@@ -56,7 +56,7 @@ func NewDecryptWorkerPool(ctx context.Context, workers int) *DecryptWorkerPool {
 	poolCtx, cancel := context.WithCancel(ctx)
 	pool := &DecryptWorkerPool{
 		workers:    workers,
-		jobQueue:   make(chan *DecryptJob, 32768), // КРИТИЧЕСКАЯ ОПТИМИЗАЦИЯ: Увеличено до 32768 для высокой пропускной способности
+		jobQueue:   make(chan *DecryptJob, 262144), // Увеличено до 262144 для предотвращения переполнения при высокой нагрузке
 		workerPool: make(chan chan *DecryptJob, workers),
 		quit:       make(chan struct{}),
 		ctx:        poolCtx,
@@ -81,7 +81,7 @@ func GetGlobalDecryptWorkerPool() *DecryptWorkerPool {
 		ctx, cancel := context.WithCancel(context.Background())
 		globalDecryptWorkerPool = &DecryptWorkerPool{
 			workers:    workers,
-			jobQueue:   make(chan *DecryptJob, 32768), // КРИТИЧЕСКАЯ ОПТИМИЗАЦИЯ: Увеличено до 32768 для высокой пропускной способности
+			jobQueue:   make(chan *DecryptJob, 262144), // Увеличено до 262144 для предотвращения потери пакетов при переполнении очереди
 			workerPool: make(chan chan *DecryptJob, workers),
 			quit:       make(chan struct{}),
 			ctx:        ctx,

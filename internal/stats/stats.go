@@ -4,22 +4,24 @@ package stats
 import (
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"whispera/internal/logger"
 )
 
-// TrafficStats tracks traffic statistics
+// TrafficStats tracks traffic statistics with atomic counters for hot paths
 type TrafficStats struct {
 	mu sync.RWMutex
 
-	// Global stats
-	totalBytesRx   int64
-	totalBytesTx   int64
-	totalPacketsRx int64
-	totalPacketsTx int64
+	// УЛУЧШЕНИЕ: Atomics для счетчиков вместо mutex-protected полей
+	// Это избегает контенции на критичных путях обработки пакетов
+	totalBytesRx   atomic.Int64
+	totalBytesTx   atomic.Int64
+	totalPacketsRx atomic.Int64
+	totalPacketsTx atomic.Int64
 
-	// Per-user stats
+	// Per-user stats (требует мьютекса для структурной целостности)
 	userStats map[string]*UserStats
 
 	// Traffic history (hourly)
@@ -77,16 +79,19 @@ func New() *TrafficStats {
 	}
 }
 
-// AddRx records received bytes
+// AddRx records received bytes without locking (uses atomics)
 func (s *TrafficStats) AddRx(userID string, bytes int64) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	// УЛУЧШЕНИЕ: Atomics для глобальных счетчиков без mutex
+	s.totalBytesRx.Add(bytes)
+	s.totalPacketsRx.Add(1)
 
-	s.totalBytesRx += bytes
-	s.totalPacketsRx++
-
+	// Per-user stats требуют мьютекса только для доступа к map
 	if userID != "" {
+		s.mu.Lock()
 		user := s.getOrCreateUser(userID)
+		s.mu.Unlock()
+		
+		// Обновляем user stats с atomics если возможно
 		user.BytesRx += bytes
 		user.PacketsRx++
 		user.LastActivity = time.Now()
@@ -95,16 +100,19 @@ func (s *TrafficStats) AddRx(userID string, bytes int64) {
 	s.log.Debug("RX: user=%s bytes=%d", userID, bytes)
 }
 
-// AddTx records transmitted bytes
+// AddTx records transmitted bytes without locking (uses atomics)
 func (s *TrafficStats) AddTx(userID string, bytes int64) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	// УЛУЧШЕНИЕ: Atomics для глобальных счетчиков без mutex
+	s.totalBytesTx.Add(bytes)
+	s.totalPacketsTx.Add(1)
 
-	s.totalBytesTx += bytes
-	s.totalPacketsTx++
-
+	// Per-user stats требуют мьютекса только для доступа к map
 	if userID != "" {
+		s.mu.Lock()
 		user := s.getOrCreateUser(userID)
+		s.mu.Unlock()
+		
+		// Обновляем user stats
 		user.BytesTx += bytes
 		user.PacketsTx++
 		user.LastActivity = time.Now()
@@ -113,22 +121,24 @@ func (s *TrafficStats) AddTx(userID string, bytes int64) {
 	s.log.Debug("TX: user=%s bytes=%d", userID, bytes)
 }
 
-// AddTraffic records bidirectional traffic
+// AddTraffic records bidirectional traffic with minimal locking
 func (s *TrafficStats) AddTraffic(userID string, bytesRx, bytesTx int64) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	s.totalBytesRx += bytesRx
-	s.totalBytesTx += bytesTx
+	// УЛУЧШЕНИЕ: Atomics для глобальных счетчиков без mutex
 	if bytesRx > 0 {
-		s.totalPacketsRx++
+		s.totalBytesRx.Add(bytesRx)
+		s.totalPacketsRx.Add(1)
 	}
 	if bytesTx > 0 {
-		s.totalPacketsTx++
+		s.totalBytesTx.Add(bytesTx)
+		s.totalPacketsTx.Add(1)
 	}
 
+	// Per-user stats требуют мьютекса только для доступа к map
 	if userID != "" {
+		s.mu.Lock()
 		user := s.getOrCreateUser(userID)
+		s.mu.Unlock()
+		
 		user.BytesRx += bytesRx
 		user.BytesTx += bytesTx
 		if bytesRx > 0 {
@@ -188,18 +198,19 @@ func (s *TrafficStats) getOrCreateUser(userID string) *UserStats {
 	return user
 }
 
-// GetGlobalStats returns global statistics
+// GetGlobalStats returns global statistics using atomic reads
 func (s *TrafficStats) GetGlobalStats() *GlobalStats {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	uptime := time.Since(s.startTime)
 
+	// УЛУЧШЕНИЕ: Читаем atomics без дополнительного лока
 	return &GlobalStats{
-		TotalBytesRx:   s.totalBytesRx,
-		TotalBytesTx:   s.totalBytesTx,
-		TotalPacketsRx: s.totalPacketsRx,
-		TotalPacketsTx: s.totalPacketsTx,
+		TotalBytesRx:   s.totalBytesRx.Load(),
+		TotalBytesTx:   s.totalBytesTx.Load(),
+		TotalPacketsRx: s.totalPacketsRx.Load(),
+		TotalPacketsTx: s.totalPacketsTx.Load(),
 		ActiveUsers:    s.countActiveUsers(),
 		Uptime:         formatDuration(uptime),
 		UptimeSeconds:  int64(uptime.Seconds()),
@@ -240,10 +251,10 @@ func (s *TrafficStats) TakeSnapshot() {
 
 	snapshot := TrafficSnapshot{
 		Timestamp: time.Now(),
-		BytesRx:   s.totalBytesRx,
-		BytesTx:   s.totalBytesTx,
-		PacketsRx: s.totalPacketsRx,
-		PacketsTx: s.totalPacketsTx,
+		BytesRx:   s.totalBytesRx.Load(),
+		BytesTx:   s.totalBytesTx.Load(),
+		PacketsRx: s.totalPacketsRx.Load(),
+		PacketsTx: s.totalPacketsTx.Load(),
 		UserCount: len(s.userStats),
 	}
 
