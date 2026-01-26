@@ -552,7 +552,8 @@ func (s *Stream) readRelayUDP() {
 			// It returns the full frame slice starting from the header
 			// SealUDPData writes headers BEFORE buf[Headroom]
 			// It returns the full frame slice starting from the header
-			packet, err := SealUDPData(buf, s.ID, atyp, addr.IP.String(), uint16(addr.Port), Headroom)
+			// FIX: Slice buf to Headroom+n so we don't send the full capacity (garbage/zeros)
+			packet, err := SealUDPData(buf[:Headroom+n], s.ID, atyp, addr.IP.String(), uint16(addr.Port), Headroom)
 			if err != nil {
 				fmt.Printf("[RELAY] UDP Seal Error: %v\n", err)
 				return
