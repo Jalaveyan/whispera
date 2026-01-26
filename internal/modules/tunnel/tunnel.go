@@ -14,7 +14,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-	"github.com/xtaci/smux"
 
 	"whispera/internal/core/base"
 	"whispera/internal/core/events"
@@ -24,6 +23,7 @@ import (
 	"whispera/internal/modules/phantom"
 	asnbypass "whispera/internal/modules/transport/asn_bypass"
 	quic_transport "whispera/internal/modules/transport/quic"
+	"whispera/internal/mux"
 	"whispera/internal/obfuscation/russian"
 )
 
@@ -135,14 +135,11 @@ func (c *Config) Validate() error {
 	// or a custom config should be created and passed to smux.NewClient/NewServer.
 	// This code snippet is placed here as per user instruction, but its effect might depend
 	// on how smux is initialized elsewhere in the application.
-	smuxConfig := smux.DefaultConfig() // This line would require importing "github.com/xtaci/smux"
-	smuxConfig.KeepAliveInterval = 10 * time.Second
-	smuxConfig.KeepAliveTimeout = 30 * time.Second
-	smuxConfig.MaxFrameSize = 32768                // 32KB frames (Balance betwen latency/throughput)
-	smuxConfig.MaxReceiveBuffer = 32 * 1024 * 1024 // 32MB Receive Buffer (Match high TCP window)
-
+	// Optimize smux configuration for 4K streaming
+	// SMUX configuration is now handled dynamically in connectInternal using internal/mux logic
+	// but we validate key parameters here.
 	if c.KeepaliveInterval <= 0 {
-		c.KeepaliveInterval = 30 * time.Second
+		c.KeepaliveInterval = 10 * time.Second
 	}
 	if c.ReconnectInterval <= 0 {
 		c.ReconnectInterval = 5 * time.Second
@@ -231,6 +228,18 @@ type Manager struct {
 	russianSNIs  []string
 	currentSNI   string
 	lastRotation time.Time
+}
+
+// getMuxConfig creates a tuned mux configuration
+func (m *Manager) getMuxConfig() *mux.Config {
+	return &mux.Config{
+		MaxFrameSize:         32768,            // 32KB
+		MaxReceiveBuffer:     32 * 1024 * 1024, // 32MB
+		MaxStreamBuffer:      65536,            // 64KB
+		KeepAliveInterval:    10 * time.Second, // Faster keepalives
+		KeepAliveTimeout:     30 * time.Second,
+		MaxConcurrentStreams: 8, // Limit streams per conn since we use 1 main stream usually
+	}
 }
 
 // New creates a new tunnel manager
@@ -462,8 +471,29 @@ func (m *Manager) connectInternal(ctx context.Context, isRotation bool) error {
 			}
 
 			// Create managed connection
+			// ENABLING SMUX WRAPPER
+			log.Info("[%s] Upgrading connection %d to SMUX (High Performance Mode)...", op, idx)
+
+			// 1. Create Mux Session
+			muxCfg := m.getMuxConfig()
+			session, err := mux.Client(conn, muxCfg)
+			if err != nil {
+				log.Warn("[%s] Failed to create SMUX session for conn %d: %v", op, idx, err)
+				conn.Close()
+				return
+			}
+
+			// 2. Open Stream (This becomes our "transport" connection)
+			// We use the stream as the carrier for our VPN frames
+			stream, err := session.OpenStream()
+			if err != nil {
+				log.Warn("[%s] Failed to open SMUX stream for conn %d: %v", op, idx, err)
+				session.Close()
+				return
+			}
+
 			mc := &managedConn{
-				Conn:      conn,
+				Conn:      stream, // Wrap the SMUX stream, so all writes/reads go through SMUX
 				id:        fmt.Sprintf("pool-%d-%d", start.Unix(), idx),
 				createdAt: time.Now(),
 				closing:   make(chan struct{}),

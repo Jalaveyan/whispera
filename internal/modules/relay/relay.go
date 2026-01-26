@@ -15,6 +15,7 @@ import (
 	"whispera/internal/core/base"
 	"whispera/internal/core/interfaces"
 	"whispera/internal/logger"
+	"whispera/internal/mux"
 
 	"golang.org/x/net/proxy"
 )
@@ -371,6 +372,35 @@ func (s *Server) ServeTunnel(conn net.Conn, obfuscator interfaces.Obfuscator) {
 		_ = tcpConn.SetKeepAlive(true)
 		_ = tcpConn.SetKeepAlivePeriod(30 * time.Second)
 	}
+
+	// SMUX UPGRADE: Wrap connection in SMUX Session
+	// The client is now configured to ALWAYS use SMUX. We must accept it.
+	// Note: We use default config for now or a tuned one similar to client.
+	muxCfg := &mux.Config{
+		MaxFrameSize:         32768,
+		MaxReceiveBuffer:     32 * 1024 * 1024,
+		MaxStreamBuffer:      65536,
+		KeepAliveInterval:    10 * time.Second,
+		KeepAliveTimeout:     30 * time.Second,
+		MaxConcurrentStreams: 8,
+	}
+
+	session, err := mux.Server(conn, muxCfg)
+	if err != nil {
+		s.log.Error("Failed to create SMUX session for %s: %v", clientID, err)
+		return
+	}
+	defer session.Close()
+
+	// Accept the main stream (Transport Stream)
+	// The client opens exactly one stream immediately after connecting.
+	stream, err := session.AcceptStream()
+	if err != nil {
+		s.log.Error("Failed to accept SMUX stream from %s: %v", clientID, err)
+		return
+	}
+	// Use the stream as the carrier connection
+	conn = stream
 
 	// Write lock for the tunnel
 	var writeMu sync.Mutex
