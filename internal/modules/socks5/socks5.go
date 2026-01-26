@@ -57,9 +57,9 @@ type Module struct {
 // streamBufferPool recycles 64KB+ buffers for individual client streams
 var streamBufferPool = sync.Pool{
 	New: func() interface{} {
-		// 1350 bytes (Safe MTU) + 8B (Header)
-		// Using ~1400 bytes to be safe and aligned
-		return make([]byte, 1400)
+		// 64KB (Safe MTU for local loopback) + 128B (Header + Slop)
+		// Increasing from 1400 to ~66KB to drastically reduce syscall overhead and increase throughput
+		return make([]byte, 65536+128)
 	},
 }
 
@@ -372,7 +372,8 @@ func (m *Module) handleIncomingFrame(streamID uint16, fType byte, dp DataPacket,
 		stream.mu.Lock()
 		stream.Closed = true
 		stream.mu.Unlock()
-		close(stream.closeChan)
+		// Safe Close
+		stream.closeOnce.Do(func() { close(stream.closeChan) })
 		tunnel.Recycle(dp.Raw)
 
 	default:
@@ -742,7 +743,8 @@ func (m *Module) handleUDPConnection(tcpConn net.Conn) error {
 		m.streamsMu.Lock()
 		delete(m.streams, streamID)
 		m.streamsMu.Unlock()
-		close(stream.closeChan)
+		// Safe Close
+		stream.closeOnce.Do(func() { close(stream.closeChan) })
 	}()
 
 	// Send CONNECT frame (UDP Mode)

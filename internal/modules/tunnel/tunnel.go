@@ -233,9 +233,9 @@ type Manager struct {
 // getMuxConfig creates a tuned mux configuration
 func (m *Manager) getMuxConfig() *mux.Config {
 	return &mux.Config{
-		MaxFrameSize:         32768,            // 32KB
+		MaxFrameSize:         131072,           // 128KB (Support 64KB chunks)
 		MaxReceiveBuffer:     32 * 1024 * 1024, // 32MB
-		MaxStreamBuffer:      65536,            // 64KB
+		MaxStreamBuffer:      4 * 1024 * 1024,  // 4MB (Critical for 4K video throughput)
 		KeepAliveInterval:    15 * time.Second, // Relaxed KeepAlive
 		KeepAliveTimeout:     60 * time.Second, // 60s timeout to survive lag spikes
 		MaxConcurrentStreams: 8,
