@@ -156,8 +156,8 @@ func (t *Transport) listenInternal(ctx context.Context) error {
 		MaxReadFrameSize:             1 << 20, // 1MB - Optimized for Windows stack performance
 		PermitProhibitedCipherSuites: true,    // Allow cleartext ciphers if needed
 		IdleTimeout:                  120 * time.Second,
-		MaxUploadBufferPerConnection: 256 * 1024 * 1024, // 256MB - Maximized for 500Mbps+
-		MaxUploadBufferPerStream:     64 * 1024 * 1024,  // 64MB
+		MaxUploadBufferPerConnection: 1 << 24, // 16MB - Optimized for Windows flow control
+		MaxUploadBufferPerStream:     1 << 22, // 4MB - Prevent frequent WINDOW_UPDATE
 	}
 
 	handler := http.HandlerFunc(t.handleRequest)
