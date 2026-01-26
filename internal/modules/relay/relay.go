@@ -455,6 +455,8 @@ func (s *Server) ServeTunnel(conn net.Conn, obfuscator interfaces.Obfuscator) {
 		s.log.Debug("Sent welcome PONG to %s", clientID)
 	}
 
+	isFirstRead := true
+
 	for {
 		conn.SetReadDeadline(time.Now().Add(300 * time.Second)) // 5 min idle
 		n, err := conn.Read(readBuf)
@@ -476,11 +478,14 @@ func (s *Server) ServeTunnel(conn net.Conn, obfuscator interfaces.Obfuscator) {
 				clientID, data[0], data[1], data[2], data[3], data[4], data[5], data[6], data[7])
 		}
 
-		// Check for TLS data (leftover) - on the FRESH read buffer
-		if n >= 5 && data[0] >= 0x14 && data[0] <= 0x17 && data[1] == 0x03 {
-			tlsLen := int(data[3])<<8 | int(data[4])
-			s.log.Warn("Detected TLS data from %s (type=0x%02x, len=%d), skipping...", clientID, data[0], tlsLen)
-			continue
+		// Check for TLS data (leftover) - ONLY on the FIRST read to avoid false positives on encrypted traffic
+		if isFirstRead {
+			isFirstRead = false
+			if n >= 5 && data[0] >= 0x14 && data[0] <= 0x17 && data[1] == 0x03 {
+				tlsLen := int(data[3])<<8 | int(data[4])
+				s.log.Warn("Detected TLS data from %s (type=0x%02x, len=%d), skipping...", clientID, data[0], tlsLen)
+				continue
+			}
 		}
 
 		// De-obfuscate

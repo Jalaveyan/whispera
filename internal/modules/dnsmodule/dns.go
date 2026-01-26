@@ -353,11 +353,11 @@ func (r *Resolver) resolveUpstream(ctx context.Context, domain string) ([]net.IP
 			d := net.Dialer{
 				Timeout: 5 * time.Second,
 			}
-			return d.DialContext(ctx, "udp", r.config.Upstream)
+			return d.DialContext(ctx, "udp4", r.config.Upstream)
 		},
 	}
 
-	return resolver.LookupIP(ctx, "ip", domain)
+	return resolver.LookupIP(ctx, "ip4", domain)
 }
 
 // cacheCleanupLoop periodically cleans expired cache entries

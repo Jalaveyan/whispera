@@ -491,9 +491,7 @@ Loop:
 		if ip.To4() != nil {
 			addrType = relay.AddrTypeIPv4
 		} else {
-			// addrType = relay.AddrTypeIPv6
-			// Force IPv4-only: Reject IPv6 connections to ensure fallback
-			return fmt.Errorf("IPv6 not supported: %s", targetAddr)
+			addrType = relay.AddrTypeIPv6
 		}
 	}
 
