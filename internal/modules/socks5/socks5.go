@@ -562,7 +562,7 @@ Loop:
 		// We leave ~384 bytes for ANY Headers (SMUX, SOCKS, IPv6 overhead).
 		// Payload: 16000 bytes. Safe & Stable.
 		const safeMTU = 16000
-		const headerSize = 16 // relay.HeaderSize
+		const headerSize = 8 // relay.HeaderSize
 
 		for {
 			// ZERO-COPY POOLED BUFFER

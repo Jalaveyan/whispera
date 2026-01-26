@@ -633,7 +633,7 @@ func (m *Manager) dial(ctx context.Context) (net.Conn, error) {
 				tcpConn.SetWriteBuffer(20 * 1024 * 1024)
 				tcpConn.SetNoDelay(true)
 			}
-			// m.isTransportSecure = true // Disabled to enforce Obfuscator (FakeTLS) usage on raw connection
+			m.isTransportSecure = true
 			return conn, nil
 		}
 	}
