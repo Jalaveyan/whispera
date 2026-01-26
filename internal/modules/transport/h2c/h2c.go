@@ -156,8 +156,8 @@ func (t *Transport) listenInternal(ctx context.Context) error {
 		MaxReadFrameSize:             t.config.MaxFrameSize, // Match config
 		PermitProhibitedCipherSuites: true,                  // Allow cleartext ciphers if needed
 		IdleTimeout:                  120 * time.Second,
-		MaxUploadBufferPerConnection: 64 * 1024 * 1024, // 64MB - Critical for upload speed
-		MaxUploadBufferPerStream:     16 * 1024 * 1024, // 16MB
+		MaxUploadBufferPerConnection: 256 * 1024 * 1024, // 256MB - Maximized for 500Mbps+
+		MaxUploadBufferPerStream:     64 * 1024 * 1024,  // 64MB
 	}
 
 	handler := http.HandlerFunc(t.handleRequest)
