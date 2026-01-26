@@ -378,7 +378,7 @@ func (s *Server) ServeTunnel(conn net.Conn, obfuscator interfaces.Obfuscator) {
 	// Note: We use default config for now or a tuned one similar to client.
 	muxCfg := &mux.Config{
 		MaxFrameSize:         65535,
-		MaxReceiveBuffer:     128 * 1024 * 1024,
+		MaxReceiveBuffer:     512 * 1024 * 1024,
 		MaxStreamBuffer:      20 * 1024 * 1024, // 20MB (Ultra Aggressive buffering for 8K)
 		KeepAliveInterval:    4 * time.Second,  // Sync with client
 		KeepAliveTimeout:     60 * time.Second, // Sync with client

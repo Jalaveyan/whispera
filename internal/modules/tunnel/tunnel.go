@@ -234,7 +234,7 @@ type Manager struct {
 func (m *Manager) getMuxConfig() *mux.Config {
 	return &mux.Config{
 		MaxFrameSize:         65535,             // 64KB - 1 (Max allowed by SMUX uint16)
-		MaxReceiveBuffer:     128 * 1024 * 1024, // 128MB (Allow multiples streams to fill their windows)
+		MaxReceiveBuffer:     512 * 1024 * 1024, // 512MB (Prevent session locking with multiple 20MB streams)
 		MaxStreamBuffer:      20 * 1024 * 1024,  // 20MB (Ultra Aggressive buffering for 8K)
 		KeepAliveInterval:    15 * time.Second,  // Relaxed KeepAlive
 		KeepAliveTimeout:     60 * time.Second,  // 60s timeout to survive lag spikes
