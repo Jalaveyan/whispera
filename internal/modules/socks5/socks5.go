@@ -811,7 +811,7 @@ func (m *Module) handleUDPConnection(tcpConn net.Conn) error {
 
 				_, err := udpListener.WriteToUDP(pkt, addr)
 				if err != nil {
-					// log or ignore
+					stdlog.Printf("[SOCKS5] UDP Write Error to %v: %v", addr, err)
 				}
 				tunnel.Recycle(dp.Raw)
 
