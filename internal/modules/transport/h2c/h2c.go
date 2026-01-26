@@ -305,7 +305,7 @@ func NewClient(cfg *Config) (*H2CClient, error) {
 		},
 		MaxHeaderListSize:          1024 * 1024 * 10, // 10MB
 		StrictMaxConcurrentStreams: false,
-		ReadIdleTimeout:            120 * time.Second,
+		ReadIdleTimeout:            15 * time.Second,
 		PingTimeout:                15 * time.Second,
 		WriteByteTimeout:           120 * time.Second,
 	}
