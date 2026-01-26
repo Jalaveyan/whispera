@@ -233,11 +233,11 @@ type Manager struct {
 // getMuxConfig creates a tuned mux configuration
 func (m *Manager) getMuxConfig() *mux.Config {
 	return &mux.Config{
-		MaxFrameSize:         65535,            // 64KB - 1 (Max allowed by SMUX uint16)
-		MaxReceiveBuffer:     32 * 1024 * 1024, // 32MB
-		MaxStreamBuffer:      12 * 1024 * 1024, // 12MB (Aggressive buffering for 4K/8K)
-		KeepAliveInterval:    15 * time.Second, // Relaxed KeepAlive
-		KeepAliveTimeout:     60 * time.Second, // 60s timeout to survive lag spikes
+		MaxFrameSize:         65535,             // 64KB - 1 (Max allowed by SMUX uint16)
+		MaxReceiveBuffer:     128 * 1024 * 1024, // 128MB (Allow multiples streams to fill their windows)
+		MaxStreamBuffer:      20 * 1024 * 1024,  // 20MB (Ultra Aggressive buffering for 8K)
+		KeepAliveInterval:    15 * time.Second,  // Relaxed KeepAlive
+		KeepAliveTimeout:     60 * time.Second,  // 60s timeout to survive lag spikes
 		MaxConcurrentStreams: 8,
 	}
 }
@@ -628,9 +628,9 @@ func (m *Manager) dial(ctx context.Context) (net.Conn, error) {
 			// Reverted from 12MB to 64KB to fix TCP Retransmission/Fragmentation issues
 			// Large buffers can cause Window Scaling issues and buffer bloat in some networks
 			if tcpConn, ok := conn.(*net.TCPConn); ok {
-				log.Info("[TUNNEL] Applying 12MB buffers to ASN connection (Ultra High Throughput)")
-				tcpConn.SetReadBuffer(12 * 1024 * 1024)
-				tcpConn.SetWriteBuffer(12 * 1024 * 1024)
+				log.Info("[TUNNEL] Applying 20MB buffers to ASN connection (Ultra High Throughput)")
+				tcpConn.SetReadBuffer(20 * 1024 * 1024)
+				tcpConn.SetWriteBuffer(20 * 1024 * 1024)
 				tcpConn.SetNoDelay(true)
 			}
 			m.isTransportSecure = true
@@ -688,8 +688,8 @@ func (m *Manager) dial(ctx context.Context) (net.Conn, error) {
 		if err == nil {
 			// OPTIMIZATION: Use standard buffers to avoid fragmentation/window scaling issues
 			if tcpConn, ok := conn.(*net.TCPConn); ok {
-				tcpConn.SetReadBuffer(12 * 1024 * 1024)  // 4MB for high throughput
-				tcpConn.SetWriteBuffer(12 * 1024 * 1024) // 4MB
+				tcpConn.SetReadBuffer(20 * 1024 * 1024)  // 20MB for high throughput
+				tcpConn.SetWriteBuffer(20 * 1024 * 1024) // 20MB
 				tcpConn.SetNoDelay(true)                 // Low latency
 			}
 			m.isTransportSecure = true

@@ -365,10 +365,10 @@ func (s *Server) ServeTunnel(conn net.Conn, obfuscator interfaces.Obfuscator) {
 		if err := tcpConn.SetNoDelay(true); err != nil {
 			s.log.Debug("Failed to set NoDelay on tunnel: %v", err)
 		}
-		// Increase TCP buffers to 12MB to thoroughly match client capabilities
-		// 12MB allows for full utilization of gigabit links over high latency
-		_ = tcpConn.SetReadBuffer(12 * 1024 * 1024)
-		_ = tcpConn.SetWriteBuffer(12 * 1024 * 1024)
+		// Increase TCP buffers to 20MB to thoroughly match client capabilities
+		// 20MB allows for full utilization of gigabit links over high latency
+		_ = tcpConn.SetReadBuffer(20 * 1024 * 1024)
+		_ = tcpConn.SetWriteBuffer(20 * 1024 * 1024)
 		_ = tcpConn.SetKeepAlive(true)
 		_ = tcpConn.SetKeepAlivePeriod(30 * time.Second)
 	}
@@ -378,8 +378,8 @@ func (s *Server) ServeTunnel(conn net.Conn, obfuscator interfaces.Obfuscator) {
 	// Note: We use default config for now or a tuned one similar to client.
 	muxCfg := &mux.Config{
 		MaxFrameSize:         65535,
-		MaxReceiveBuffer:     32 * 1024 * 1024,
-		MaxStreamBuffer:      12 * 1024 * 1024, // 12MB (Aggressive buffering for 4K/8K)
+		MaxReceiveBuffer:     128 * 1024 * 1024,
+		MaxStreamBuffer:      20 * 1024 * 1024, // 20MB (Ultra Aggressive buffering for 8K)
 		KeepAliveInterval:    4 * time.Second,  // Sync with client
 		KeepAliveTimeout:     60 * time.Second, // Sync with client
 		MaxConcurrentStreams: 8,
