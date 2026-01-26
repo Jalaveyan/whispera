@@ -110,17 +110,18 @@ func (s *Stream) dialWithHappyEyeballs(ctx context.Context, target string) (net.
 		}
 	}
 
-	// ОПТИМИЗАЦИЯ: Используем адаптивный таймаут вместо фиксированного 3s
-	// Базовый таймаут 3s, но масштабируется на основе исторического RTT
-	baseTimeout := 3 * time.Second
+	// ОПТИМИЗАЦИЯ: YouTube - агрессивные таймауты для быстрой загрузки
+	// Базовый таймаут 2s (вместо 3s) для быстрого вывода видео на экран
+	// На быстрых сетях может быть 100-500ms
+	baseTimeout := 2 * time.Second
 	dialTimeout := s.adaptiveTimeout.GetTimeoutFor(baseTimeout)
 	
-	// Убедимся, что таймаут разумный (500ms-5s)
-	if dialTimeout < 500*time.Millisecond {
-		dialTimeout = 500 * time.Millisecond
+	// Убедимся, что таймаут разумный (100ms-2.5s)
+	if dialTimeout < 100*time.Millisecond {
+		dialTimeout = 100 * time.Millisecond
 	}
-	if dialTimeout > 5*time.Second {
-		dialTimeout = 5 * time.Second
+	if dialTimeout > 2500*time.Millisecond {
+		dialTimeout = 2500 * time.Millisecond
 	}
 
 	// Если только один адрес, используем его напрямую
@@ -150,8 +151,9 @@ func (s *Stream) dialWithHappyEyeballs(ctx context.Context, target string) (net.
 		}()
 	}
 
-	// Пауза перед попыткой IPv4 (RFC 8305 рекомендует 250ms)
-	time.Sleep(250 * time.Millisecond)
+	// ОПТИМИЗАЦИЯ: YouTube - уменьшенное стагерирование (100ms вместо 250ms)
+	// Быстрая попытка на обоих адресах параллельно
+	time.Sleep(100 * time.Millisecond)
 
 	if ipv4 != nil {
 		go func() {
