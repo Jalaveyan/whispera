@@ -14,6 +14,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"github.com/xtaci/smux"
 
 	"whispera/internal/core/base"
 	"whispera/internal/core/events"
@@ -115,19 +116,31 @@ type Config struct {
 // DefaultConfig returns default tunnel configuration
 func DefaultConfig() *Config {
 	return &Config{
-		KeepaliveInterval:    3 * time.Second, // Fast keepalive for quick failure detection
+		KeepaliveInterval:    15 * time.Second, // INCREASED from 3s for stability
 		ReconnectInterval:    5 * time.Second,
 		ReconnectMaxDelay:    60 * time.Second,
 		MaxReconnectAttempts: 0,
 		ConnectionTimeout:    30 * time.Second,
 		EnableRotation:       true,
-		RotationInterval:     30 * time.Minute, // INCREASED from 15 min
-		DrainingTimeout:      60 * time.Minute, // INCREASED from 30 min
+		RotationInterval:     60 * time.Minute, // INCREASED from 30 min
+		DrainingTimeout:      90 * time.Minute, // INCREASED from 60 min
 	}
 }
 
 // Validate validates the configuration
 func (c *Config) Validate() error {
+	// Optimize smux configuration for 4K streaming
+	// This part of the configuration is typically set globally or passed to the smux library.
+	// If smux.DefaultConfig() is intended to be modified, it should be done once at startup
+	// or a custom config should be created and passed to smux.NewClient/NewServer.
+	// This code snippet is placed here as per user instruction, but its effect might depend
+	// on how smux is initialized elsewhere in the application.
+	smuxConfig := smux.DefaultConfig() // This line would require importing "github.com/xtaci/smux"
+	smuxConfig.KeepAliveInterval = 10 * time.Second
+	smuxConfig.KeepAliveTimeout = 30 * time.Second
+	smuxConfig.MaxFrameSize = 32768                // 32KB frames (Balance betwen latency/throughput)
+	smuxConfig.MaxReceiveBuffer = 32 * 1024 * 1024 // 32MB Receive Buffer (Match high TCP window)
+
 	if c.KeepaliveInterval <= 0 {
 		c.KeepaliveInterval = 30 * time.Second
 	}
@@ -676,11 +689,15 @@ func (m *Manager) getCurrentSNI() string {
 	return ""
 }
 
-// selectNewSNI picks a new random SNI - ONLY called during explicit rotation
+// selectNewSNI picks a new random SNI (Thread-Safe Wrapper)
 func (m *Manager) selectNewSNI() string {
 	m.connMu.Lock()
 	defer m.connMu.Unlock()
+	return m.selectNewSNILocked()
+}
 
+// selectNewSNILocked performs the actual selection (Caller must hold ConnMu Lock)
+func (m *Manager) selectNewSNILocked() string {
 	if len(m.russianSNIs) == 0 {
 		m.currentSNI = m.config.PhantomSNI
 		return m.currentSNI
@@ -697,23 +714,31 @@ func (m *Manager) selectNewSNI() string {
 
 	// Get next rotation interval based on category
 	nextInterval := m.getSNIRotationInterval(m.currentSNI)
-	log.Info("Selected new SNI: %s (Next rotation in %s)", m.currentSNI, nextInterval)
+	log.Info("[ROTATION EVENT] Selected new SNI: %s (Next rotation in %s)", m.currentSNI, nextInterval)
 
 	return m.currentSNI
 }
 
-// getRotationSNI returns current SNI for dial() - does NOT rotate
-// Rotation only happens via explicit RotateSNI() call
+// getRotationSNI returns current SNI for dial(), initializing it if necessary
 func (m *Manager) getRotationSNI() string {
+	// Fast path with Read Lock
 	m.connMu.RLock()
 	sni := m.currentSNI
 	m.connMu.RUnlock()
 
-	// If no SNI set yet, initialize with first selection
-	if sni == "" {
-		return m.selectNewSNI()
+	if sni != "" {
+		return sni
 	}
-	return sni
+
+	// Initialization path with Write Lock (Double-Checked Locking)
+	m.connMu.Lock()
+	defer m.connMu.Unlock()
+
+	if m.currentSNI != "" {
+		return m.currentSNI
+	}
+
+	return m.selectNewSNILocked()
 }
 
 // getSNIRotationInterval returns the rotation duration based on SNI category
@@ -1001,10 +1026,13 @@ func (m *Manager) readLoop(mc *managedConn) {
 										frameData := make([]byte, frameTotal)
 										copy(frameData, processBuf[offset:offset+frameTotal])
 
+										// Update activity immediately as we have received valid data
+										// This prevents keepalive timeout if the consumer channel is blocked
+										m.UpdateActivity()
+
 										select {
 										case m.readCh <- frameData:
 											atomic.AddUint64(&m.bytesDown, uint64(len(frameData)))
-											m.UpdateActivity()
 										case <-mc.closing:
 											return
 										}

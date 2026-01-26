@@ -334,16 +334,16 @@ func (m *Module) handleIncomingFrame(streamID uint16, fType byte, dp DataPacket,
 
 	switch fType {
 	case relay.FrameConnectOK:
-		if m.config.Debug {
-			stdlog.Printf("[SOCKS5] Stream %d connected", stream.ID)
-		}
+		// if m.config.Debug {
+		// 	stdlog.Printf("[SOCKS5] Stream %d connected", stream.ID)
+		// }
 		stream.mu.Lock()
 		stream.Connected = true
 		stream.mu.Unlock()
 		tunnel.Recycle(dp.Raw)
 
 	case relay.FrameConnectFail:
-		stdlog.Printf("[SOCKS5] Stream %d connect failed", stream.ID)
+		// stdlog.Printf("[SOCKS5] Stream %d connect failed", stream.ID)
 		stream.mu.Lock()
 		stream.Closed = true
 		stream.mu.Unlock()
@@ -479,10 +479,10 @@ Loop:
 		m.streamsMu.Unlock()
 	}()
 
-	if m.config.Debug {
-		stdlog.Printf("[SOCKS5] Stream %d: connecting to %s:%d via tunnel",
-			streamID, targetAddr, targetPort)
-	}
+	// if m.config.Debug {
+	// 	stdlog.Printf("[SOCKS5] Stream %d: connecting to %s:%d via tunnel",
+	// 		streamID, targetAddr, targetPort)
+	// }
 
 	// Send CONNECT frame
 	addrType := relay.AddrTypeDomain
@@ -543,9 +543,9 @@ Loop:
 		}
 	}
 
-	if m.config.Debug {
-		stdlog.Printf("[SOCKS5] Stream %d: established to %s:%d", streamID, targetAddr, targetPort)
-	}
+	// if m.config.Debug {
+	// 	stdlog.Printf("[SOCKS5] Stream %d: established to %s:%d", streamID, targetAddr, targetPort)
+	// }
 
 	// Bidirectional data transfer
 	errChan := make(chan error, 2)
@@ -557,9 +557,9 @@ Loop:
 		// Use pooled buffer to avoid GC on every new connection
 		// Optimize MTU: Limit read size to prevent fragmentation/drops in tunnel
 		// Optimize MTU: Limit read size to prevent fragmentation/drops in tunnel
-		// Optimize MTU: Limit read size to prevent fragmentation/drops in tunnel
-		// Standard MTU 1500 - QUIC/IP overheads. 1280 is safest minimum.
-		const safeMTU = 1280
+		// Optimize MTU: For local TCP connections (Browser <-> Client), use 64KB chunks.
+		// Tiny chunks (1280) kill throughput for video streams. 64KB matches standard TCP window scales.
+		const safeMTU = 64 * 1024
 		const headerSize = 8 // relay.HeaderSize
 
 		for {
@@ -779,10 +779,23 @@ func (m *Module) handleUDPConnection(tcpConn net.Conn) error {
 				stdlog.Printf("[SOCKS5] PANIC in UDP->Tunnel: %v", r)
 			}
 		}()
-		buf := make([]byte, 65535)
+
 		for {
-			n, addr, err := udpListener.ReadFromUDP(buf)
+			// ZERO-COPY UDP READ
+			// We need to send [RelayHeader (8 bytes)] + [ATYP][ADDR][PORT][DATA]
+			// SOCKS packet comes as [RSV(2)][FRAG(1)][ATYP][ADDR][PORT][DATA]
+			// We read at offset 11.
+			// buf[11] = RSV, buf[12] = FRAG, buf[13] = ATYP
+			// We will write RelayHeader at buf[5..12].
+			// This overwrites RSV and FRAG (which are unused/zero).
+			// Result: buf[5..12] = Header, buf[13..] = Payload.
+			bufRaw := streamBufferPool.Get().([]byte)
+			buf := bufRaw[:cap(bufRaw)]
+
+			// Read from offset 11
+			n, addr, err := udpListener.ReadFromUDP(buf[11:])
 			if err != nil {
+				streamBufferPool.Put(bufRaw)
 				errChan <- err
 				return
 			}
@@ -790,65 +803,95 @@ func (m *Module) handleUDPConnection(tcpConn net.Conn) error {
 			// Store/Update client address
 			clientAddr.Store(addr)
 
-			// SOCKS5 UDP Header: RSV(2) FRAG(1) ATYP(1) ...
-			if n < 3 {
+			// Minimum SOCKS5 UDP size: 3 (Header) + 1 (ATYP) ...
+			if n < 4 {
+				streamBufferPool.Put(bufRaw)
 				continue
 			}
 
-			udpPayload := buf[3:n]
+			// Construct Frame Header in-place at buf[5]
+			// StreamID
+			buf[5] = byte(streamID >> 8)
+			buf[6] = byte(streamID)
+			// Type: UDP Data
+			buf[7] = relay.FrameUDPData
+			// Flags: 0
+			buf[8] = 0
+			// Length: n - 3 (Exclude RSV(2) + FRAG(1))
+			// Payload starts at buf[13]
+			plLen := uint32(n - 3)
+			buf[9] = byte(plLen >> 24)
+			buf[10] = byte(plLen >> 16)
+			buf[11] = byte(plLen >> 8)
+			buf[12] = byte(plLen)
 
-			// Parse SOCKS5 header from udpPayload
-			if len(udpPayload) < 4 {
+			// Send slice [5 : 11+n]
+			// 5..12 (Header 8 bytes) + 13..(11+n) (Payload)
+			// Wait: buf[11+n] is end index.
+			// Start Data is 11 (RSV start) + 3 (Skip) = 14?
+			// No.
+			// buf[11] is index 0 of packet.
+			// buf[12] is index 1.
+			// buf[13] is index 2 (ATYP).
+			// We want payload starting at ATYP (buf[13]).
+			// Header ends at buf[12].
+			// We need buf[5..13+len].
+			// Let's re-verify:
+			// Header: 5,6,7,8,9,10,11,12. (8 bytes).
+			// Data: 13...
+			// Index of ATYP is buf[13] IF Read offset was 11 and data was [RSV][RSV][FRAG][ATYP]...
+			// Wait. SOCKS UDP Header: RSV(2) FRAG(1).
+			// buf[11] = RSV1
+			// buf[12] = RSV2
+			// buf[13] = FRAG
+			// buf[14] = ATYP
+			// AH! SOCKS header is RSV(2)+FRAG(1) = 3 bytes?
+			// RFC 1928:
+			// +----+------+------+----------+
+			// |RSV | FRAG | ATYP | DST.ADDR |
+			// +----+------+------+----------+
+			// | 2  |  1   |  1   | Variable |
+			// So yes, 3 bytes before ATYP.
+			// buf[11] (RSV1), buf[12] (RSV2), buf[13] (FRAG), buf[14] (ATYP).
+			// We need 4 bytes offset?
+			// No, standard says RSV is 2 bytes.
+			// So ATYP starts at index 3.
+			// If we read at offset 11:
+			// buf[11]=0, buf[12]=0, buf[13]=0 (FRAG). buf[14] = ATYP.
+			// Relay Payload must start with ATYP. So buf[14].
+			// Relay Header must end at buf[13].
+			// Header is 8 bytes.
+			// So Header is buf[6..13].
+			// Write Header at buf[6].
+			// Send buf[6 : 11+n].
+
+			// Let's adjust offsets:
+			// Write Header at 6.
+			buf[6] = byte(streamID >> 8)
+			buf[7] = byte(streamID)
+			buf[8] = relay.FrameUDPData
+			buf[9] = 0
+			// Length
+			// payload is n - 3 bytes (starting at ATYP)
+			plLen = uint32(n - 3)
+			buf[10] = byte(plLen >> 24)
+			buf[11] = byte(plLen >> 16)
+			buf[12] = byte(plLen >> 8)
+			buf[13] = byte(plLen)
+
+			// Send buf[6 : 11+n]
+			// Length check: 11+n - 6 = 5+n.
+			// Header (8) + Payload (n-3) = 5+n. Correct.
+
+			if err := tunnel.Send(buf[6 : 11+n]); err != nil {
+				// Retry / Drop logic
+				streamBufferPool.Put(bufRaw)
+				if !tunnel.IsConnected() {
+					time.Sleep(50 * time.Millisecond)
+				}
 				continue
 			}
-			atyp := udpPayload[0]
-			var dstAddr string
-			var dstPort uint16
-			var dataOffset int
-
-			switch atyp {
-			case 0x01: // IPv4
-				if len(udpPayload) < 1+4+2 {
-					continue
-				}
-				dstAddr = net.IP(udpPayload[1:5]).String()
-				dstPort = binary.BigEndian.Uint16(udpPayload[5:7])
-				dataOffset = 7
-			case 0x03: // Domain
-				if len(udpPayload) < 2 {
-					continue
-				}
-				dlen := int(udpPayload[1])
-				if len(udpPayload) < 2+dlen+2 {
-					continue
-				}
-				dstAddr = string(udpPayload[2 : 2+dlen])
-				dstPort = binary.BigEndian.Uint16(udpPayload[2+dlen : 2+dlen+2])
-				dataOffset = 2 + dlen + 2
-			case 0x04: // IPv6
-				if len(udpPayload) < 1+16+2 {
-					continue
-				}
-				dstAddr = net.IP(udpPayload[1:17]).String()
-				dstPort = binary.BigEndian.Uint16(udpPayload[17:19])
-				dataOffset = 19
-			default:
-				continue
-			}
-
-			data := udpPayload[dataOffset:]
-			frame := relay.NewUDPDataFrame(streamID, atyp, dstAddr, dstPort, data)
-
-			// Send to tunnel with robust retry
-			enc, _ := frame.Encode()
-			// Try 3 times to send
-			for i := 0; i < 3; i++ {
-				if err := tunnel.Send(enc); err != nil {
-					time.Sleep(time.Duration(i*5) * time.Millisecond)
-					continue
-				}
-				break
-			}
+			streamBufferPool.Put(bufRaw)
 		}
 	}()
 
@@ -862,30 +905,45 @@ func (m *Module) handleUDPConnection(tcpConn net.Conn) error {
 		for {
 			select {
 			case dp := <-stream.dataChan:
-				payload := dp.Payload
+				// Zero-Copy Write with overwrite
+				// dp.Raw contains Relay Frame [Header(8)][Payload...]
+				// Payload matches SOCKS UDP Content [ATYP][ADDR][PORT][DATA]
+				// We need to prefix with [RSV(2)][FRAG(1)] -> 0x00 00 00.
+				// Relay Header is 8 bytes (0..7). Payload starts at 8.
+				// We need 3 bytes prefix.
+				// We can overwrite buf[5..7] with 00 00 00.
+				// And send buf[5..end].
 
-				// Payload is [ATYP][ADDR][PORT][DATA]
+				// Validate
+				if len(dp.Raw) < 8 {
+					tunnel.Recycle(dp.Raw)
+					continue
+				}
+
+				// Overwrite bytes 5,6,7
+				dp.Raw[5] = 0
+				dp.Raw[6] = 0
+				dp.Raw[7] = 0
 
 				// Get Client Address
 				addrVal := clientAddr.Load()
 				if addrVal == nil {
-					// Drop if we don't know where to send yet
 					tunnel.Recycle(dp.Raw)
 					continue
 				}
 				addr := addrVal.(*net.UDPAddr)
 
-				// Construct SOCKS5 Packet: [00 00 00] + payload
-				pkt := make([]byte, 3+len(payload))
-				pkt[0], pkt[1], pkt[2] = 0, 0, 0 // RSV, FRAG
-				copy(pkt[3:], payload)
+				// Write buf[5 : 8+len(Payload)]
+				// len(Payload) is len(dp.Payload).
+				// Or since dp.Payload is slice of dp.Raw, we can calculate end.
+				// Typically dp.Payload = dp.Raw[8:].
+				// So we send dp.Raw[5:]
 
-				_, err := udpListener.WriteToUDP(pkt, addr)
+				_, err := udpListener.WriteToUDP(dp.Raw[5:8+len(dp.Payload)], addr)
 				if err != nil {
-					stdlog.Printf("[SOCKS5] UDP Write Error to %v (len=%d): %v", addr, len(pkt), err)
-				} else {
-					// stdlog.Printf("[SOCKS5] Wrote UDP packet to %v (len=%d)", addr, len(pkt))
+					// stdlog.Printf("[SOCKS5] UDP Write Error: %v", err)
 				}
+
 				tunnel.Recycle(dp.Raw)
 
 			case <-stream.closeChan:
