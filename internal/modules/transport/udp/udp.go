@@ -36,8 +36,8 @@ func DefaultConfig() *Config {
 		MaxPacketSize: 65535, // Increased from 1472 to 65535 to completely fix Discord Voice and large UDP packets truncation
 		ReadTimeout:   0,     // No timeout by default
 		WriteTimeout:  10 * time.Second,
-		BufferSize:    1024,
-		WorkerCount:   4,
+		BufferSize:    4096,
+		WorkerCount:   16,
 	}
 }
 
@@ -61,6 +61,7 @@ type Transport struct {
 	workerPool  *base.WorkerPool
 	rateLimiter *base.RateLimiter
 	metrics     *base.Metrics
+	bufferPool  *sync.Pool
 
 	// XUDP support for Full Cone NAT
 	xudpManager *XUDPManager
@@ -90,6 +91,11 @@ func New(cfg *Config) (*Transport, error) {
 		workerPool:  base.NewWorkerPool(cfg.WorkerCount, cfg.BufferSize),
 		rateLimiter: base.NewRateLimiter(1000000, 100000), // ОПТИМИЗИРОВАНО: 1M packets/sec with burst of 100k
 		metrics:     base.NewMetrics(),
+		bufferPool: &sync.Pool{
+			New: func() interface{} {
+				return make([]byte, cfg.MaxPacketSize)
+			},
+		},
 	}
 
 	// Initialize XUDP manager for Full Cone NAT support
@@ -139,6 +145,16 @@ func (t *Transport) Start() error {
 		t.SetHealthy(false, fmt.Sprintf("failed to listen: %v", err))
 		return fmt.Errorf("failed to listen on UDP: %w", err)
 	}
+
+	// Optimize UDP buffers for high throughput
+	// 8MB buffers to handle micro-bursts without packet loss
+	if err := conn.SetReadBuffer(8 * 1024 * 1024); err != nil {
+		fmt.Printf("[UDP] Failed to set ReadBuffer: %v\n", err)
+	}
+	if err := conn.SetWriteBuffer(8 * 1024 * 1024); err != nil {
+		fmt.Printf("[UDP] Failed to set WriteBuffer: %v\n", err)
+	}
+
 	fmt.Printf("[UDP] SUCCESS! Listening on UDP %s\n", conn.LocalAddr().String())
 
 	t.mu.Lock()
@@ -263,12 +279,18 @@ func (t *Transport) OnPacket(handler func(data []byte, addr net.Addr)) {
 
 // readLoop is the main packet reading loop
 func (t *Transport) readLoop() {
-	fmt.Printf("[UDP] readLoop started\n")
-	buf := make([]byte, t.config.MaxPacketSize)
+	fmt.Printf("[UDP] readLoop started (Zero-Alloc Mode)\n")
 
 	for t.IsRunning() {
+		// Zero-Alloc: Get buffer from pool
+		buf := t.bufferPool.Get().([]byte)
+		// Reset capacity to max (important!)
+		buf = buf[:cap(buf)]
+
 		n, addr, err := t.ReadFrom(buf)
 		if err != nil {
+			t.bufferPool.Put(buf) // Return buffer on error
+
 			if !t.IsRunning() {
 				return
 			}
@@ -284,22 +306,21 @@ func (t *Transport) readLoop() {
 			continue
 		}
 
-		fmt.Printf("[UDP] Read %d bytes from %s\n", n, addr.String())
+		// fmt.Printf("[UDP] Read %d bytes from %s\n", n, addr.String())
 
 		// Rate limit check
 		if !t.rateLimiter.Allow() {
 			t.metrics.Increment("rate_limited")
+			t.bufferPool.Put(buf) // Return buffer if dropped
 			continue
 		}
 
-		// Copy packet data for async processing
-		packetData := make([]byte, n)
-		copy(packetData, buf[:n])
-		packetAddr := addr
-
 		// Submit to worker pool
+		// We pass the SLICE (buf[:n]) to the handler
+		// And return the backing array (buf) to the pool after processing
 		t.workerPool.SubmitAsync(func() {
-			t.handlePacket(packetData, packetAddr)
+			t.handlePacket(buf[:n], addr)
+			t.bufferPool.Put(buf)
 		})
 	}
 }
