@@ -568,6 +568,8 @@ Loop:
 		const safeMTU = 16000
 		const headerSize = 8 // relay.HeaderSize
 
+		firstPacket := true
+
 		for {
 			// ZERO-COPY POOLED BUFFER
 			// Reuse buffer to prevent GC churn (~1000 allocs/sec -> 0)
@@ -600,6 +602,15 @@ Loop:
 				streamBufferPool.Put(bufRaw) // Return unused buffer
 				errChan <- err
 				return
+			}
+
+			// 0-RTT Stabilization:
+			// Server needs time to Resolve DNS and Dial Target after receiving CONNECT Frame.
+			// If we send DATA immediately, Server might drop it if upstream connection isn't ready.
+			// 20ms delay for FIRST packet only solves this race condition without blocking 1RTT.
+			if firstPacket {
+				time.Sleep(20 * time.Millisecond)
+				firstPacket = false
 			}
 
 			// Manually construct Frame Header in-place

@@ -49,7 +49,7 @@ func DefaultConfig() *Config {
 		HandshakeTimeout:    10 * time.Second,
 		MaxConns:            10000,
 		EnableEarlyData:     true,
-		InitialStreamWindow: 1024 * 1024, // 1MB
+		InitialStreamWindow: 6 * 1024 * 1024, // 6MB (High throughput default)
 	}
 }
 
@@ -87,6 +87,24 @@ type Transport struct {
 func New(cfg *Config) (*Transport, error) {
 	if cfg == nil {
 		cfg = DefaultConfig()
+	} else {
+		// Apply defaults for zero values
+		defaults := DefaultConfig()
+		if cfg.MaxIdleTimeout == 0 {
+			cfg.MaxIdleTimeout = defaults.MaxIdleTimeout
+		}
+		if cfg.KeepAlivePeriod == 0 {
+			cfg.KeepAlivePeriod = defaults.KeepAlivePeriod
+		}
+		if cfg.InitialStreamWindow == 0 {
+			cfg.InitialStreamWindow = defaults.InitialStreamWindow
+		}
+		if cfg.HandshakeTimeout == 0 {
+			cfg.HandshakeTimeout = defaults.HandshakeTimeout
+		}
+		if cfg.MaxStreams == 0 {
+			cfg.MaxStreams = defaults.MaxStreams
+		}
 	}
 	if err := cfg.Validate(); err != nil {
 		return nil, err
@@ -163,12 +181,16 @@ func (t *Transport) Start() error {
 	}
 
 	quicConfig := &quic.Config{
-		MaxIdleTimeout:        t.config.MaxIdleTimeout,
-		KeepAlivePeriod:       t.config.KeepAlivePeriod,
-		MaxIncomingStreams:    t.config.MaxStreams,
-		MaxIncomingUniStreams: t.config.MaxStreams,
-		HandshakeIdleTimeout:  t.config.HandshakeTimeout,
-		EnableDatagrams:       true,
+		MaxIdleTimeout:                 t.config.MaxIdleTimeout,
+		KeepAlivePeriod:                t.config.KeepAlivePeriod,
+		MaxIncomingStreams:             t.config.MaxStreams,
+		MaxIncomingUniStreams:          t.config.MaxStreams,
+		HandshakeIdleTimeout:           t.config.HandshakeTimeout,
+		EnableDatagrams:                true,
+		InitialStreamReceiveWindow:     t.config.InitialStreamWindow,
+		MaxStreamReceiveWindow:         t.config.InitialStreamWindow * 10, // Allow scaling up
+		InitialConnectionReceiveWindow: t.config.InitialStreamWindow * 10,
+		MaxConnectionReceiveWindow:     t.config.InitialStreamWindow * 50,
 	}
 
 	listener, err := quic.ListenAddr(t.config.ListenAddr, t.tlsConfig, quicConfig)
@@ -233,9 +255,13 @@ func (t *Transport) Dial(ctx context.Context, addr string) (net.Conn, error) {
 	}
 
 	quicConfig := &quic.Config{
-		MaxIdleTimeout:  t.config.MaxIdleTimeout,
-		KeepAlivePeriod: t.config.KeepAlivePeriod,
-		EnableDatagrams: true,
+		MaxIdleTimeout:                 t.config.MaxIdleTimeout,
+		KeepAlivePeriod:                t.config.KeepAlivePeriod,
+		EnableDatagrams:                true,
+		InitialStreamReceiveWindow:     t.config.InitialStreamWindow,
+		MaxStreamReceiveWindow:         t.config.InitialStreamWindow * 10,
+		InitialConnectionReceiveWindow: t.config.InitialStreamWindow * 10,
+		MaxConnectionReceiveWindow:     t.config.InitialStreamWindow * 50,
 	}
 
 	conn, err := quic.DialAddr(ctx, addr, tlsConf, quicConfig)

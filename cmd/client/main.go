@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"syscall"
 	"time"
 
@@ -47,6 +48,10 @@ var (
 )
 
 func main() {
+	// OPTIMIZATION: Reduce GC frequency to save CPU cycles.
+	// Trade memory for throughput. GOGC=200 means GC runs when heap grows by 200%.
+	debug.SetGCPercent(200)
+
 	flag.Parse()
 
 	// Setup file loggingc:\Users\art\AppData\Local\Packages\MicrosoftWindows.Client.Core_cw5n1h2txyewy\TempState\ScreenClip\{1238D042-C415-40B7-BD41-94AB3E3105CA}.png
