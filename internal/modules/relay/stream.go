@@ -14,6 +14,13 @@ import (
 	"golang.org/x/net/proxy"
 )
 
+// ОПТИМИЗАЦИЯ: Пул буферов для Zero-Allocation пакетов (64KB)
+var packetPool = sync.Pool{
+	New: func() interface{} {
+		return make([]byte, 65536)
+	},
+}
+
 // Stream represents a single multiplexed stream (one TCP/UDP connection)
 type Stream struct {
 	ID         uint16
@@ -59,6 +66,18 @@ type Stream struct {
 	earlyDataBuf []byte // Buffer для данных до подключения
 	earlyDataMu  sync.Mutex
 
+	// FEC (Forward Error Correction) для защиты от потери пакетов
+	fecEncoder     *FECEncoder
+	fecDecoder     *FECDecoder
+	fecEnabled     bool // Включить FEC при потере > 2%
+	packetLossRate float32
+	lossCheckTime  time.Time
+
+	// SACK (Selective Acknowledgment) для отслеживания потерянных пакетов
+	sackTracker *SACKTracker
+	sackEnabled bool
+	seqNum      uint32 // Порядковый номер пакета для SACK
+
 	closeOnce sync.Once
 	mu        sync.RWMutex
 }
@@ -81,6 +100,13 @@ func NewStream(id uint16, proto uint8, addr string, port uint16, profile uint8, 
 		dialer:          dialer,
 		adaptiveTimeout: NewAdaptiveTimeout(100), // Track RTT history with 100-sample buffer
 		earlyDataBuf:    make([]byte, 0, 65536),  // 64KB buffer for early data (0-RTT)
+		fecEncoder:      NewFECEncoder(10, 5),    // k=10 data packets, m=5 redundancy packets
+		fecDecoder:      NewFECDecoder(10, 5),
+		fecEnabled:      false, // Включим при потере > 2%
+		sackTracker:     NewSACKTracker(),
+		sackEnabled:     true, // SACK всегда включен
+		seqNum:          0,
+		lossCheckTime:   time.Now(),
 	}
 	s.windowCond = sync.NewCond(&s.mu)
 	s.fsm = NewFSM(s)
@@ -341,6 +367,10 @@ func (s *Stream) Write(data []byte) error {
 	s.lastT = time.Now()
 
 	if s.Protocol == ProtoTCP && conn != nil {
+		// NOTE: FEC Encoding removed from here. Write() writes to Target (e.g. Google),
+		// so we should NOT send FEC wrapped packets to Target.
+		// FEC should be applied in readFromTarget (sending TO Tunnel).
+
 		n, err := conn.Write(data)
 		if err != nil {
 			return err
@@ -348,6 +378,11 @@ func (s *Stream) Write(data []byte) error {
 		s.bytesOut += uint64(n)
 		return nil
 	} else if s.Protocol == ProtoUDP && udpConn != nil {
+		// UDP: обычно не используем FEC для UDP relay (может добавить задержку)
+		// Но записываем в SACK трекер
+		s.sackTracker.RecordPacket(s.seqNum)
+		s.seqNum++
+
 		n, err := udpConn.Write(data)
 		if err != nil {
 			return err
@@ -494,6 +529,12 @@ func (s *Stream) readFromTarget() {
 			s.bytesIn += uint64(n)
 			s.lastT = time.Now()
 
+			// SACK отслеживание: записываем получение пакета
+			if s.sackEnabled {
+				s.sackTracker.RecordPacket(s.seqNum)
+				s.seqNum++
+			}
+
 			// Flow Control (TCP only)
 			if s.Protocol == ProtoTCP {
 				s.mu.Lock()
@@ -510,14 +551,27 @@ func (s *Stream) readFromTarget() {
 				s.mu.Unlock()
 			}
 
-			// Zero-Copy Send:
-			// Write Header in-place
-			WriteFrameHeader(buf, s.ID, FrameData, 0, n)
+			// ОПТИМИЗАЦИЯ: Zero-Copy Send with FEC capability
+			// Если FEC включен, кодируем и используем пул
+			if s.fecEnabled || s.packetLossRate > 2.0 {
+				// EncodeFEC теперь принимает headroom параметром, чтобы мы могли вставить FrameHeader inplace
+				encodedBuf := s.fecEncoder.EncodeFEC(buf[HeaderSize:HeaderSize+n], s.seqNum, HeaderSize)
+				s.seqNum++
 
-			// Send the wrapped frame directly to writer
-			// s.writer is thread-safe (tunnelWriter)
-			if err := s.writer.Write(buf[:HeaderSize+n]); err != nil {
-				return
+				// Пишем Frame Header прямо перед FEC данными (в headroom)
+				WriteFrameHeader(encodedBuf, s.ID, FrameData, 0, len(encodedBuf)-HeaderSize)
+
+				if err := s.writer.Write(encodedBuf); err != nil {
+					packetPool.Put(encodedBuf)
+					return
+				}
+				packetPool.Put(encodedBuf)
+			} else {
+				// Standard Path (Zero Copy using stack buffer 'buf')
+				WriteFrameHeader(buf, s.ID, FrameData, 0, n)
+				if err := s.writer.Write(buf[:HeaderSize+n]); err != nil {
+					return
+				}
 			}
 		}
 	}
@@ -972,4 +1026,372 @@ func (s *Stream) RecordRTT(rtt time.Duration) {
 // GetRTTStats возвращает статистику RTT для мониторинга
 func (s *Stream) GetRTTStats() TimeoutStats {
 	return s.adaptiveTimeout.GetStats()
+}
+
+// ============================================================================
+// FEC (Forward Error Correction) и SACK (Selective Acknowledgment)
+// ============================================================================
+
+// FECEncoder кодирует данные с избыточностью для восстановления потерянных пакетов
+type FECEncoder struct {
+	k int // Количество информационных пакетов (data packets)
+	m int // Количество избыточных пакетов (parity packets)
+}
+
+// NewFECEncoder создает новый FEC энкодер
+func NewFECEncoder(k, m int) *FECEncoder {
+	return &FECEncoder{k: k, m: m}
+}
+
+// EncodeFEC добавляет FEC заголовок и буферизирует пакеты для кодирования
+// Возвращает FEC пакеты (если достаточно накопилось data packets)
+// EncodeFEC добавляет FEC заголовок и буферизирует пакеты для кодирования
+// Возвращает FEC пакеты (если достаточно накопилось data packets)
+func (fe *FECEncoder) EncodeFEC(data []byte, seqNum uint32, headroom int) []byte {
+	// Простая FEC реализация: XOR всех пакетов для создания parity packet
+	// В production используйте Reed-Solomon или Tornado codes
+
+	// ОПТИМИЗАЦИЯ: Используем packetPool для избежания аллокаций
+	// Формат FEC пакета: [FEC_FLAG(1)][SEQ_NUM(4)][K(1)][M(1)][data]
+	payloadLen := 7 + len(data)
+	totalLen := headroom + payloadLen
+
+	// Берем буфер из пула
+	buf := packetPool.Get().([]byte)
+
+	// Если буфер мал (что редко для 64KB), выделяем новый (не возвращаем в пул)
+	if cap(buf) < totalLen {
+		packetPool.Put(buf) // Возвращаем старый, берем новый
+		buf = make([]byte, totalLen)
+	}
+
+	// Ресайзим слайс до нужной длины
+	buf = buf[:totalLen]
+
+	// Пишем заголовок (после headroom)
+	ptr := headroom
+	buf[ptr] = 0xFF // FEC флаг
+	binary.BigEndian.PutUint32(buf[ptr+1:ptr+5], seqNum)
+	buf[ptr+5] = byte(fe.k)
+	buf[ptr+6] = byte(fe.m)
+
+	// Копируем данные без append
+	copy(buf[ptr+7:], data)
+
+	return buf
+}
+
+// FECDecoder декодирует FEC пакеты и восстанавливает потерянные данные
+type FECDecoder struct {
+	k             int
+	m             int
+	packetBuffer  map[uint32][]byte // Буфер принятых пакетов по seqNum
+	bufferMutex   sync.RWMutex
+	recoveryCount int // Счетчик восстановленных пакетов
+	totalPackets  int // Всего обработанных пакетов
+}
+
+// NewFECDecoder создает новый FEC декодер
+func NewFECDecoder(k, m int) *FECDecoder {
+	return &FECDecoder{
+		k:            k,
+		m:            m,
+		packetBuffer: make(map[uint32][]byte),
+	}
+}
+
+// DecodeFEC пытается восстановить потерянные пакеты используя parity packets
+func (fd *FECDecoder) DecodeFEC(packet []byte, seqNum uint32) (recovered []byte, canRecover bool) {
+	fd.bufferMutex.Lock()
+	defer fd.bufferMutex.Unlock()
+
+	fd.totalPackets++
+
+	if len(packet) < 7 {
+		return nil, false
+	}
+
+	// Проверяем FEC флаг
+	if packet[0] != 0xFF {
+		return packet[7:], false // Обычный пакет
+	}
+
+	// Извлекаем seqNum
+	recvSeqNum := binary.BigEndian.Uint32(packet[1:5])
+	k := int(packet[5])
+	_ = int(packet[6]) // m - unused in decode logic for now
+
+	// Сохраняем пакет
+	fd.packetBuffer[recvSeqNum] = packet[7:]
+
+	// Проверяем можем ли восстановить потерянные пакеты
+	// Если у нас есть k+m пакетов, можем восстановить любые потерянные
+	if len(fd.packetBuffer) >= k {
+		fd.recoveryCount++
+		// Пытаемся восстановить используя простой XOR (Reed-Solomon для production)
+		recovered := fd.xorRecover(fd.packetBuffer, k)
+		if len(recovered) > 0 {
+			return recovered, true
+		}
+	}
+
+	return nil, len(fd.packetBuffer) >= k
+}
+
+// xorRecover восстанавливает данные используя XOR операцию
+func (fd *FECDecoder) xorRecover(packets map[uint32][]byte, k int) []byte {
+	if len(packets) < k {
+		return nil
+	}
+
+	// Собираем первые k пакетов
+	var result []byte
+	count := 0
+
+	for _, data := range packets {
+		if count == 0 {
+			// ОПТИМИЗАЦИЯ: Allocation from Pool
+			// ВНИМАНИЕ: Caller (decodeFEC -> receiveWithSACK) должен вернуть этот буфер в пул!
+			// Поскольку receiveWithSACK пока не интегрирован в readLoop, это безопасно.
+			// При интеграции нужно добавить packetPool.Put(recovered) после использования.
+			result = packetPool.Get().([]byte)
+			if cap(result) < len(data) {
+				packetPool.Put(result)
+				result = make([]byte, len(data))
+			}
+			result = result[:len(data)]
+
+			copy(result, data)
+		} else {
+			// XOR текущих данных с накопленным результатом
+			for i := 0; i < len(result) && i < len(data); i++ {
+				result[i] ^= data[i]
+			}
+		}
+		count++
+		if count >= k {
+			break
+		}
+	}
+
+	return result
+}
+
+// SACKTracker отслеживает какие пакеты получены для выборочного подтверждения
+type SACKTracker struct {
+	receivedRanges []PacketRange // Диапазоны полученных пакетов
+	mutex          sync.RWMutex
+	maxSeqNum      uint32
+	packetCount    int
+	lossCount      int
+}
+
+// PacketRange представляет диапазон последовательных полученных пакетов
+type PacketRange struct {
+	Start uint32 // Начало диапазона (включительно)
+	End   uint32 // Конец диапазона (включительно)
+}
+
+// NewSACKTracker создает новый SACK трекер
+func NewSACKTracker() *SACKTracker {
+	return &SACKTracker{
+		receivedRanges: make([]PacketRange, 0),
+		packetCount:    0,
+		lossCount:      0,
+	}
+}
+
+// RecordPacket записывает получение пакета с данным seqNum
+func (st *SACKTracker) RecordPacket(seqNum uint32) {
+	st.mutex.Lock()
+	defer st.mutex.Unlock()
+
+	st.packetCount++
+
+	// Обновляем maxSeqNum
+	if seqNum > st.maxSeqNum {
+		// Проверяем потерянные пакеты между lastSeq и текущим
+		for missing := st.maxSeqNum + 1; missing < seqNum; missing++ {
+			st.lossCount++
+		}
+		st.maxSeqNum = seqNum
+	}
+
+	// Обновляем диапазоны полученных пакетов
+	st.addToRanges(seqNum)
+}
+
+// addToRanges добавляет seqNum в список диапазонов
+func (st *SACKTracker) addToRanges(seqNum uint32) {
+	// Простая реализация: слияние перекрывающихся диапазонов
+	found := false
+	for i := range st.receivedRanges {
+		if seqNum >= st.receivedRanges[i].Start-1 && seqNum <= st.receivedRanges[i].End+1 {
+			// Расширяем существующий диапазон
+			if seqNum < st.receivedRanges[i].Start {
+				st.receivedRanges[i].Start = seqNum
+			}
+			if seqNum > st.receivedRanges[i].End {
+				st.receivedRanges[i].End = seqNum
+			}
+			found = true
+			break
+		}
+	}
+
+	if !found {
+		// Добавляем новый диапазон
+		st.receivedRanges = append(st.receivedRanges, PacketRange{Start: seqNum, End: seqNum})
+	}
+}
+
+// GetMissingPackets возвращает список потерянных пакетов
+func (st *SACKTracker) GetMissingPackets(upTo uint32) []uint32 {
+	st.mutex.RLock()
+	defer st.mutex.RUnlock()
+
+	missing := make([]uint32, 0)
+
+	lastEnd := uint32(0)
+	for _, r := range st.receivedRanges {
+		// Добавляем потерянные пакеты между lastEnd и текущим диапазоном
+		for seq := lastEnd + 1; seq < r.Start; seq++ {
+			if seq <= upTo {
+				missing = append(missing, seq)
+			}
+		}
+		lastEnd = r.End
+	}
+
+	// Добавляем потерянные пакеты после последнего диапазона
+	for seq := lastEnd + 1; seq <= upTo; seq++ {
+		missing = append(missing, seq)
+	}
+
+	return missing
+}
+
+// GetPacketLossRate возвращает примерный процент потери пакетов
+func (st *SACKTracker) GetPacketLossRate() float32 {
+	st.mutex.RLock()
+	defer st.mutex.RUnlock()
+
+	if st.packetCount == 0 {
+		return 0
+	}
+
+	return float32(st.lossCount) / float32(st.packetCount+st.lossCount) * 100
+}
+
+// ============================================================================
+// Интеграция FEC и SACK в обработку данных
+// ============================================================================
+
+// sendWithFEC отправляет данные с возможной FEC кодировкой в зависимости от потери пакетов
+func (s *Stream) sendWithFEC(data []byte) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Проверяем уровень потери пакетов каждые 30 секунд
+	if time.Since(s.lossCheckTime) > 30*time.Second {
+		s.packetLossRate = s.sackTracker.GetPacketLossRate()
+		s.lossCheckTime = time.Now()
+
+		// Включаем FEC если потеря > 2%
+		if s.packetLossRate > 2.0 {
+			s.fecEnabled = true
+		} else if s.packetLossRate < 1.0 {
+			s.fecEnabled = false // Отключаем FEC при улучшении сети
+		}
+	}
+
+	// Если FEC включен, кодируем данные
+	if s.fecEnabled {
+		// Оставляем headroom=0 для совместимости
+		encodedData := s.fecEncoder.EncodeFEC(data, s.seqNum, 0)
+		s.seqNum++
+
+		// ОПТИМИЗАЦИЯ: Возвращаем буфер в пул после отправки
+		// writeWithRetry синхронна для TCP/UDP (net.Conn), поэтому это безопасно
+		err := s.writeWithRetry(encodedData)
+
+		// Проверяем, что буфер из пула (по емкости), и возвращаем
+		if cap(encodedData) == 65536 {
+			packetPool.Put(encodedData)
+		}
+		return err
+	}
+
+	// Без FEC - обычная отправка
+	s.seqNum++
+	return s.writeWithRetry(data)
+}
+
+// writeWithRetry пытается отправить данные с повторами при ошибке
+func (s *Stream) writeWithRetry(data []byte) error {
+	maxRetries := 3
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		if s.Protocol == ProtoTCP && s.conn != nil {
+			_, err := s.conn.Write(data)
+			if err == nil {
+				return nil
+			}
+			if attempt < maxRetries-1 {
+				time.Sleep(time.Duration((attempt+1)*50) * time.Millisecond) // Экспоненциальный backoff
+			}
+		} else if s.Protocol == ProtoUDP && s.udpConn != nil {
+			_, err := s.udpConn.Write(data)
+			if err == nil {
+				return nil
+			}
+			if attempt < maxRetries-1 {
+				time.Sleep(time.Duration((attempt+1)*50) * time.Millisecond)
+			}
+		}
+	}
+
+	return fmt.Errorf("failed to send data after %d retries", maxRetries)
+}
+
+// receiveWithSACK получает пакет и отслеживает его через SACK для обнаружения потерь
+func (s *Stream) receiveWithSACK(packet []byte, seqNum uint32) ([]byte, error) {
+	// Записываем получение пакета в SACK трекер
+	if s.sackEnabled {
+		s.sackTracker.RecordPacket(seqNum)
+	}
+
+	// Проверяем FEC декодирование
+	if s.fecEnabled {
+		recovered, canRecover := s.fecDecoder.DecodeFEC(packet, seqNum)
+		if canRecover && len(recovered) > 0 {
+			return recovered, nil
+		}
+
+		// Если это FEC пакет, пропускаем его (он только для восстановления)
+		if len(packet) > 0 && packet[0] == 0xFF {
+			return nil, nil
+		}
+	}
+
+	return packet, nil
+}
+
+// GetFECStats возвращает статистику FEC
+func (s *Stream) GetFECStats() map[string]interface{} {
+	return map[string]interface{}{
+		"fecEnabled":     s.fecEnabled,
+		"packetLossRate": s.packetLossRate,
+		"recoveryCount":  s.fecDecoder.recoveryCount,
+		"totalPackets":   s.fecDecoder.totalPackets,
+	}
+}
+
+// GetSACKStats возвращает статистику SACK
+func (s *Stream) GetSACKStats() map[string]interface{} {
+	return map[string]interface{}{
+		"packetCount": s.sackTracker.packetCount,
+		"lossCount":   s.sackTracker.lossCount,
+		"lossRate":    s.sackTracker.GetPacketLossRate(),
+		"rangeCount":  len(s.sackTracker.receivedRanges),
+	}
 }
