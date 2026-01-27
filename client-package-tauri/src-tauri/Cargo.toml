@@ -1,6 +1,6 @@
 [package]
-name = "whispera-client"
-version = "0.1.0"
+name = "whisp"
+version = "0.1.2"
 description = "Whispera Client"
 authors = ["you"]
 edition = "2021"

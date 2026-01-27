@@ -543,9 +543,9 @@ func (h *Handler) isAllowedSNI(sni string) bool {
 
 // authenticateClient validates Phantom auth data using REALITY-like SessionID HMAC
 func (h *Handler) authenticateClient(clientRandom, sessionID []byte) (string, bool) {
-	// DEV MODE: If no private key is configured, ALLOW ALL
+	// DEV MODE: If no private key is configured, BLOCK ALL
 	if len(h.privateKey) == 0 {
-		return "dev-user", true
+		return "", false  // <--- БЫЛО true, СТАЛО false
 	}
 
 	if len(clientRandom) != 32 || len(sessionID) != 32 {

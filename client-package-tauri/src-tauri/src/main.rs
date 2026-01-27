@@ -169,6 +169,10 @@ fn kill_all_processes() {
         let _ = Command::new("taskkill")
             .args(&["/F", "/IM", "mihomo.exe"])
             .output();
+
+        let _ = Command::new("taskkill")
+            .args(&["/F", "/IM", "mihomo-x86_64-pc-windows-msvc.exe"])
+            .output();
         
     }
     
@@ -479,7 +483,7 @@ fn connect(key: String) -> Result<ConnectResult, String> {
     // STEP 1: Start Go client first (SOCKS5 server)
     println!("Whispera: Starting Go client (SOCKS5 server)...");
     
-    let go_client = Command::new(&go_client_path)
+    let mut go_client = Command::new(&go_client_path)
         .args(&["-config", config_path.to_str().unwrap(), "-key", &key, "--no-tun"])
         .current_dir(&bin_dir)
         .stdout(Stdio::inherit())
@@ -498,13 +502,24 @@ fn connect(key: String) -> Result<ConnectResult, String> {
     // STEP 2: Start Mihomo (TUN + routing)
     println!("Whispera: Starting Mihomo TUN...");
     
-    let mihomo = Command::new(&mihomo_path)
+    // STEP 2: Start Mihomo (TUN + routing)
+    println!("Whispera: Starting Mihomo TUN...");
+    
+    let mihomo_result = Command::new(&mihomo_path)
         .args(&["-d", bin_dir.to_str().unwrap(), "-f", mihomo_config_path.to_str().unwrap()])
         .current_dir(&bin_dir)
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
-        .spawn()
-        .map_err(|e| format!("Failed to start Mihomo: {}", e))?;
+        .spawn();
+        
+    let mihomo = match mihomo_result {
+        Ok(child) => child,
+        Err(e) => {
+            println!("Whispera: Failed to start Mihomo: {}. Cleaning up Go client...", e);
+            let _ = go_client.kill();
+            return Err(format!("Failed to start Mihomo: {}", e));
+        }
+    };
     
     println!("Whispera: Mihomo started with PID: {}", mihomo.id());
     
@@ -536,7 +551,14 @@ fn connect(key: String) -> Result<ConnectResult, String> {
 fn disconnect() -> Result<String, String> {
     println!("Whispera: Disconnecting...");
     
-    let mut state = VPN_STATE.lock().unwrap();
+    // Handle poisoned lock to ensure cleanup
+    let mut state = match VPN_STATE.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => {
+            println!("Whispera: Warning: VPN_STATE lock was poisoned");
+            poisoned.into_inner()
+        }
+    };
     
     if let Some(ref mut vpn) = *state {
         // Kill Mihomo first (to release TUN)

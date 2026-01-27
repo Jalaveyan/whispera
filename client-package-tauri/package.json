@@ -1,7 +1,7 @@
 {
-    "name": "whispera-client",
-    "version": "0.1.0",
-    "description": "Whispera VPN Client",
+    "name": "Whisp",
+    "version": "0.1.2",
+    "description": "Whispera Stealth Client",
     "scripts": {
         "tauri": "tauri",
         "dev": "vite",

@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Whispera VPN</title>
+    <title>Whisp</title>
     <style>
         :root {
             --bg-color: #0f172a;
@@ -65,6 +65,7 @@
             background-clip: text;
             -webkit-background-clip: text;
             -webkit-text-fill-color: transparent;
+            text-align: center;
         }
 
         p.subtitle {
@@ -264,7 +265,7 @@
 <body>
     <div class="container">
         <div class="logo">⚡</div>
-        <h1>Whispera</h1>
+        <h1>Whisp</h1>
         <p class="subtitle">Secure & Adaptive Tunneling</p>
 
         <div class="profile-badge">
@@ -332,7 +333,8 @@
                 btn.classList.add('disconnect');
                 keyInput.disabled = true;
                 isConnected = true;
-            } else if (state === 'disconnected' || state === '') {
+                btn.disabled = false; // Fix: Ensure button is enabled
+            } else if (state === 'disconnected' || state === '' || state === 'error') {
                 btnText.innerText = 'Connect';
                 btn.classList.remove('disconnect');
                 keyInput.disabled = false;
