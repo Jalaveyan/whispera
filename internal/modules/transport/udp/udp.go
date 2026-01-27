@@ -147,11 +147,11 @@ func (t *Transport) Start() error {
 	}
 
 	// Optimize UDP buffers for high throughput
-	// 8MB buffers to handle micro-bursts without packet loss
-	if err := conn.SetReadBuffer(8 * 1024 * 1024); err != nil {
+	// 32MB buffers to handle significant micro-bursts and GC pauses without packet loss
+	if err := conn.SetReadBuffer(32 * 1024 * 1024); err != nil {
 		fmt.Printf("[UDP] Failed to set ReadBuffer: %v\n", err)
 	}
-	if err := conn.SetWriteBuffer(8 * 1024 * 1024); err != nil {
+	if err := conn.SetWriteBuffer(32 * 1024 * 1024); err != nil {
 		fmt.Printf("[UDP] Failed to set WriteBuffer: %v\n", err)
 	}
 
