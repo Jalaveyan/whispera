@@ -518,31 +518,35 @@ Loop:
 		break
 	}
 
-	// Wait for CONNECT_OK or timeout
-	connectTimeout := time.After(15 * time.Second)
-	for {
-		stream.mu.Lock()
-		connected := stream.Connected
-		closed := stream.Closed
-		stream.mu.Unlock()
+	// OPTIMIZATION: 0-RTT (Optimistic Send)
+	// Do NOT wait for CONNECT_OK. Start sending data immediately.
+	/*
+		// Wait for CONNECT_OK or timeout
+		connectTimeout := time.After(15 * time.Second)
+		for {
+			stream.mu.Lock()
+			connected := stream.Connected
+			closed := stream.Closed
+			stream.mu.Unlock()
 
-		if connected {
-			break
-		}
-		if closed {
-			return fmt.Errorf("connection refused by server")
-		}
+			if connected {
+				break
+			}
+			if closed {
+				return fmt.Errorf("connection refused by server")
+			}
 
-		select {
-		case <-connectTimeout:
-			stdlog.Printf("[SOCKS5] Stream %d: connection timeout waiting for ConnectOK", streamID)
-			return fmt.Errorf("connection timeout")
-		case <-stream.closeChan:
-			return fmt.Errorf("stream closed")
-		case <-time.After(10 * time.Millisecond):
-			// Check again
+			select {
+			case <-connectTimeout:
+				stdlog.Printf("[SOCKS5] Stream %d: connection timeout waiting for ConnectOK", streamID)
+				return fmt.Errorf("connection timeout")
+			case <-stream.closeChan:
+				return fmt.Errorf("stream closed")
+			case <-time.After(10 * time.Millisecond):
+				// Check again
+			}
 		}
-	}
+	*/
 
 	// if m.config.Debug {
 	// 	stdlog.Printf("[SOCKS5] Stream %d: established to %s:%d", streamID, targetAddr, targetPort)
