@@ -234,7 +234,7 @@ func (s *TrafficStats) TakeSnapshot() {
 	}
 
 	s.log.Debug("Snapshot taken: rx=%d tx=%d users=%d",
-		s.totalBytesRx, s.totalBytesTx, len(s.userStats))
+		s.totalBytesRx.Load(), s.totalBytesTx.Load(), len(s.userStats))
 }
 
 func (s *TrafficStats) ResetUserStats(userID string) {
