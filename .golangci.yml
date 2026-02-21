@@ -66,6 +66,7 @@ linters-settings:
       - name: errorf
 
 linters:
+  enable:
     - dogsled
     - errcheck
     - exhaustive
