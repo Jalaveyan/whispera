@@ -90,6 +90,7 @@ linters:
     - prealloc
     - goconst
     - revive
+    - gosec
     - gocritic
     - staticcheck
 
