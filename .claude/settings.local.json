@@ -11,7 +11,18 @@
       "Bash(export PATH=\"/c/Users/Admin/.cargo/bin:/c/Program Files/nodejs:$PATH\")",
       "Bash(node:*)",
       "Bash(npm:*)",
-      "Bash(cargo check:*)"
+      "Bash(cargo check:*)",
+      "Bash(git checkout:*)",
+      "Bash(git commit:*)",
+      "Bash(git config:*)",
+      "Bash(git push:*)",
+      "WebFetch(domain:wiki.metacubex.one)",
+      "Bash(taskkill:*)",
+      "Bash(cmd /c \"taskkill /F /IM mihomo.exe & taskkill /F /IM whisp.exe & taskkill /F /IM whispera-go-client.exe & echo done\")",
+      "Bash(cmd /c \"taskkill /F /IM mihomo.exe 2>&1 & taskkill /F /IM whisp.exe 2>&1 & taskkill /F /IM whispera-go-client.exe 2>&1\")",
+      "Bash(cargo clean:*)",
+      "Bash(ssh root@144.31.189.209 \"grep -E ''admin_username|admin_password'' /etc/whispera/config.yaml\")",
+      "Bash(go build:*)"
     ]
   }
 }

@@ -59,9 +59,6 @@ func lookupIPCached(host string) ([]net.IP, error) {
 
 	ips, err := fastResolver.LookupIP(ctx, "ip", host)
 	if err != nil {
-		ips, err = net.DefaultResolver.LookupIP(ctx, "ip", host)
-	}
-	if err != nil {
 		if ok {
 			return entry.ips, nil
 		}
@@ -77,7 +74,7 @@ func lookupIPCached(host string) ([]net.IP, error) {
 		now := time.Now()
 		count := 0
 		for k, v := range dnsCache {
-			if now.After(v.expiresAt) || count < 100 {
+			if now.After(v.expiresAt) && count < 100 {
 				delete(dnsCache, k)
 				count++
 			}
@@ -1457,16 +1454,10 @@ func (s *Stream) writeWithRetry(data []byte) error {
 			if err == nil {
 				return nil
 			}
-			if attempt < maxRetries-1 {
-				time.Sleep(time.Duration((attempt+1)*50) * time.Millisecond)
-			}
 		} else if s.Protocol == ProtoUDP && s.udpConn != nil {
 			_, err := s.udpConn.Write(data)
 			if err == nil {
 				return nil
-			}
-			if attempt < maxRetries-1 {
-				time.Sleep(time.Duration((attempt+1)*50) * time.Millisecond)
 			}
 		}
 	}

@@ -30,6 +30,7 @@ type Config struct {
 	CacheTTL        time.Duration
 	BlockingEnabled bool
 	BlockLists      []string
+	DialContext     func(ctx context.Context, network, address string) (net.Conn, error)
 }
 
 func DefaultConfig() *Config {
@@ -64,9 +65,11 @@ type cacheEntry struct {
 
 type Resolver struct {
 	*base.Module
-	config *Config
-	cache   map[string]*cacheEntry
-	cacheMu sync.RWMutex
+	config    *Config
+	cache     map[string]*cacheEntry
+	cacheMu   sync.RWMutex
+	dialCtx   func(ctx context.Context, network, address string) (net.Conn, error)
+	dialCtxMu sync.RWMutex
 
 	fakeIPNet     *net.IPNet
 	fakeIPNext    uint32
@@ -299,13 +302,24 @@ func (r *Resolver) getFakeIP(domain string) net.IP {
 	return ip
 }
 
+func (r *Resolver) SetDialContext(dialFn func(ctx context.Context, network, address string) (net.Conn, error)) {
+	r.dialCtxMu.Lock()
+	r.dialCtx = dialFn
+	r.dialCtxMu.Unlock()
+}
+
 func (r *Resolver) resolveUpstream(ctx context.Context, domain string) ([]net.IP, error) {
+	r.dialCtxMu.RLock()
+	dialFn := r.dialCtx
+	r.dialCtxMu.RUnlock()
+
 	resolver := &net.Resolver{
 		PreferGo: true,
 		Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
-			d := net.Dialer{
-				Timeout: 5 * time.Second,
+			if dialFn != nil {
+				return dialFn(ctx, network, r.config.Upstream)
 			}
+			d := net.Dialer{Timeout: 5 * time.Second}
 			return d.DialContext(ctx, "udp4", r.config.Upstream)
 		},
 	}

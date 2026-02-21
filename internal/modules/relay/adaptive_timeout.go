@@ -24,8 +24,8 @@ func NewAdaptiveTimeout(bufferSize int) *AdaptiveTimeout {
 
 	at := &AdaptiveTimeout{
 		measurements: make([]time.Duration, bufferSize),
-		minRTT:       10 * time.Second,
-		maxRTT:       10 * time.Millisecond,
+		minRTT:       10 * time.Millisecond,
+		maxRTT:       10 * time.Second,
 		smoothedRTT:  100 * time.Millisecond,
 		rttVar:       50 * time.Millisecond,
 	}
@@ -140,8 +140,8 @@ func (at *AdaptiveTimeout) Reset() {
 	at.measurements = make([]time.Duration, len(at.measurements))
 	at.index = 0
 	at.samples = 0
-	at.minRTT = 10 * time.Second
-	at.maxRTT = 10 * time.Millisecond
+	at.minRTT = 10 * time.Millisecond
+	at.maxRTT = 10 * time.Second
 	at.smoothedRTT = 100 * time.Millisecond
 	at.rttVar = 50 * time.Millisecond
 	at.updated.Store(time.Now())

@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"sync"
 	"time"
 
@@ -43,7 +44,6 @@ func DefaultConfig() *Config {
 		ICEServers: []string{
 			"stun:stun.vk.com:3478",
 			"turn:turn.vk.com:3478",
-			"stun:stun.l.google.com:19302",
 		},
 		BufferSize: 65536,
 	}
@@ -338,10 +338,15 @@ func (t *Transport) sendSignaling(msgType, sdp, candidate string) {
 	data, _ := json.Marshal(signal)
 	msg := "WEBRTC:" + string(data)
 
-	url := fmt.Sprintf("https://api.vk.com/method/messages.send?peer_id=%d&message=%s&random_id=%d&access_token=%s&v=5.199",
-		t.config.PeerID, msg, time.Now().UnixNano(), t.config.Token)
+	apiURL := fmt.Sprintf("https://api.vk.com/method/messages.send?peer_id=%d&message=%s&random_id=%d&access_token=%s&v=5.199",
+		t.config.PeerID, url.QueryEscape(msg), time.Now().UnixNano(), t.config.Token)
 
-	t.client.Get(url)
+	resp, err := t.client.Get(apiURL)
+	if err != nil {
+		log.Printf("sendSignaling failed: %v", err)
+		return
+	}
+	resp.Body.Close()
 }
 
 func (t *Transport) Stop() error {
@@ -379,9 +384,16 @@ type vkWebRTCConn struct {
 }
 
 func (c *vkWebRTCConn) Read(b []byte) (int, error) {
-	data := <-c.transport.dataIn
-	copy(b, data)
-	return len(data), nil
+	select {
+	case data, ok := <-c.transport.dataIn:
+		if !ok {
+			return 0, io.EOF
+		}
+		n := copy(b, data)
+		return n, nil
+	case <-c.transport.stopChan:
+		return 0, io.EOF
+	}
 }
 
 func (c *vkWebRTCConn) Write(b []byte) (int, error) {

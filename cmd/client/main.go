@@ -263,6 +263,9 @@ func main() {
 	} else {
 		stdlog.Printf("Connected to VPN server successfully")
 
+		dnsMod.SetDialContext(tunnelMod.DialStream)
+		stdlog.Printf("DNS now routed through tunnel")
+
 		if *noInternalTun {
 			stdlog.Printf("External TUN mode: Mihomo will handle TUN/routing")
 			stdlog.Printf("SOCKS5 proxy ready for Mihomo at %s", *socksAddr)

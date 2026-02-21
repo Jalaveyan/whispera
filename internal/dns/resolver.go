@@ -29,15 +29,19 @@ const (
 
 type Config struct {
 	Type      ResolverType
-	Servers   []string 
+	Servers   []string
 	Timeout   time.Duration
 	CacheSize int
 	CacheTTL  time.Duration
-	
-	DoHPath string 
-	
-	DoTPort    int    
-	ServerName string 
+
+	DoHPath string
+
+	DoTPort    int
+	ServerName string
+
+	// DialContext routes DNS connections through a proxy/tunnel.
+	// If nil, direct system dial is used (potential leak for UDP/DoT types).
+	DialContext func(ctx context.Context, network, address string) (net.Conn, error)
 }
 
 
@@ -126,7 +130,7 @@ func (r *Resolver) Resolve(ctx context.Context, host string) ([]net.IP, error) {
 	case ResolverTypeDoT:
 		ips, err = r.resolveDoT(ctx, host)
 	default:
-		ips, err = r.resolveSystem(ctx, host)
+		return nil, fmt.Errorf("unknown resolver type: %s", r.config.Type)
 	}
 
 	if err != nil {
@@ -167,7 +171,15 @@ func (r *Resolver) resolveUDP(ctx context.Context, host string) ([]net.IP, error
 		server += ":53"
 	}
 
-	conn, err := net.DialTimeout("udp", server, r.config.Timeout)
+	var conn net.Conn
+	var err error
+	if r.config.DialContext != nil {
+		dialCtx, dialCancel := context.WithTimeout(ctx, r.config.Timeout)
+		defer dialCancel()
+		conn, err = r.config.DialContext(dialCtx, "udp", server)
+	} else {
+		conn, err = net.DialTimeout("udp", server, r.config.Timeout)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -263,15 +275,30 @@ func (r *Resolver) doTQuery(ctx context.Context, server string, query []byte) ([
 		server = fmt.Sprintf("%s:%d", server, port)
 	}
 
-	dialer := &tls.Dialer{
-		Config: &tls.Config{
-			ServerName: r.config.ServerName,
-		},
+	tlsCfg := &tls.Config{
+		ServerName: r.config.ServerName,
 	}
 
-	conn, err := dialer.DialContext(ctx, "tcp", server)
-	if err != nil {
-		return nil, err
+	var conn net.Conn
+	var err error
+	if r.config.DialContext != nil {
+		var rawConn net.Conn
+		rawConn, err = r.config.DialContext(ctx, "tcp", server)
+		if err != nil {
+			return nil, err
+		}
+		tlsConn := tls.Client(rawConn, tlsCfg)
+		if err = tlsConn.HandshakeContext(ctx); err != nil {
+			rawConn.Close()
+			return nil, err
+		}
+		conn = tlsConn
+	} else {
+		dialer := &tls.Dialer{Config: tlsCfg}
+		conn, err = dialer.DialContext(ctx, "tcp", server)
+		if err != nil {
+			return nil, err
+		}
 	}
 	defer conn.Close()
 

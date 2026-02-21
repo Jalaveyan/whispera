@@ -589,7 +589,7 @@ func (m *Manager) connectInternal(ctx context.Context, isRotation bool) error {
 
 	log.Info("[%s] Lazy connect complete. First connection ready in %v", op, time.Since(start))
 
-	if !isRotation && m.killSwitch != nil && m.config.KillSwitchEnabled {
+	if m.killSwitch != nil && m.config.KillSwitchEnabled {
 		m.enableKillSwitch(connectedPool[0].RemoteAddr())
 	}
 
@@ -901,10 +901,6 @@ func (m *Manager) Disconnect() {
 	m.stopKeepalive()
 	m.stopRotation()
 
-	if m.killSwitch != nil {
-		m.killSwitch.Disable()
-	}
-
 	m.connMu.Lock()
 
 	for _, c := range m.activePool {
@@ -921,6 +917,10 @@ func (m *Manager) Disconnect() {
 	m.drainingConns = nil
 	m.streamConns = make(map[uint16]*managedConn)
 	m.connMu.Unlock()
+
+	if m.killSwitch != nil {
+		m.killSwitch.Disable()
+	}
 
 	m.setState(StateDisconnected)
 	m.PublishEvent("tunnel.disconnected", nil)
@@ -1427,6 +1427,9 @@ func (m *Manager) Send(data []byte) error {
 
 			state := m.GetState()
 			if state == StateReconnecting || state == StateRotating || state == StateConnecting {
+				if frameType == FrameTypeData {
+					return fmt.Errorf("not connected")
+				}
 				log.Debug("Send: waiting for reconnect (attempt %d/%d)", attempt+1, maxRetries)
 				delay := m.getReconnectDelay()
 				time.Sleep(delay)
@@ -1495,6 +1498,10 @@ func (m *Manager) Send(data []byte) error {
 			isClosed := strings.Contains(errMsg, "closed") || strings.Contains(errMsg, "broken pipe") || strings.Contains(errMsg, "connection reset") || strings.Contains(errMsg, "EOF")
 
 			if isClosed {
+				if frameType == FrameTypeData {
+					return err
+				}
+
 				state := m.GetState()
 
 				if state == StateConnected {
@@ -1845,12 +1852,5 @@ func generateRandomShortId() string {
 }
 
 func (m *Manager) getReconnectDelay() time.Duration {
-	baseDelay := 100 * time.Millisecond
-	maxDelay := 5 * time.Second
-
-	delay := baseDelay
-	if delay > maxDelay {
-		delay = maxDelay
-	}
-	return delay
+	return 100 * time.Millisecond
 }

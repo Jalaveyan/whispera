@@ -49,6 +49,10 @@ type Config struct {
 	ListenAddr string
 
 	KeyLogFile string
+
+	// DialContext routes DoT connections through a proxy/tunnel.
+	// If nil, direct system dial is used (potential IP leak).
+	DialContext func(ctx context.Context, network, address string) (net.Conn, error)
 }
 
 func DefaultConfig() *Config {
@@ -177,7 +181,7 @@ func (p *connPool) put(conn *dotConn) {
 	}
 }
 
-func (p *connPool) dial(_ context.Context) (*dotConn, error) {
+func (p *connPool) dial(ctx context.Context) (*dotConn, error) {
 	atomic.AddUint64(&p.creates, 1)
 
 	tlsConfig := p.config.TLSConfig
@@ -195,18 +199,33 @@ func (p *connPool) dial(_ context.Context) (*dotConn, error) {
 		tlsConfig.ServerName = host
 	}
 
-	dialer := &net.Dialer{
-		Timeout: p.config.DialTimeout,
-	}
+	dialCtx, cancel := context.WithTimeout(ctx, p.config.DialTimeout)
+	defer cancel()
 
-	conn, err := tls.DialWithDialer(dialer, "tcp", p.server, tlsConfig)
-	if err != nil {
-		return nil, fmt.Errorf("failed to dial %s: %w", p.server, err)
+	var tlsConn *tls.Conn
+	if p.config.DialContext != nil {
+		rawConn, err := p.config.DialContext(dialCtx, "tcp", p.server)
+		if err != nil {
+			return nil, fmt.Errorf("failed to dial %s: %w", p.server, err)
+		}
+		c := tls.Client(rawConn, tlsConfig)
+		if err := c.HandshakeContext(dialCtx); err != nil {
+			rawConn.Close()
+			return nil, fmt.Errorf("TLS handshake failed for %s: %w", p.server, err)
+		}
+		tlsConn = c
+	} else {
+		dialer := &net.Dialer{Timeout: p.config.DialTimeout}
+		c, err := tls.DialWithDialer(dialer, "tcp", p.server, tlsConfig)
+		if err != nil {
+			return nil, fmt.Errorf("failed to dial %s: %w", p.server, err)
+		}
+		tlsConn = c
 	}
 
 	return &dotConn{
-		Conn:     conn,
-		tlsConn:  conn,
+		Conn:     tlsConn,
+		tlsConn:  tlsConn,
 		lastUsed: time.Now(),
 	}, nil
 }

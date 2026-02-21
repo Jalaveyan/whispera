@@ -53,7 +53,8 @@ type Module struct {
 	streamsMu sync.RWMutex
 	streamID  uint32
 
-	recvChan chan *relay.Frame
+	recvChan  chan *relay.Frame
+	tunnelCh  chan struct{}
 
 	running int32
 }
@@ -108,6 +109,7 @@ func New(cfg *Config) (*Module, error) {
 		config:   cfg,
 		streams:  make(map[uint16]*ClientStream),
 		recvChan: make(chan *relay.Frame, 32000),
+		tunnelCh: make(chan struct{}, 1),
 	}
 
 	return m, nil
@@ -192,6 +194,10 @@ func (m *Module) SetTunnel(tunnel TunnelManager) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.tunnel = tunnel
+	select {
+	case m.tunnelCh <- struct{}{}:
+	default:
+	}
 	stdlog.Printf("[SOCKS5] Tunnel set for encrypted relay routing")
 }
 
@@ -233,15 +239,15 @@ func (m *Module) receiveFrames() {
 		m.mu.RUnlock()
 
 		if tunnel == nil {
-			time.Sleep(100 * time.Millisecond)
+			select {
+			case <-m.tunnelCh:
+			case <-time.After(1 * time.Second):
+			}
 			continue
 		}
 
 		pkt, err := tunnel.ReceivePacket()
 		if err != nil {
-			if err == io.EOF || !tunnel.IsConnected() {
-				time.Sleep(50 * time.Millisecond)
-			}
 			continue
 		}
 
@@ -652,33 +658,19 @@ func (m *Module) handleUDPConnection(tcpConn net.Conn) error {
 				continue
 			}
 
-			buf[5] = byte(streamID >> 8)
-			buf[6] = byte(streamID)
-			buf[7] = relay.FrameUDPData
-			buf[8] = 0
-			plLen := uint32(n - 3)
-			buf[9] = byte(plLen >> 24)
-			buf[10] = byte(plLen >> 16)
-			buf[11] = byte(plLen >> 8)
-			buf[12] = byte(plLen)
+			// Header (8 bytes): buf[3:11], data: buf[11:11+n]
+			plLen := uint32(n)
+			buf[3] = byte(streamID >> 8)
+			buf[4] = byte(streamID)
+			buf[5] = relay.FrameUDPData
+			buf[6] = 0
+			buf[7] = byte(plLen >> 24)
+			buf[8] = byte(plLen >> 16)
+			buf[9] = byte(plLen >> 8)
+			buf[10] = byte(plLen)
 
-
-			buf[6] = byte(streamID >> 8)
-			buf[7] = byte(streamID)
-			buf[8] = relay.FrameUDPData
-			buf[9] = 0
-			plLen = uint32(n - 3)
-			buf[10] = byte(plLen >> 24)
-			buf[11] = byte(plLen >> 16)
-			buf[12] = byte(plLen >> 8)
-			buf[13] = byte(plLen)
-
-
-			if err := tunnel.Send(buf[6 : 11+n]); err != nil {
+			if err := tunnel.Send(buf[3 : 11+n]); err != nil {
 				streamBufferPool.Put(bufRaw)
-				if !tunnel.IsConnected() {
-					time.Sleep(50 * time.Millisecond)
-				}
 				continue
 			}
 			streamBufferPool.Put(bufRaw)
