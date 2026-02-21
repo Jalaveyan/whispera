@@ -72,7 +72,6 @@ linters:
     - exhaustive
     - gochecknoinits
     - goprintffuncname
-    - gosec
     - govet
     - ineffassign
     - misspell
@@ -92,6 +91,7 @@ linters:
     - revive
     - gocritic
     - staticcheck
+    - gosec
 
   issues:
   exclude-rules:
