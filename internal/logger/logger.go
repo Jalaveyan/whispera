@@ -207,21 +207,14 @@ func (l *Logger) log(level Level, msg string, args ...interface{}) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	// --- MASK LOGIC ---
-	// --- MASK LOGIC ---
-	// if l.config.MaskLogs {
-	// 	// If it's an ERROR/FATAL, mimic an Nginx error log
-	// 	if level >= LevelError {
-	// 		fmt.Fprint(l.config.Stdout, fakeErrorLog())
-	// 	} else {
-	// 		// Otherwise mimic Nginx access log
-	// 		fmt.Fprint(l.config.Stdout, fakeNginxLog())
-	// 	}
-	// 	// Skip real logging
-	// 	return
-	// }
-	// ------------------
-	// ------------------
+	if l.config.MaskLogs {
+		if level >= LevelError {
+			fmt.Fprint(l.config.Stdout, fakeErrorLog())
+		} else {
+			fmt.Fprint(l.config.Stdout, fakeNginxLog())
+		}
+		return
+	}
 
 	var out io.Writer
 	if level >= LevelError {
