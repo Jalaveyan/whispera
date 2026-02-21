@@ -1,4 +1,4 @@
-kage relay
+package relay
 
 import (
 	"context"
