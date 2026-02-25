@@ -35,6 +35,7 @@ func DefaultConfig() *Config {
 
 func (c *Config) toSMUXConfig() *smux.Config {
 	cfg := smux.DefaultConfig()
+	cfg.Version = 2 // SMUXv2: per-stream receive window, no head-of-line blocking
 	if c.MaxFrameSize > 0 {
 		cfg.MaxFrameSize = c.MaxFrameSize
 	}

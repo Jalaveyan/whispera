@@ -232,8 +232,8 @@ func (m *Manager) getMuxConfig() *mux.Config {
 	return &mux.Config{
 		MaxFrameSize:         65535,
 		MaxReceiveBuffer:     512 * 1024 * 1024,
-		MaxStreamBuffer:      20 * 1024 * 1024,
-		KeepAliveInterval:    2 * time.Second,
+		MaxStreamBuffer:      512 * 1024, // 512KB — reduces per-stream bufferbloat
+		KeepAliveInterval:    30 * time.Second,
 		KeepAliveTimeout:     60 * time.Second,
 		MaxConcurrentStreams: 256,
 	}

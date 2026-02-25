@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git add .github/workflows/ci.yml)",
+      "Bash(git rebase --continue)",
+      "Bash(git add .github/workflows/ci.yml .github/workflows/release.yml)",
+      "Bash(git commit:*)",
+      "Bash(git push origin main)",
+      "Bash(go build ./...)"
+    ]
+  }
+}
