@@ -65,9 +65,10 @@ jobs:
 
       - name: Install & Build Panel
         working-directory: ./panel
+        env:
+          npm_config_registry: https://registry.npmjs.org
         run: |
-          npm install --registry https://registry.npmjs.org --no-audit --no-fund
-          chmod -R +x node_modules/.bin/
+          npm ci
           npm run build
           npm prune --omit=dev
           echo "node_modules size: $(du -sh node_modules | cut -f1)"
