@@ -120,6 +120,10 @@ type Config struct {
 
 	VKToken   string
 	VKGroupID int64
+
+	ServerList []string
+
+	RekeyInterval time.Duration
 }
 
 func DefaultConfig() *Config {
@@ -193,6 +197,8 @@ type Manager struct {
 	keepaliveCancel context.CancelFunc
 	rotationTicker  *time.Ticker
 	rotationCancel  context.CancelFunc
+	rekeyTicker     *time.Ticker
+	rekeyCancel     context.CancelFunc
 
 	reconnectAttempts uint32
 	bytesUp           uint64
@@ -377,6 +383,7 @@ func (m *Manager) Start() error {
 
 func (m *Manager) Stop() error {
 	m.stopRotation()
+	m.stopRekey()
 	m.Disconnect()
 	m.PublishEvent(events.EventTypeModuleStopped, nil)
 	return m.Module.Stop()
@@ -430,6 +437,14 @@ func (m *Manager) Connect(ctx context.Context) error {
 	m.stateMu.Unlock()
 
 	m.Disconnect()
+
+	// Latency-based routing: probe all servers and pick the fastest before connecting.
+	if len(m.config.ServerList) > 0 {
+		if best := m.pickFastestServer(ctx); best != "" {
+			m.config.ServerAddrTCP = best
+			m.config.ServerAddr = best
+		}
+	}
 
 	return m.connectInternal(ctx, false)
 }
@@ -609,6 +624,7 @@ func (m *Manager) connectInternal(ctx context.Context, isRotation bool) error {
 	if !isRotation {
 		m.startKeepalive()
 		m.startRotation()
+		m.startRekey()
 		m.connectedAt = time.Now()
 		m.lastPong = time.Now()
 		m.setState(StateConnected)
@@ -1283,6 +1299,12 @@ func (m *Manager) readLoop(mc *managedConn) {
 			continue
 		}
 
+		if len(frameData) >= 3 && frameData[2] == FrameTypeRekey {
+			log.Info("[REKEY] Received rekey acknowledgement from server")
+			m.lastPong = time.Now()
+			continue
+		}
+
 		m.lastPong = time.Now()
 
 		streamID := binary.BigEndian.Uint16(frameData[0:2])
@@ -1853,4 +1875,128 @@ func generateRandomShortId() string {
 
 func (m *Manager) getReconnectDelay() time.Duration {
 	return 100 * time.Millisecond
+}
+
+func probeLatency(ctx context.Context, addr string, timeout time.Duration) (time.Duration, error) {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	start := time.Now()
+	d := net.Dialer{}
+	conn, err := d.DialContext(ctx, "tcp4", addr)
+	if err != nil {
+		return 0, err
+	}
+	conn.Close()
+	return time.Since(start), nil
+}
+
+func (m *Manager) pickFastestServer(ctx context.Context) string {
+	if len(m.config.ServerList) == 0 {
+		return ""
+	}
+
+	type result struct {
+		addr    string
+		latency time.Duration
+	}
+
+	ch := make(chan result, len(m.config.ServerList))
+
+	for _, addr := range m.config.ServerList {
+		addr := addr
+		go func() {
+			lat, err := probeLatency(ctx, addr, 200*time.Millisecond)
+			if err != nil {
+				log.Debug("[LATENCY] %s unreachable: %v", addr, err)
+				ch <- result{addr: addr, latency: 1<<62 - 1}
+				return
+			}
+			log.Info("[LATENCY] %s RTT=%v", addr, lat)
+			ch <- result{addr: addr, latency: lat}
+		}()
+	}
+
+	var best result
+	best.latency = 1<<62 - 1
+	for range m.config.ServerList {
+		r := <-ch
+		if r.latency < best.latency {
+			best = r
+		}
+	}
+
+	if best.latency == 1<<62-1 {
+		log.Warn("[LATENCY] All servers unreachable during probe, using configured default")
+		return ""
+	}
+
+	log.Info("[LATENCY] Fastest server: %s (RTT=%v)", best.addr, best.latency)
+	return best.addr
+}
+
+// ── Rekeying ──────────────────────────────────────────────────────────────────
+
+const FrameTypeRekey = 0x08
+
+func (m *Manager) startRekey() {
+	if m.config.RekeyInterval <= 0 {
+		return
+	}
+	m.stopRekey()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	m.rekeyCancel = cancel
+	m.rekeyTicker = time.NewTicker(m.config.RekeyInterval)
+
+	safeGo("rekey", func() {
+		defer m.rekeyTicker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-m.rekeyTicker.C:
+				m.performRekey()
+			}
+		}
+	})
+	log.Info("[REKEY] Periodic rekeying started (interval=%v)", m.config.RekeyInterval)
+}
+
+func (m *Manager) stopRekey() {
+	if m.rekeyCancel != nil {
+		m.rekeyCancel()
+		m.rekeyCancel = nil
+	}
+	if m.rekeyTicker != nil {
+		m.rekeyTicker.Stop()
+		m.rekeyTicker = nil
+	}
+}
+
+// performRekey sends a rekey control frame carrying 32 bytes of fresh key material.
+// The server is expected to respond in kind; both sides mix the material into their
+// session state. Wire format: [streamID:2][type:1=0x08][flags:1][len:4][seed:32]
+func (m *Manager) performRekey() {
+	if m.GetState() != StateConnected {
+		return
+	}
+
+	seed := make([]byte, 32)
+	if _, err := rand.Read(seed); err != nil {
+		log.Warn("[REKEY] Failed to generate seed: %v", err)
+		return
+	}
+
+	frame := make([]byte, FrameHeaderSize+32)
+	binary.BigEndian.PutUint16(frame[0:2], 0) // stream 0 = control
+	frame[2] = FrameTypeRekey
+	frame[3] = 0x00
+	binary.BigEndian.PutUint32(frame[4:8], 32)
+	copy(frame[FrameHeaderSize:], seed)
+
+	if err := m.Send(frame); err != nil {
+		log.Warn("[REKEY] Failed to send rekey frame: %v", err)
+		return
+	}
+	log.Info("[REKEY] Sent rekey frame (seed=%x...)", seed[:4])
 }

@@ -101,6 +101,7 @@ type Handler struct {
 
 	staticPubKey  []byte
 	staticPrivKey []byte
+	deviceID      [16]byte
 	handshakesStarted   uint64
 	handshakesCompleted uint64
 	handshakesFailed    uint64
@@ -168,6 +169,13 @@ func (h *Handler) SetStaticKeys(pubKey, privKey []byte) {
 	defer h.mu.Unlock()
 	h.staticPubKey = pubKey
 	h.staticPrivKey = privKey
+}
+
+// SetDeviceID stores the persistent device UUID that is sent in every handshake init packet.
+func (h *Handler) SetDeviceID(id [16]byte) {
+	h.mu.Lock()
+	h.deviceID = id
+	h.mu.Unlock()
 }
 
 func (h *Handler) HandleHandshake(ctx context.Context, data []byte, addr net.Addr) (interfaces.Session, error) {
@@ -357,9 +365,15 @@ func (h *Handler) InitiateHandshake(ctx context.Context, conn net.Conn, addr net
 		return nil, fmt.Errorf("failed to generate nonce: %w", err)
 	}
 
-	var clientUUID [16]byte
-	if _, err := rand.Read(clientUUID[:]); err != nil {
-		return nil, fmt.Errorf("failed to generate client UUID: %w", err)
+	h.mu.RLock()
+	clientUUID := h.deviceID
+	h.mu.RUnlock()
+	// If no persistent device ID has been set, fall back to a random UUID for this session.
+	var zeroID [16]byte
+	if clientUUID == zeroID {
+		if _, err := rand.Read(clientUUID[:]); err != nil {
+			return nil, fmt.Errorf("failed to generate client UUID: %w", err)
+		}
 	}
 
 	initPkt := make([]byte, 64)

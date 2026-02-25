@@ -7,9 +7,11 @@ import (
 	"os"
 	"os/signal"
 	"runtime/debug"
+	"strings"
 	"syscall"
 	"time"
 
+	"whispera/internal/auth"
 	"whispera/internal/core/lifecycle"
 	"whispera/internal/logger"
 
@@ -43,6 +45,8 @@ var (
 	noInternalTun    = flag.Bool("no-tun", true, "Disable internal TUN (use external like Mihomo)")
 	russianService   = flag.String("russian-service", "", "Enable Russian Service masquerading (e.g. vk_video)")
 	vkToken          = flag.String("vk-token", "", "VK User Access Token for WebRTC Tunneling")
+	serverList       = flag.String("servers", "", "Comma-separated server addresses for latency-based routing")
+	rekeyInterval    = flag.Duration("rekey", 10*time.Minute, "Session rekeying interval (0 = disabled)")
 )
 
 func main() {
@@ -141,6 +145,12 @@ func main() {
 		Timeout:   10 * time.Second,
 	})
 	hsMod.SetDependencies(cryptoMod, sessMod)
+	if deviceID, devErr := auth.LoadOrCreateDeviceID(); devErr == nil {
+		hsMod.SetDeviceID(deviceID)
+		stdlog.Printf("Device ID: %x", deviceID[:8])
+	} else {
+		stdlog.Printf("WARNING: Could not load/create device ID: %v", devErr)
+	}
 	lc.Register(hsMod)
 
 	socksMod, _ := socks5.New(&socks5.Config{
@@ -207,6 +217,15 @@ func main() {
 		fallbackTCP = cfg.Server
 	}
 
+	var srvList []string
+	if *serverList != "" {
+		for _, s := range strings.Split(*serverList, ",") {
+			if s = strings.TrimSpace(s); s != "" {
+				srvList = append(srvList, s)
+			}
+		}
+	}
+
 	tunnelMod, _ := tunnel.New(&tunnel.Config{
 		ServerAddr:          serverAddress,
 		ServerAddrTCP:       fallbackTCP,
@@ -221,6 +240,8 @@ func main() {
 		PhantomServerPubKey: phantomServerPubKey,
 		RussianService:      cfg.RussianService,
 		VKToken:             *vkToken,
+		ServerList:          srvList,
+		RekeyInterval:       *rekeyInterval,
 	})
 
 	if asnBypassEnabled {

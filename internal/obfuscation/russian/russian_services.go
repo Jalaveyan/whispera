@@ -240,6 +240,10 @@ func (st *ServiceTunnel) SendData(data []byte) error {
 	if err != nil {
 		return fmt.Errorf("marionette process failed: %v", err)
 	}
+	if len(processed) == 0 {
+		// Marionette filtered this packet (e.g. local discovery / multicast) — skip silently
+		return nil
+	}
 
 	if delay > 0 && delay < 5*time.Second {
 		select {

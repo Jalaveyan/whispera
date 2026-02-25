@@ -578,10 +578,8 @@ func (s *Stream) readFromTarget() {
 				parityPackets := s.fecEncoder.GetParityPackets(s.seqNum, HeaderSize)
 				for _, pkt := range parityPackets {
 					WriteFrameHeader(pkt, s.ID, FrameData, 0, len(pkt)-HeaderSize)
-
-					s.writer.Write(pkt)
+					s.writer.Write(pkt) // parity failure non-fatal — data already delivered
 					packetPool.Put(pkt)
-
 					s.seqNum++
 				}
 			} else {
@@ -1433,13 +1431,21 @@ func (s *Stream) sendWithFEC(data []byte) error {
 		}
 
 		parity := s.fecEncoder.GetParityPackets(s.seqNum, 0)
+		if err != nil {
+			// data write failed — no point sending parity, just free the buffers
+			for _, p := range parity {
+				packetPool.Put(p)
+				s.seqNum++
+			}
+			return err
+		}
 		for _, p := range parity {
-			s.writeWithRetry(p)
+			s.writeWithRetry(p) // parity failure non-fatal
 			packetPool.Put(p)
 			s.seqNum++
 		}
 
-		return err
+		return nil
 	}
 
 	s.seqNum++
