@@ -100,9 +100,7 @@ func (f *FSM) initTransitions() {
 		return nil
 	})
 
-	f.addTransition(StateConnecting, EventConnectOK, StateConnected, func(s *Stream) error {
-		return s.sendFrame(NewConnectOKFrame(s.ID))
-	})
+	f.addTransition(StateConnecting, EventConnectOK, StateConnected, nil)
 
 	f.addTransition(StateConnecting, EventConnectFail, StateClosed, func(s *Stream) error {
 		s.sendFrame(NewConnectFailFrame(s.ID, "connection failed"))

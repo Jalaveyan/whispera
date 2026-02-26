@@ -395,8 +395,8 @@ Loop:
 
 
 	if tcpConn, ok := clientConn.(*net.TCPConn); ok {
-		tcpConn.SetReadBuffer(128 * 1024)
-		tcpConn.SetWriteBuffer(128 * 1024)
+		tcpConn.SetReadBuffer(2 * 1024 * 1024)
+		tcpConn.SetWriteBuffer(2 * 1024 * 1024)
 		tcpConn.SetNoDelay(true)
 	}
 
@@ -549,10 +549,32 @@ Loop:
 					}
 				}
 			case <-stream.closeChan:
+				for {
+					select {
+					case dp := <-stream.dataChan:
+						n, err := clientConn.Write(dp.Payload)
+						if dp.PoolBuf != nil {
+							streamBufferPool.Put(dp.PoolBuf)
+						}
+						tunnel.Recycle(dp.Raw)
+						if err == nil && n > 0 {
+							pendingWindow += uint32(n)
+							if pendingWindow >= 8192 {
+								wf := relay.NewWindowUpdateFrame(streamID, pendingWindow)
+								if data, err := wf.Encode(); err == nil {
+									tunnel.Send(data)
+								}
+								pendingWindow = 0
+							}
+						}
+					default:
+						goto drained
+					}
+				}
+			drained:
 				if tcpConn, ok := clientConn.(*net.TCPConn); ok {
 					tcpConn.CloseWrite()
 					tcpConn.SetReadDeadline(time.Now().Add(5 * time.Second))
-					return
 				}
 				errChan <- io.EOF
 				return
