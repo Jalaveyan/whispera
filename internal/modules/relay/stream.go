@@ -523,11 +523,10 @@ func (s *Stream) readFromTarget() {
 		s.Close()
 	}()
 
+	buf := make([]byte, HeaderSize+65536)
+	s.conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+
 	for {
-
-		buf := make([]byte, HeaderSize+65536)
-
-		s.conn.SetReadDeadline(time.Now().Add(180 * time.Second))
 
 		n, err := s.conn.Read(buf[HeaderSize:])
 		if err != nil {
@@ -542,6 +541,7 @@ func (s *Stream) readFromTarget() {
 		if n > 0 {
 			s.bytesIn += uint64(n)
 			s.lastT = time.Now()
+			s.conn.SetReadDeadline(time.Now().Add(60 * time.Second))
 
 			if s.sackEnabled {
 				s.sackTracker.RecordPacket(s.seqNum)
