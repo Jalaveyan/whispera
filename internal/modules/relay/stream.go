@@ -149,7 +149,7 @@ func NewStream(id uint16, proto uint8, addr string, port uint16, profile uint8, 
 		TargetAddr:      addr,
 		TargetPort:      port,
 		writer:          writer,
-		sendWindow:      32 * 1024 * 1024,
+		sendWindow:      64 * 1024, // 64KB: matches client window-update threshold to avoid burst/stall
 		incoming:        make(chan []byte, 65536),
 		outgoing:        make(chan []byte, 65536),
 		closeChan:       make(chan struct{}),

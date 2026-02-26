@@ -456,14 +456,8 @@ Loop:
 		const safeMTU = 16000
 		const headerSize = 8
 
-		// Wait for server to confirm the remote connection before forwarding data.
-		// Without this, DATA frames arrive at the server before it has connected to
-		// the destination, causing the server to drop them. The game's TCP stack then
-		// hits its retransmission timeout (~1000ms) before retrying — the root cause
-		// of the 1000ms ping in games.
 		select {
 		case <-stream.connectedCh:
-			// ready
 		case <-stream.closeChan:
 			errChan <- fmt.Errorf("connection failed")
 			return
@@ -546,7 +540,7 @@ Loop:
 
 				if n > 0 {
 					pendingWindow += uint32(n)
-					if pendingWindow >= 131072 {
+					if pendingWindow >= 8192 { 
 						wf := relay.NewWindowUpdateFrame(streamID, pendingWindow)
 						if data, err := wf.Encode(); err == nil {
 							tunnel.Send(data)

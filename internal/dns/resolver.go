@@ -81,6 +81,10 @@ func NewResolver(cfg *Config) *Resolver {
 		cfg = DefaultConfig()
 	}
 
+	// Force IPv4 for DoH transport. Without this, the system resolver may pick
+	// IPv6 for cloudflare-dns.com / dns.google, causing DNS traffic to flow over
+	// the IPv6 interface instead of through the VPN tunnel.
+	ipv4Dialer := &net.Dialer{}
 	r := &Resolver{
 		config: cfg,
 		cache:  make(map[string]*CacheEntry),
@@ -89,6 +93,9 @@ func NewResolver(cfg *Config) *Resolver {
 			Transport: &http.Transport{
 				TLSClientConfig: &tls.Config{
 					ServerName: cfg.ServerName,
+				},
+				DialContext: func(ctx context.Context, _, addr string) (net.Conn, error) {
+					return ipv4Dialer.DialContext(ctx, "tcp4", addr)
 				},
 			},
 		},
