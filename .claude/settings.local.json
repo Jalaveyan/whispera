@@ -9,7 +9,8 @@
       "Bash(go build ./...)",
       "Bash(cat internal/mux/*.go)",
       "Bash(xargs grep -l \"RST\\\\|reset\\\\|DialStream\\\\|proxy\\\\|socks\")",
-      "Bash(go build ./internal/modules/socks5/...)"
+      "Bash(go build ./internal/modules/socks5/...)",
+      "Bash(ls cmd/*/)"
     ]
   }
 }
