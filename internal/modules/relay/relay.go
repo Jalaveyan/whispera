@@ -344,11 +344,17 @@ func (s *Server) ServeTunnel(conn net.Conn, obfuscator interfaces.Obfuscator) {
 
 	s.log.Info("Tunnel session ready for %s", clientID)
 
+	firstStream := true
 	for {
 		stream, err := session.AcceptStream()
 		if err != nil {
 			s.log.Info("Tunnel session closed for %s: %v", clientID, err)
 			return
+		}
+		if firstStream {
+			firstStream = false
+			go io.Copy(io.Discard, stream)
+			continue
 		}
 		go s.handleProxyStream(stream)
 	}

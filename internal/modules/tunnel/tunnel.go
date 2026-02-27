@@ -1086,6 +1086,11 @@ func (m *Manager) readLoop(mc *managedConn) {
 		if !m.isTransportSecure {
 			peek, err := reader.Peek(5)
 			if err != nil {
+				if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+					lastDeadlineUpdate = time.Now()
+					mc.SetReadDeadline(lastDeadlineUpdate.Add(m.config.KeepaliveInterval * 2))
+					continue
+				}
 				m.handleReadError(mc, err)
 				return
 			}
@@ -1220,6 +1225,11 @@ func (m *Manager) readLoop(mc *managedConn) {
 		}
 
 		if _, err := io.ReadFull(reader, header); err != nil {
+			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				lastDeadlineUpdate = time.Now()
+				mc.SetReadDeadline(lastDeadlineUpdate.Add(m.config.KeepaliveInterval * 2))
+				continue
+			}
 			m.handleReadError(mc, err)
 			return
 		}
@@ -1880,6 +1890,7 @@ func (m *Manager) sendKeepalive() {
 		log.Warn("Keepalive send failed: %v", err)
 	} else {
 		m.lastKeepalive = time.Now()
+		m.lastPong = time.Now()
 	}
 }
 

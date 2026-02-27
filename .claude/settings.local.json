@@ -11,7 +11,10 @@
       "Bash(xargs grep -l \"RST\\\\|reset\\\\|DialStream\\\\|proxy\\\\|socks\")",
       "Bash(go build ./internal/modules/socks5/...)",
       "Bash(ls cmd/*/)",
-      "Bash(python -c \":*)"
+      "Bash(python -c \":*)",
+      "Bash(git add internal/modules/relay/stream.go)",
+      "Bash(git add internal/modules/relay/relay.go internal/modules/tunnel/tunnel.go)",
+      "Bash(git add internal/modules/tunnel/tunnel.go internal/modules/socks5/socks5.go internal/modules/relay/relay.go)"
     ]
   }
 }
