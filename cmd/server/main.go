@@ -941,16 +941,29 @@ func handleTCPConnection(conn net.Conn, hsHandler *handshake.Handler) {
 		log.Printf("[TCP] New connection from %v", addr)
 	}
 
-	if hsHandler != nil {
-		conn.SetReadDeadline(time.Now().Add(10 * time.Second))
-		buf := make([]byte, 64)
-		if _, err := io.ReadFull(conn, buf); err != nil {
+	// Peek the first byte to detect whether client is sending a handshake
+	// (starts with 0x01 = HandshakeTypeInit) or going straight to smux (starts with 0x00).
+	// This lets client and server configs be mismatched without breaking.
+	conn.SetReadDeadline(time.Now().Add(10 * time.Second))
+	var firstByte [1]byte
+	if _, err := io.ReadFull(conn, firstByte[:]); err != nil {
+		if *debug {
+			log.Printf("[TCP] Failed to read first byte from %v: %v", addr, err)
+		}
+		return
+	}
+	conn.SetReadDeadline(time.Time{})
+
+	if hsHandler != nil && firstByte[0] == byte(handshake.HandshakeTypeInit) {
+		// Client is sending a handshake — read remaining 63 bytes
+		rest := make([]byte, 63)
+		if _, err := io.ReadFull(conn, rest); err != nil {
 			if *debug {
-				log.Printf("[TCP] Failed to read handshake from %v: %v", addr, err)
+				log.Printf("[TCP] Failed to read handshake body from %v: %v", addr, err)
 			}
 			return
 		}
-		conn.SetReadDeadline(time.Time{})
+		buf := append(firstByte[:], rest...)
 
 		sess, err := hsHandler.HandleHandshake(context.Background(), buf, addr)
 		if err != nil {
@@ -967,10 +980,17 @@ func handleTCPConnection(conn net.Conn, hsHandler *handshake.Handler) {
 				return
 			}
 		}
-	}
-
-	if globalRelay != nil {
-		globalRelay.ServeTunnel(conn, nil)
+		if globalRelay != nil {
+			globalRelay.ServeTunnel(conn, nil)
+		}
+	} else {
+		// Client is going straight to smux — prepend the peeked byte back
+		if *debug {
+			log.Printf("[TCP] No handshake from %v (first byte=0x%02x), routing directly to smux", addr, firstByte[0])
+		}
+		if globalRelay != nil {
+			globalRelay.ServeTunnel(&prependConn{Conn: conn, prepend: []byte{firstByte[0]}}, nil)
+		}
 	}
 }
 
