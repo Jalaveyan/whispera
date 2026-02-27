@@ -941,76 +941,36 @@ func handleTCPConnection(conn net.Conn, hsHandler *handshake.Handler) {
 		log.Printf("[TCP] New connection from %v", addr)
 	}
 
-	writer := &TCPResponseWriter{
-		conn:       conn,
-		obfuscator: globalObfuscator,
-		debug:      *debug,
-	}
-
-	buf := make([]byte, 32*1024)
-
-	for {
-		conn.SetReadDeadline(time.Now().Add(300 * time.Second))
-
-		n, err := conn.Read(buf)
-		if err != nil {
-			if err != io.EOF {
-				if *debug {
-					log.Printf("[TCP] Read error from %v: %v", addr, err)
-				}
+	if hsHandler != nil {
+		conn.SetReadDeadline(time.Now().Add(10 * time.Second))
+		buf := make([]byte, 64)
+		if _, err := io.ReadFull(conn, buf); err != nil {
+			if *debug {
+				log.Printf("[TCP] Failed to read handshake from %v: %v", addr, err)
 			}
 			return
 		}
+		conn.SetReadDeadline(time.Time{})
 
-		data := buf[:n]
-
-		if len(data) >= 32 && len(data) <= 96 && hsHandler != nil {
-			sess, err := hsHandler.HandleHandshake(context.Background(), data, addr)
-			if err == nil && sess != nil {
-				if *debug {
-					log.Printf("[TCP] Handshake completed for %v (Session: %d)", addr, sess.ID())
-				}
-
-				if val := sess.GetMetadata("user_id"); val != nil {
-					userID := val.(string)
-					writer.UserID = userID
-				}
-
-				if response := hsHandler.BuildResponse(sess); response != nil {
-					if _, err := conn.Write(response); err != nil {
-						if *debug {
-							log.Printf("[TCP] Failed to send handshake response: %v", err)
-						}
-					}
-				}
-				continue
+		sess, err := hsHandler.HandleHandshake(context.Background(), buf, addr)
+		if err != nil {
+			if *debug {
+				log.Printf("[TCP] Handshake failed from %v: %v", addr, err)
+			}
+			return
+		}
+		if *debug {
+			log.Printf("[TCP] Handshake completed for %v", addr)
+		}
+		if response := hsHandler.BuildResponse(sess); response != nil {
+			if _, err := conn.Write(response); err != nil {
+				return
 			}
 		}
+	}
 
-		payload := data
-		if globalObfuscator != nil {
-			deobfuscated, _, err := globalObfuscator.Process(data, interfaces.DirectionInbound)
-			if err == nil && len(deobfuscated) > 0 {
-				payload = deobfuscated
-				if *debug {
-					fmt.Printf("[TCP] Deobfuscated %d -> %d bytes from %v\n", len(data), len(payload), addr)
-				}
-			} else {
-				continue
-			}
-		}
-
-		if writer.UserID != "" {
-			stats.AddRx(writer.UserID, int64(len(payload)))
-		}
-
-		if len(payload) >= 8 && globalRelay != nil {
-			if err := globalRelay.ProcessFrame(payload, nil, writer); err != nil {
-				if *debug {
-					log.Printf("[TCP] Relay process error: %v", err)
-				}
-			}
-		}
+	if globalRelay != nil {
+		globalRelay.ServeTunnel(conn, nil)
 	}
 }
 

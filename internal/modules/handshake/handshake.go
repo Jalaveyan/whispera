@@ -171,7 +171,6 @@ func (h *Handler) SetStaticKeys(pubKey, privKey []byte) {
 	h.staticPrivKey = privKey
 }
 
-// SetDeviceID stores the persistent device UUID that is sent in every handshake init packet.
 func (h *Handler) SetDeviceID(id [16]byte) {
 	h.mu.Lock()
 	h.deviceID = id
@@ -368,7 +367,6 @@ func (h *Handler) InitiateHandshake(ctx context.Context, conn net.Conn, addr net
 	h.mu.RLock()
 	clientUUID := h.deviceID
 	h.mu.RUnlock()
-	// If no persistent device ID has been set, fall back to a random UUID for this session.
 	var zeroID [16]byte
 	if clientUUID == zeroID {
 		if _, err := rand.Read(clientUUID[:]); err != nil {

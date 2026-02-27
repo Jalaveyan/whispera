@@ -486,6 +486,33 @@ func (m *Manager) connectInternal(ctx context.Context, isRotation bool) error {
 			return
 		}
 
+		// Perform handshake on raw TCP connection BEFORE setting up smux
+		if m.handshake != nil && !m.config.EnablePhantom {
+			session, err := m.handshake.InitiateHandshake(ctx, conn, conn.RemoteAddr())
+			if err != nil {
+				log.Warn("[%s] Handshake failed for conn %d: %v", op, idx, err)
+				conn.Close()
+				select {
+				case firstConnErr <- err:
+				default:
+				}
+				return
+			}
+			if session != nil {
+				poolMu.Lock()
+				if len(connectedPool) == 0 {
+					m.sessionID = session.ID()
+				}
+				poolMu.Unlock()
+			}
+		} else if m.config.EnablePhantom {
+			poolMu.Lock()
+			if len(connectedPool) == 0 {
+				m.sessionID = uint32(time.Now().Unix() & 0xFFFFFFFF)
+			}
+			poolMu.Unlock()
+		}
+
 		log.Debug("[%s] Upgrading connection %d to SMUX...", op, idx)
 
 		muxCfg := m.getMuxConfig()
@@ -519,42 +546,18 @@ func (m *Manager) connectInternal(ctx context.Context, isRotation bool) error {
 			closing:   make(chan struct{}),
 		}
 
-		handshakeSuccess := true
-		if m.handshake != nil && !m.config.EnablePhantom {
-			session, err := m.handshake.InitiateHandshake(ctx, mc, conn.RemoteAddr())
-			if err != nil {
-				log.Warn("[%s] Handshake failed for conn %d: %v", op, idx, err)
-				conn.Close()
-				handshakeSuccess = false
-			} else if session != nil {
-				poolMu.Lock()
-				if len(connectedPool) == 0 {
-					m.sessionID = session.ID()
-				}
-				poolMu.Unlock()
-			}
-		} else if m.config.EnablePhantom {
-			poolMu.Lock()
-			if len(connectedPool) == 0 {
-				m.sessionID = uint32(time.Now().Unix() & 0xFFFFFFFF)
-			}
-			poolMu.Unlock()
-		}
+		poolMu.Lock()
+		isFirst := len(connectedPool) == 0
+		connectedPool = append(connectedPool, mc)
+		poolMu.Unlock()
 
-		if handshakeSuccess {
-			poolMu.Lock()
-			isFirst := len(connectedPool) == 0
-			connectedPool = append(connectedPool, mc)
-			poolMu.Unlock()
+		safeGo("readLoop", func() { m.readLoop(mc) })
 
-			safeGo("readLoop", func() { m.readLoop(mc) })
-
-			if isFirst {
-				select {
-				case firstConnReady <- mc:
-					log.Info("[%s] First connection ready! (Latency: %v)", op, time.Since(start))
-				default:
-				}
+		if isFirst {
+			select {
+			case firstConnReady <- mc:
+				log.Info("[%s] First connection ready! (Latency: %v)", op, time.Since(start))
+			default:
 			}
 		}
 	}
