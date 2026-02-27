@@ -675,7 +675,7 @@ ENVEOF
     fi
     
     if ! grep -q "WHISPERA_MASK_LOGS" /etc/systemd/system/whispera.service; then
-        sed -i '/\[Service\]/a Environment=WHISPERA_MASK_LOGS=true' /etc/systemd/system/whispera.service
+        sed -i '/\[Service\]/a Environment=WHISPERA_MASK_LOGS=false' /etc/systemd/system/whispera.service
         systemctl daemon-reload
     fi
 
