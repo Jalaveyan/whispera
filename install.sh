@@ -1060,7 +1060,7 @@ phantom:
     - "avito.ru"
     - "mos.ru"
     - "gosuslugi.ru"
-  max_time_diff: 60
+  max_time_diff: 300000
   fingerprint: "chrome"
   enable_sni_rotation: true
   sni_rotation_interval: 900

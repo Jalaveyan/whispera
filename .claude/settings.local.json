@@ -47,7 +47,8 @@
       "Bash(xargs grep -l \"desktop\\\\|interface\")",
       "Bash(xargs grep -ln \"740\\\\|elevation\\\\|ELEVATION\")",
       "Bash(cargo build)",
-      "Bash(go build ./cmd/server ./internal/modules/phantom/... ./internal/modules/config/...)"
+      "Bash(go build ./cmd/server ./internal/modules/phantom/... ./internal/modules/config/...)",
+      "Bash(ls /c/Whispera-test/*.sh /c/Whispera-test/scripts/*.sh)"
     ]
   }
 }

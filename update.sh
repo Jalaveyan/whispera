@@ -679,9 +679,20 @@ ENVEOF
         systemctl daemon-reload
     fi
 
+    # Migrate config: fix max_time_diff if it was set too small (< 1000ms)
+    if [[ -f "$CONF_PATH/config.yaml" ]]; then
+        local MTD
+        MTD=$(grep 'max_time_diff:' "$CONF_PATH/config.yaml" | awk '{print $2}' | tr -d '[:space:]')
+        if [[ -n "$MTD" && "$MTD" -lt 1000 ]] 2>/dev/null; then
+            log_warn "Config: max_time_diff=$MTD is too small (ms units). Updating to 300000 (5 min)..."
+            sed -i "s/max_time_diff: $MTD/max_time_diff: 300000/" "$CONF_PATH/config.yaml"
+            log_success "max_time_diff updated: $MTD -> 300000"
+        fi
+    fi
+
     log_info "Starting service..."
     systemctl start whispera
-    
+
     sleep 3
     if ! systemctl is-active --quiet whispera; then
         log_err "Whispera service failed to start!"
