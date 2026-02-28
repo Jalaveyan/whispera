@@ -497,7 +497,7 @@ func DefaultServerConfig() *ServerConfig {
 			ServerNames: []string{},
 			PrivateKey:  "",
 			ShortIds:    []string{""},
-			MaxTimeDiff: 60000,
+			MaxTimeDiff: 300000, // 5 minutes in ms
 			Fingerprint: "chrome",
 		},
 		Bot: BotConfig{

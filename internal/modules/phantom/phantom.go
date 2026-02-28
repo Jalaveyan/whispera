@@ -93,7 +93,7 @@ func DefaultConfig() *Config {
 		Dest:        "cloudflare.com:443",
 		ServerNames: []string{"cloudflare.com"},
 		ShortIds:    []string{""},
-		MaxTimeDiff: 60000,
+		MaxTimeDiff: 300000, // 5 minutes in ms
 		Fingerprint: "chrome",
 	}
 }
@@ -140,12 +140,17 @@ func New(cfg *Config) (*Handler, error) {
 		cfg = DefaultConfig()
 	}
 
+	maxTimeDiff := 5 * time.Minute
+	if cfg.MaxTimeDiff > 0 {
+		maxTimeDiff = time.Duration(cfg.MaxTimeDiff) * time.Millisecond
+	}
+
 	h := &Handler{
 		Module:         base.NewModule(ModuleName, ModuleVersion, nil),
 		config:         cfg,
 		activeConns:    make(map[string]net.Conn),
 		replayCache:    make(map[string]time.Time),
-		maxTimeDiff:    5 * time.Minute,
+		maxTimeDiff:    maxTimeDiff,
 		integrationMgr: obfuscation.NewIntegrationManager(),
 	}
 
@@ -546,7 +551,7 @@ func (h *Handler) authenticateClient(clientRandom, sessionID []byte) (string, bo
 	expected := mac.Sum(nil)
 
 	if !hmac.Equal(sessionID[8:32], expected[:24]) {
-		log.Printf("[Phantom] Auth FAILED: SessionID mismatch")
+		log.Printf("[Phantom] Auth FAILED: SessionID mismatch (clock diff=%v, verify server public key on client)", diff)
 		return "", false
 	}
 

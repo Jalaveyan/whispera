@@ -113,6 +113,6 @@ phantom:
   short_ids:
     - ""  
     - "0123456789abcdef"
-  max_time_diff: 60000
+  max_time_diff: 1800000
   
   fingerprint: "chrome"
