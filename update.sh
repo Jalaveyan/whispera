@@ -19,6 +19,15 @@ log_info() { echo -e "${BLUE}[INFO]${PLAIN} $1"; }
 log_warn() { echo -e "${YELLOW}[WARN]${PLAIN} $1"; }
 log_err() { echo -e "${RED}[ERR]${PLAIN} $1"; }
 
+# Call after any edit to config.yaml so the integrity check passes on restart
+refresh_config() {
+    local cfg="${1:-$CONF_PATH/config.yaml}"
+    if [[ ! -f "$cfg" ]]; then return; fi
+    if command -v whispera &>/dev/null; then
+        whispera update-checksum "$cfg" 2>/dev/null && log_info "Config checksum updated"
+    fi
+}
+
 get_public_ip() {
     local IP=$(curl -s https://api.ipify.org -m 5 2>/dev/null)
     if [[ -z "$IP" ]]; then
@@ -150,7 +159,8 @@ setup_warp() {
                 echo "  upstream_proxy: \"socks5://127.0.0.1:40000\"" >> "$CONF_PATH/config.yaml"
             fi
             
-            log_success "Configuration updated. Restarting Whispera service..."
+            log_success "Configuration updated."
+            refresh_config
             systemctl restart whispera 2>/dev/null || true
         else
              log_warn "Config file not found at $CONF_PATH/config.yaml - please configure manually"
@@ -402,6 +412,7 @@ setup_telegram() {
     sed -i "s/chat_id: .*/chat_id: \"$TG_ID\"/" "$CONF_PATH/config.yaml"
     
     log_info "Restarting Whispera..."
+    refresh_config
     systemctl restart whispera
     log_success "Telegram notifications enabled for ID $TG_ID"
 }
@@ -533,7 +544,7 @@ show_extras_menu() {
             14) systemctl restart whispera && log_success "Service restarted" || log_err "Failed to restart service" ;;
             15) systemctl status whispera ;;
             16) journalctl -u whispera -f ;;
-            17) ${EDITOR:-nano} /etc/whispera/config.yaml ;;
+            17) ${EDITOR:-nano} /etc/whispera/config.yaml; refresh_config ;;
             0|"") log_info "Exiting menu."; break ;;
             *) log_warn "Invalid option: $choice" ;;
         esac
