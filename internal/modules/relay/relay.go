@@ -64,6 +64,8 @@ type Server struct {
 	config           *Config
 	streamManager    *StreamManager
 	proxyDialer      proxy.Dialer
+	router           interfaces.Router
+	routerMu         sync.RWMutex
 	sendFrame        func(data []byte, addr net.Addr) error
 	rawPacketHandler func(data []byte) error
 	sessionWriters   map[uint32]ResponseWriter
@@ -145,6 +147,14 @@ func (s *Server) SetTransport(sendFrame func(data []byte, addr net.Addr) error) 
 }
 func (s *Server) SetRawPacketHandler(handler func(data []byte) error) {
 	s.rawPacketHandler = handler
+}
+
+// SetRouter injects the routing engine so the relay can decide per-connection
+// whether to dial directly or via the upstream proxy (e.g. WARP).
+func (s *Server) SetRouter(r interfaces.Router) {
+	s.routerMu.Lock()
+	s.router = r
+	s.routerMu.Unlock()
 }
 
 func (s *Server) RegisterSessionWriter(sessionID uint32, writer ResponseWriter) {
@@ -385,11 +395,31 @@ func (s *Server) handleProxyStream(stream net.Conn) {
 		network = "udp"
 	}
 
-	// SOCKS5 proxies (including WARP) do not support UDP ASSOCIATE.
-	// For UDP streams, always dial directly.
+	// Determine the dialer: consult the routing engine if available,
+	// otherwise fall back to the configured upstream proxy.
+	// UDP always bypasses the upstream proxy (WARP SOCKS5 does not support UDP).
 	dialer := s.proxyDialer
 	if network == "udp" {
 		dialer = proxy.Direct
+	} else {
+		s.routerMu.RLock()
+		rtr := s.router
+		s.routerMu.RUnlock()
+		if rtr != nil {
+			dstAddr, _ := net.ResolveTCPAddr("tcp", fmt.Sprintf("%s:%d", addr, port))
+			pkt := &interfaces.Packet{DstAddr: dstAddr}
+			if dest, err := rtr.Route(context.Background(), pkt); err == nil {
+				switch dest.Type {
+				case interfaces.DestinationDirect:
+					dialer = proxy.Direct
+				case interfaces.DestinationBlock:
+					stream.Write([]byte{0x01})
+					s.log.Info("Blocked connection to %s:%d by routing rule", addr, port)
+					return
+				}
+				// DestinationProxy → keep s.proxyDialer (WARP)
+			}
+		}
 	}
 
 	target, err := dialer.Dial(network, fmt.Sprintf("%s:%d", addr, port))
@@ -409,16 +439,65 @@ func (s *Server) handleProxyStream(stream net.Conn) {
 	}
 
 	errCh := make(chan error, 2)
-	go func() {
-		buf := make([]byte, 256*1024)
-		_, err := io.CopyBuffer(target, stream, buf)
-		errCh <- err
-	}()
-	go func() {
-		buf := make([]byte, 256*1024)
-		_, err := io.CopyBuffer(stream, target, buf)
-		errCh <- err
-	}()
+
+	if network == "udp" {
+		// UDP: use length-framed relay to preserve datagram boundaries over
+		// the TCP-based yamux stream. Each datagram is [uint16 len][payload].
+		go func() {
+			// stream → target: read length-framed datagrams, write raw UDP
+			hdr := make([]byte, 2)
+			buf := make([]byte, 65535)
+			for {
+				if _, err := io.ReadFull(stream, hdr); err != nil {
+					errCh <- err
+					return
+				}
+				sz := int(binary.BigEndian.Uint16(hdr))
+				if sz == 0 || sz > len(buf) {
+					errCh <- fmt.Errorf("invalid UDP frame size %d", sz)
+					return
+				}
+				if _, err := io.ReadFull(stream, buf[:sz]); err != nil {
+					errCh <- err
+					return
+				}
+				if _, err := target.Write(buf[:sz]); err != nil {
+					errCh <- err
+					return
+				}
+			}
+		}()
+		go func() {
+			// target → stream: read raw UDP datagrams, write length-framed
+			buf := make([]byte, 65535)
+			for {
+				n, err := target.Read(buf)
+				if err != nil {
+					errCh <- err
+					return
+				}
+				frame := make([]byte, 2+n)
+				binary.BigEndian.PutUint16(frame[:2], uint16(n))
+				copy(frame[2:], buf[:n])
+				if _, err := stream.Write(frame); err != nil {
+					errCh <- err
+					return
+				}
+			}
+		}()
+	} else {
+		// TCP: plain byte stream, no framing needed.
+		go func() {
+			buf := make([]byte, 256*1024)
+			_, err := io.CopyBuffer(target, stream, buf)
+			errCh <- err
+		}()
+		go func() {
+			buf := make([]byte, 256*1024)
+			_, err := io.CopyBuffer(stream, target, buf)
+			errCh <- err
+		}()
+	}
 	<-errCh
 }
 

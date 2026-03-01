@@ -49,7 +49,9 @@
       "Bash(cargo build)",
       "Bash(go build ./cmd/server ./internal/modules/phantom/... ./internal/modules/config/...)",
       "Bash(ls /c/Whispera-test/*.sh /c/Whispera-test/scripts/*.sh)",
-      "Bash(go build ./internal/modules/socks5/)"
+      "Bash(go build ./internal/modules/socks5/)",
+      "Bash(python3 -:*)",
+      "Bash(python -:*)"
     ]
   }
 }

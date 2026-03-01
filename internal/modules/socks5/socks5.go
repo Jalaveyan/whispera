@@ -260,25 +260,23 @@ func (m *Module) handleUDPRelay(udpConn *net.UDPConn, tcpConn net.Conn) {
 					stream.Close()
 				}()
 
+				// Read length-framed UDP datagrams from the tunnel stream.
+				// Each datagram is prefixed with a 2-byte big-endian length.
+				hdr := make([]byte, 2)
 				respBuf := make([]byte, 65535)
 				for {
-					nr, err := stream.Read(respBuf)
-					if err != nil || nr == 0 {
+					if _, err := io.ReadFull(stream, hdr); err != nil {
 						return
 					}
-					// Server wraps UDP responses with a SealUDPData header:
-					// [addrType(1), IP(4|16), port(2), payload...]
-					// Parse it so Discord receives the raw UDP payload with
-					// the correct source address in the SOCKS5 UDP reply.
-					srcHost, srcPort, payload, parseErr := parseUDPDataHeader(respBuf[:nr])
-					var reply []byte
-					if parseErr != nil {
-						// Fallback: treat as raw payload with original destination
-						reply = buildUDPReply(dstHost, dstPort, respBuf[:nr])
-					} else {
-						reply = buildUDPReply(srcHost, srcPort, payload)
+					sz := int(binary.BigEndian.Uint16(hdr))
+					if sz == 0 || sz > len(respBuf) {
+						return
+					}
+					if _, err := io.ReadFull(stream, respBuf[:sz]); err != nil {
+						return
 					}
 					if clientAddr != nil {
+						reply := buildUDPReply(dstHost, dstPort, respBuf[:sz])
 						udpConn.WriteToUDP(reply, clientAddr)
 					}
 				}
@@ -286,8 +284,12 @@ func (m *Module) handleUDPRelay(udpConn *net.UDPConn, tcpConn net.Conn) {
 		}
 		streamsMu.Unlock()
 
-		// Forward payload to tunnel.
-		if _, err := stream.Write(payload); err != nil {
+		// Forward payload to tunnel with 2-byte length prefix to preserve
+		// UDP datagram boundaries over the TCP-based yamux stream.
+		frame := make([]byte, 2+len(payload))
+		binary.BigEndian.PutUint16(frame[:2], uint16(len(payload)))
+		copy(frame[2:], payload)
+		if _, err := stream.Write(frame); err != nil {
 			streamsMu.Lock()
 			delete(streams, dstKey)
 			streamsMu.Unlock()

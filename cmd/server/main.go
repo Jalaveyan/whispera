@@ -774,6 +774,7 @@ func createModules(manager *lifecycle.Manager) error {
 		return fmt.Errorf("dataplane not available")
 	})
 	globalRelay = relayServer
+	relayServer.SetRouter(routerEngine)
 	if err := manager.Register(relayServer); err != nil {
 		return err
 	}
