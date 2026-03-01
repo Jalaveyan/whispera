@@ -242,7 +242,7 @@ func (m *Module) handleUDPRelay(udpConn *net.UDPConn, tcpConn net.Conn) {
 			}
 
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			stream, err = tunnel.DialStream(ctx, "udp", fmt.Sprintf("%s:%d", dstHost, dstPort))
+			stream, err = tunnel.OpenStream(ctx, 0x11, dstHost, dstPort)
 			cancel()
 			if err != nil {
 				streamsMu.Unlock()
