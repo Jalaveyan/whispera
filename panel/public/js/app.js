@@ -1741,8 +1741,9 @@ class WhisperaApp {
             this.closeModals();
             this.loadUsers();
 
-            if (res.user && res.user.private_key) {
-                this.showKeyModal(res.user.email, res.user.private_key);
+            const privKey = res.privateKey || res.user?.privateKey;
+            if (privKey) {
+                this.showKeyModal(res.user?.username || email, privKey);
             } else {
                 this.showNotification('Пользователь создан', 'success');
             }
@@ -2312,14 +2313,14 @@ class WhisperaApp {
 
             tbody.innerHTML = users.map(user => `
     <tr>
-          <td>${user.email || user.name || '-'}</td>
-          <td>${user.plan_name || 'Free'}</td>
-          <td>${this.formatBytes(user.bytes_in || 0)} / ${this.formatBytes(user.bytes_out || 0)}</td>
-          <td><span class="status ${user.is_active ? 'active' : 'inactive'}">${user.is_active ? 'Active' : 'Inactive'}</span></td>
+          <td>${user.username || '-'}</td>
+          <td>${user.trafficLimit ? (user.trafficLimit / 1073741824).toFixed(0) + ' GB' : 'Free'}</td>
+          <td>${this.formatBytes(user.upload || 0)} / ${this.formatBytes(user.download || 0)}</td>
+          <td><span class="status ${user.status === 'active' ? 'active' : 'inactive'}">${user.status === 'active' ? 'Active' : 'Inactive'}</span></td>
           <td>
             <div style="display: flex; align-items: center; gap: 5px;">
-                <input type="text" value="${user.private_key || '-'}" readonly style="width: 120px; font-size: 0.85em; border: 1px solid var(--md-sys-color-outline); background: var(--md-sys-color-surface-container-highest); color: var(--md-sys-color-on-surface); padding: 4px 8px; border-radius: 4px;">
-                <button class="btn btn-secondary btn-sm" onclick="navigator.clipboard.writeText('${user.private_key || ''}').then(() => app.showNotification('Key copied', 'success'))" style="padding: 4px 8px;">
+                <input type="text" value="${user.publicKey || '-'}" readonly style="width: 120px; font-size: 0.85em; border: 1px solid var(--md-sys-color-outline); background: var(--md-sys-color-surface-container-highest); color: var(--md-sys-color-on-surface); padding: 4px 8px; border-radius: 4px;">
+                <button class="btn btn-secondary btn-sm" onclick="navigator.clipboard.writeText('${user.publicKey || ''}').then(() => app.showNotification('Key copied', 'success'))" style="padding: 4px 8px;">
                     <i class="fas fa-copy"></i>
                 </button>
             </div>
