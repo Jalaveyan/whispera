@@ -118,7 +118,11 @@
       "Bash(grep -n \"ClientConfig\\\\|type Client\" c:/Whispera-test/internal/modules/config/*.go)",
       "Bash(go build ./internal/modules/transport/shadowtls/...)",
       "Bash(grep -n \"func.*Listen\\\\|func.*Accept\\\\|not implemented\\\\|server mode\" c:/Whispera-test/internal/modules/transport/splithttp/*.go c:/Whispera-test/internal/modules/transport/tuic/*.go)",
-      "Bash(grep -rn \"\"\"x25519\"\"\\\\|x25519\" /c/Whispera-test/cmd/)"
+      "Bash(grep -rn \"\"\"x25519\"\"\\\\|x25519\" /c/Whispera-test/cmd/)",
+      "Bash(sed -i '1220,1224s/.*//' internal/modules/apiserver/server.go)",
+      "Bash(sed -i '1220i\\\\\\\\t\\\\t\\\\t\\\\t\\\\t// Fallback: global phantom key, then server key\\\\n\\\\t\\\\t\\\\t\\\\t\\\\tif serverPubKey == \"\"\"\" \\\\&\\\\& cfg.Phantom.PrivateKey != \"\"\"\" {\\\\n\\\\t\\\\t\\\\t\\\\t\\\\t\\\\tserverPubKey = derivePublicKeyB64\\(cfg.Phantom.PrivateKey\\)\\\\n\\\\t\\\\t\\\\t\\\\t\\\\t}\\\\n\\\\t\\\\t\\\\t\\\\t\\\\tif serverPubKey == \"\"\"\" \\\\&\\\\& cfg.Server.PrivateKey != \"\"\"\" {\\\\n\\\\t\\\\t\\\\t\\\\t\\\\t\\\\tserverPubKey = derivePublicKeyB64\\(cfg.Server.PrivateKey\\)\\\\n\\\\t\\\\t\\\\t\\\\t\\\\t}' internal/modules/apiserver/server.go)",
+      "Bash(sed -i '1220s/^t//' internal/modules/apiserver/server.go)",
+      "Bash(sed -i '/^$/{ /^[[:space:]]*$/{ 4,8{ /^[[:space:]]*$/{N;/^\\\\n$/d} } } }' internal/modules/apiserver/server.go)"
     ]
   }
 }

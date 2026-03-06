@@ -1217,11 +1217,18 @@ func (s *Server) handleGenerateConnectionKey(w http.ResponseWriter, r *http.Requ
 							break
 						}
 					}
-					// Fallback to global phantom key if inbound doesn't have one
+				// Fallback: global phantom key, then server key
 					if serverPubKey == "" && cfg.Phantom.PrivateKey != "" {
 						serverPubKey = derivePublicKeyB64(cfg.Phantom.PrivateKey)
-						phantomEnabled = true
 					}
+					if serverPubKey == "" && cfg.Server.PrivateKey != "" {
+						serverPubKey = derivePublicKeyB64(cfg.Server.PrivateKey)
+					}
+
+
+
+
+
 					// Fall back to global TCP/UDP ports
 					if serverAddr == fmt.Sprintf("%s:443", serverIP) {
 						if req.Transport == "udp" && cfg.Transport.UDP.Enabled {
