@@ -35,18 +35,7 @@ export class RoutingService {
     async addRule(token: string, rule: Partial<RoutingRule>): Promise<RoutingRule> {
         const response = await firstValueFrom(
             this.httpService.post(
-                `${this.backendUrl}/api/routing/rules`,
-                rule,
-                { headers: { Authorization: `Bearer ${token}` } },
-            ),
-        );
-        return response.data;
-    }
-
-    async updateRule(token: string, id: string, rule: Partial<RoutingRule>): Promise<RoutingRule> {
-        const response = await firstValueFrom(
-            this.httpService.put(
-                `${this.backendUrl}/api/routing/rules/${id}`,
+                `${this.backendUrl}/api/routing/rules/add`,
                 rule,
                 { headers: { Authorization: `Bearer ${token}` } },
             ),
@@ -56,9 +45,11 @@ export class RoutingService {
 
     async deleteRule(token: string, id: string): Promise<void> {
         await firstValueFrom(
-            this.httpService.delete(`${this.backendUrl}/api/routing/rules/${id}`, {
-                headers: { Authorization: `Bearer ${token}` },
-            }),
+            this.httpService.post(
+                `${this.backendUrl}/api/routing/rules/delete`,
+                { id },
+                { headers: { Authorization: `Bearer ${token}` } },
+            ),
         );
     }
 }

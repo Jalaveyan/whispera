@@ -89,7 +89,7 @@ class WhisperaAPI {
     }
 
     async updateUser(id, data) {
-        return this.request(`/api/v2/users/${id}`, {
+        return this.request(`/api/users/${id}`, {
             method: 'PUT',
             body: JSON.stringify(data)
         });

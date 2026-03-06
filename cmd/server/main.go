@@ -43,9 +43,9 @@ import (
 	h2c_transport "whispera/internal/modules/transport/h2c"
 	_ "whispera/internal/modules/transport/httpupgrade"
 	_ "whispera/internal/modules/transport/meek"
-	_ "whispera/internal/modules/transport/obfs4"
+	obfs4_transport "whispera/internal/modules/transport/obfs4"
 	_ "whispera/internal/modules/transport/okwebrtc"
-	_ "whispera/internal/modules/transport/shadowsocks"
+	shadowsocks_transport "whispera/internal/modules/transport/shadowsocks"
 	_ "whispera/internal/modules/transport/shadowtls"
 	_ "whispera/internal/modules/transport/snowflake"
 	_ "whispera/internal/modules/transport/splithttp"
@@ -56,7 +56,7 @@ import (
 	"whispera/internal/modules/transport/udp"
 	_ "whispera/internal/modules/transport/vkbot"
 	_ "whispera/internal/modules/transport/vkwebrtc"
-	_ "whispera/internal/modules/transport/websocket"
+	ws_transport "whispera/internal/modules/transport/websocket"
 	_ "whispera/internal/modules/transport/yacloud"
 	_ "whispera/internal/modules/transport/yadisk"
 	_ "whispera/internal/modules/transport/yatelemost"
@@ -264,6 +264,141 @@ func StartInbound(inbound modconfig.InboundConfig, serverConfig *modconfig.Serve
 				return fmt.Errorf("failed to create handshake handler for %s", inbound.Tag)
 			}
 		}
+	}
+
+	// Helper: extract a string from the inbound's Params map.
+	paramStr := func(key, fallback string) string {
+		if v, ok := inbound.StreamSettings.Params[key]; ok {
+			if s, ok := v.(string); ok && s != "" {
+				return s
+			}
+		}
+		return fallback
+	}
+
+	// ── WebSocket ──────────────────────────────────────────────────────────────
+	if network == "ws" {
+		path := inbound.StreamSettings.WS.Path
+		if path == "" {
+			path = paramStr("path", "/ws")
+		}
+		wsCfg := ws_transport.DefaultConfig()
+		wsCfg.ListenAddr = listenAddr
+		wsCfg.Path = path
+		wsTrans, err := ws_transport.New(wsCfg)
+		if err != nil {
+			listener.Close()
+			return fmt.Errorf("failed to create websocket transport: %w", err)
+		}
+		listener.Close()
+		if err := wsTrans.Listen(listenAddr); err != nil {
+			return fmt.Errorf("failed to listen ws on %s: %w", listenAddr, err)
+		}
+		log.Printf("✅ [Dynamic] Inbound %s listening on %s (WebSocket path=%s)", inbound.Tag, listenAddr, path)
+		go func() {
+			defer func() {
+				wsTrans.Close()
+				log.Printf("⏹ [Dynamic] Stopped inbound %s (WebSocket)", inbound.Tag)
+			}()
+			for {
+				conn, err := wsTrans.Accept()
+				if err != nil {
+					log.Printf("⚠ [Dynamic] WS Accept error on %s: %v", inbound.Tag, err)
+					time.Sleep(100 * time.Millisecond)
+					continue
+				}
+				if globalRelay != nil {
+					go globalRelay.ServeTunnel(conn, nil)
+				} else {
+					conn.Close()
+				}
+			}
+		}()
+		return nil
+	}
+
+	// ── Shadowsocks ────────────────────────────────────────────────────────────
+	if network == "shadowsocks" {
+		password := paramStr("password", "")
+		if password == "" {
+			listener.Close()
+			return fmt.Errorf("shadowsocks inbound %s: 'password' required in params", inbound.Tag)
+		}
+		method := shadowsocks_transport.Method(paramStr("method", "aes-256-gcm"))
+		ssCfg := &shadowsocks_transport.Config{
+			Password: password,
+			Method:   method,
+		}
+		ssTrans, err := shadowsocks_transport.New(ssCfg)
+		if err != nil {
+			listener.Close()
+			return fmt.Errorf("failed to create shadowsocks transport: %w", err)
+		}
+		listener.Close()
+		if err := ssTrans.Listen(listenAddr); err != nil {
+			return fmt.Errorf("failed to listen shadowsocks on %s: %w", listenAddr, err)
+		}
+		log.Printf("✅ [Dynamic] Inbound %s listening on %s (Shadowsocks method=%s)", inbound.Tag, listenAddr, method)
+		go func() {
+			defer func() {
+				ssTrans.Close()
+				log.Printf("⏹ [Dynamic] Stopped inbound %s (Shadowsocks)", inbound.Tag)
+			}()
+			for {
+				conn, err := ssTrans.Accept()
+				if err != nil {
+					log.Printf("⚠ [Dynamic] Shadowsocks Accept error on %s: %v", inbound.Tag, err)
+					time.Sleep(100 * time.Millisecond)
+					continue
+				}
+				if globalRelay != nil {
+					go globalRelay.ServeTunnel(conn, nil)
+				} else {
+					conn.Close()
+				}
+			}
+		}()
+		return nil
+	}
+
+	// ── obfs4 ──────────────────────────────────────────────────────────────────
+	if network == "obfs4" {
+		obfsCfg := &obfs4_transport.Config{
+			ListenAddr: listenAddr,
+			NodeID:     paramStr("node_id", ""),
+			PublicKey:  paramStr("public_key", ""),
+			PrivateKey: paramStr("private_key", ""),
+		}
+		obfsTrans, err := obfs4_transport.New(obfsCfg)
+		if err != nil {
+			listener.Close()
+			return fmt.Errorf("failed to create obfs4 transport: %w", err)
+		}
+		listener.Close()
+		if err := obfsTrans.Listen(listenAddr); err != nil {
+			return fmt.Errorf("failed to listen obfs4 on %s: %w", listenAddr, err)
+		}
+		log.Printf("✅ [Dynamic] Inbound %s listening on %s (obfs4)", inbound.Tag, listenAddr)
+		go func() {
+			defer func() {
+				obfsTrans.Close()
+				log.Printf("⏹ [Dynamic] Stopped inbound %s (obfs4)", inbound.Tag)
+			}()
+			for {
+				conn, err := obfsTrans.Accept()
+				if err != nil {
+					log.Printf("⚠ [Dynamic] obfs4 Accept error on %s: %v", inbound.Tag, err)
+					time.Sleep(100 * time.Millisecond)
+					continue
+				}
+				if globalRelay != nil {
+					go globalRelay.ServeTunnel(conn, nil)
+				} else {
+					conn.Close()
+				}
+			}
+		}()
+		return nil
 	}
 
 	if network == "h2c" {

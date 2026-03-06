@@ -738,6 +738,54 @@
                     <label data-i18n="modal.common.port">Порт</label>
                     <input type="number" name="port" required placeholder="443">
                 </div>
+                <div class="form-group">
+                    <label>Транспорт</label>
+                    <select name="transport">
+                        <optgroup label="Базовые">
+                            <option value="tcp">TCP (Phantom)</option>
+                            <option value="udp">UDP</option>
+                            <option value="ws">WebSocket</option>
+                            <option value="splithttp">SplitHTTP</option>
+                            <option value="httpupgrade">HTTP Upgrade</option>
+                            <option value="grpc">gRPC</option>
+                            <option value="h2c">H2C (HTTP/2 Clear)</option>
+                        </optgroup>
+                        <optgroup label="Обфускация">
+                            <option value="shadowtls">ShadowTLS</option>
+                            <option value="shadowsocks">Shadowsocks</option>
+                            <option value="obfs4">obfs4</option>
+                            <option value="meek">Meek</option>
+                            <option value="domainfront">Domain Fronting</option>
+                        </optgroup>
+                        <optgroup label="Туннели / Relay">
+                            <option value="tuic">TUIC (QUIC)</option>
+                            <option value="snowflake">Snowflake</option>
+                            <option value="torsocks">Tor (SOCKS5)</option>
+                        </optgroup>
+                        <optgroup label="VK / OK / Боты">
+                            <option value="vkwebrtc">VK WebRTC</option>
+                            <option value="okwebrtc">OK WebRTC</option>
+                            <option value="vkbot">VK Bot</option>
+                            <option value="tgbot">Telegram Bot</option>
+                        </optgroup>
+                        <optgroup label="Яндекс / Облако">
+                            <option value="yacloud">Yandex Cloud</option>
+                            <option value="yadisk">Yandex Disk</option>
+                            <option value="yatelemost">Yandex Telemost</option>
+                        </optgroup>
+                    </select>
+                </div>
+                <div class="form-group" id="inbound-sni-group">
+                    <label>SNI (через запятую, пусто = принимать любой)</label>
+                    <input type="text" name="server_names" placeholder="cloudflare.com, google.com">
+                    <small style="color:#888;font-size:11px;">Только для TCP/WS/HTTP. Пустое поле = allowlist отключён.</small>
+                </div>
+                <div class="form-group" id="inbound-params-group" style="display:none;">
+                    <label id="inbound-params-label">Параметры транспорта</label>
+                    <textarea name="params_json" rows="3"
+                        style="width:100%;font-family:monospace;font-size:12px;background:#1a1a2e;color:#eee;border:1px solid #333;border-radius:4px;padding:8px;box-sizing:border-box;"></textarea>
+                    <small id="inbound-params-hint" style="color:#888;font-size:11px;"></small>
+                </div>
                 <div class="modal-footer">
                     <button type="button" class="btn btn-secondary modal-close"
                         data-i18n="common.cancel">Отмена</button>
@@ -826,8 +874,8 @@
                     <input type="text" name="name" required placeholder="My Servers">
                 </div>
                 <div class="form-group">
-                    <label data-i18n="modal.common.url">URL</label>
-                    <input type="url" name="url" required placeholder="https://example.com/sub">
+                    <label>Транспорты (через запятую, пусто = все)</label>
+                    <input type="text" name="transports" placeholder="tcp, udp, vkwebrtc">
                 </div>
                 <div class="modal-footer">
                     <button type="button" class="btn btn-secondary modal-close"

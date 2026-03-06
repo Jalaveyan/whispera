@@ -269,6 +269,9 @@ type StreamConfig struct {
 	Reality  PhantomStreamConfig `yaml:"reality,omitempty" json:"reality,omitempty"`
 	WS       WebSocketConfig     `yaml:"ws" json:"ws"`
 	H2C      H2CStreamConfig     `yaml:"h2c" json:"h2c"`
+	// Params holds transport-specific credentials (password, sni, method, node_id, uuid, etc.)
+	// Used for shadowtls, shadowsocks, obfs4, tuic, and other transports that need custom fields.
+	Params map[string]interface{} `yaml:"params,omitempty" json:"params,omitempty"`
 }
 
 type TLSConfig struct {

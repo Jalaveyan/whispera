@@ -4,14 +4,28 @@ import { ConfigService } from '@nestjs/config';
 import { firstValueFrom } from 'rxjs';
 
 export interface User {
-    id: string;
-    email: string;
-    plan_name: string;
-    bytes_in: number;
-    bytes_out: number;
-    connections_today: number;
-    is_active: boolean;
-    created_at: string;
+    id: number;
+    username: string;
+    privateKey?: string;
+    publicKey?: string;
+    upload: number;
+    download: number;
+    trafficLimit: number;
+    expiryDate?: string;
+    status: string;
+    createdAt: string;
+    obfsProfile?: string;
+    marionetteProfile?: string;
+    russianService?: string;
+}
+
+export interface CreateUserDto {
+    username: string;
+    trafficLimit?: number;
+    expiryDate?: string;
+    obfsProfile?: string;
+    marionetteProfile?: string;
+    russianService?: string;
 }
 
 @Injectable()
@@ -25,66 +39,52 @@ export class UsersService {
         this.backendUrl = this.configService.get('BACKEND_URL') || 'http://localhost:8080';
     }
 
-    async getUsers(token: string, limit = 50, offset = 0): Promise<User[]> {
+    async getUsers(token: string): Promise<User[]> {
         const response = await firstValueFrom(
-            this.httpService.get(`${this.backendUrl}/api/v2/users`, {
-                headers: { Authorization: `Bearer ${token}` },
-                params: { limit, offset },
-            }),
-        );
-        return response.data.users || [];
-    }
-
-    async getUser(token: string, id: string): Promise<User> {
-        const response = await firstValueFrom(
-            this.httpService.get(`${this.backendUrl}/api/v2/users/${id}`, {
+            this.httpService.get(`${this.backendUrl}/api/users`, {
                 headers: { Authorization: `Bearer ${token}` },
             }),
         );
-        return response.data;
+        return response.data.users || response.data || [];
     }
 
-    async createUser(token: string, email: string, password: string, trafficLimit?: number, validUntil?: string): Promise<User> {
-        const payload: any = { email, password };
-        if (trafficLimit !== undefined) payload.traffic_limit = trafficLimit;
-        if (validUntil !== undefined) payload.valid_until = validUntil;
-
+    async createUser(token: string, dto: CreateUserDto): Promise<User> {
         const response = await firstValueFrom(
             this.httpService.post(
-                `${this.backendUrl}/api/v2/users`,
-                payload,
+                `${this.backendUrl}/api/users/add`,
+                dto,
                 { headers: { Authorization: `Bearer ${token}` } },
             ),
         );
         return response.data.user;
     }
 
-    async updateUser(token: string, id: string, email: string, password?: string): Promise<any> {
-        const payload: any = { email };
-        if (password) payload.password = password;
-
+    async updateUser(token: string, id: string, data: Partial<CreateUserDto> & { status?: string }): Promise<User> {
         const response = await firstValueFrom(
             this.httpService.put(
-                `${this.backendUrl}/api/v2/users/${id}`,
-                payload,
+                `${this.backendUrl}/api/users/${id}`,
+                data,
                 { headers: { Authorization: `Bearer ${token}` } },
             ),
         );
-        return response.data;
+        return response.data.user;
     }
 
     async deleteUser(token: string, id: string): Promise<void> {
         await firstValueFrom(
-            this.httpService.delete(`${this.backendUrl}/api/v2/users/${id}`, {
-                headers: { Authorization: `Bearer ${token}` },
-            }),
+            this.httpService.post(
+                `${this.backendUrl}/api/users/delete`,
+                { id: parseInt(id, 10) },
+                { headers: { Authorization: `Bearer ${token}` } },
+            ),
         );
     }
 
     async getUserStats(token: string, id: string): Promise<any> {
         const response = await firstValueFrom(
-            this.httpService.get(`${this.backendUrl}/api/v2/users/${id}/stats`, {
+            this.httpService.get(`${this.backendUrl}/api/v1/stats/users`, {
                 headers: { Authorization: `Bearer ${token}` },
+                params: { user_id: id },
             }),
         );
         return response.data;

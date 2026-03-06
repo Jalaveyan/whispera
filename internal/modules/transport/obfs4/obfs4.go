@@ -8,6 +8,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"net"
@@ -74,9 +75,23 @@ func New(cfg *Config) (*Transport, error) {
 		cfg = DefaultConfig()
 	}
 
-	privKey, err := ecdh.X25519().GenerateKey(rand.Reader)
-	if err != nil {
-		return nil, fmt.Errorf("failed to generate keypair: %w", err)
+	var privKey *ecdh.PrivateKey
+	// Use provided private key if available (for stable server identity)
+	if cfg.PrivateKey != "" {
+		privBytes, err := hex.DecodeString(cfg.PrivateKey)
+		if err == nil {
+			privKey, err = ecdh.X25519().NewPrivateKey(privBytes)
+			if err != nil {
+				privKey = nil // fall through to generate
+			}
+		}
+	}
+	if privKey == nil {
+		var err error
+		privKey, err = ecdh.X25519().GenerateKey(rand.Reader)
+		if err != nil {
+			return nil, fmt.Errorf("failed to generate keypair: %w", err)
+		}
 	}
 
 	return &Transport{

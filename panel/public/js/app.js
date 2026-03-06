@@ -1537,6 +1537,9 @@ class WhisperaApp {
             e.preventDefault();
             this.handleAddInbound();
         });
+        document.querySelector('[name="transport"]')?.addEventListener('change', (e) => {
+            this.onInboundTransportChange(e.target.value);
+        });
 
         document.getElementById('add-outbound-btn')?.addEventListener('click', () => this.showModal('add-outbound-modal'));
         document.getElementById('add-outbound-form')?.addEventListener('submit', (e) => {
@@ -1748,10 +1751,67 @@ class WhisperaApp {
         }
     }
 
+    onInboundTransportChange(transport) {
+        const phantomTransports = new Set(['tcp', 'udp', 'ws', 'splithttp', 'httpupgrade', 'grpc', 'h2c']);
+        const paramsTransports = {
+            shadowtls:   { label: 'ShadowTLS параметры', hint: 'password, sni, version', placeholder: '{"password":"secret","sni":"www.apple.com","version":3}' },
+            shadowsocks: { label: 'Shadowsocks параметры', hint: 'password, method (aes-256-gcm / chacha20-poly1305)', placeholder: '{"password":"secret","method":"aes-256-gcm"}' },
+            obfs4:       { label: 'obfs4 параметры', hint: 'node_id, public_key, private_key (генерируются автоматически если пусто)', placeholder: '{}' },
+            tuic:        { label: 'TUIC параметры', hint: 'uuid, password, sni, congestion_control', placeholder: '{"uuid":"...","password":"secret","sni":"example.com"}' },
+            meek:        { label: 'Meek параметры', hint: 'url, front', placeholder: '{"url":"https://ajax.aspnetcdn.com/","front":"ajax.microsoft.com"}' },
+            domainfront: { label: 'Domain Fronting параметры', hint: 'front_domain, real_host', placeholder: '{"front_domain":"cdn.example.com","real_host":"real.example.com"}' },
+            tgbot:       { label: 'Telegram Bot параметры', hint: 'token, chat_id', placeholder: '{"token":"123:ABC...","chat_id":12345}' },
+            vkbot:       { label: 'VK Bot параметры', hint: 'token, group_id', placeholder: '{"token":"vk1.a...","group_id":12345}' },
+            vkwebrtc:    { label: 'VK WebRTC параметры', hint: 'token, group_id', placeholder: '{"token":"vk1.a...","group_id":12345}' },
+            okwebrtc:    { label: 'OK WebRTC параметры', hint: 'token', placeholder: '{"token":"..."}' },
+            yacloud:     { label: 'Yandex Cloud параметры', hint: 'bucket, folder_id, service_account_key', placeholder: '{"bucket":"my-bucket"}' },
+            yadisk:      { label: 'Yandex Disk параметры', hint: 'token, path', placeholder: '{"token":"y0_...","path":"/whispera"}' },
+            yatelemost:  { label: 'Yandex Telemost параметры', hint: 'conference_id', placeholder: '{"conference_id":"..."}' },
+            snowflake:   { label: 'Snowflake параметры', hint: 'broker_url, front_domain', placeholder: '{"broker_url":"https://snowflake-broker.torproject.net/"}' },
+            torsocks:    { label: 'Tor SOCKS параметры', hint: 'proxy_addr (обычно 127.0.0.1:9050)', placeholder: '{"proxy_addr":"127.0.0.1:9050"}' },
+        };
+        const sniGroup = document.getElementById('inbound-sni-group');
+        const paramsGroup = document.getElementById('inbound-params-group');
+        const paramsLabel = document.getElementById('inbound-params-label');
+        const paramsHint = document.getElementById('inbound-params-hint');
+        const paramsTA = document.querySelector('[name="params_json"]');
+        if (phantomTransports.has(transport)) {
+            sniGroup.style.display = '';
+            paramsGroup.style.display = 'none';
+        } else {
+            sniGroup.style.display = 'none';
+            paramsGroup.style.display = '';
+            const info = paramsTransports[transport] || { label: 'Параметры (JSON)', hint: '', placeholder: '{}' };
+            paramsLabel.textContent = info.label;
+            paramsHint.textContent = info.hint;
+            if (paramsTA) paramsTA.placeholder = info.placeholder;
+        }
+    }
+
     async handleAddInbound() {
         const form = document.getElementById('add-inbound-form');
-        const data = Object.fromEntries(new FormData(form));
-        data.port = parseInt(data.port);
+        const raw = Object.fromEntries(new FormData(form));
+        const transport = raw.transport || 'tcp';
+        const phantomTransports = new Set(['tcp', 'udp', 'ws', 'splithttp', 'httpupgrade', 'grpc', 'h2c']);
+        const usesPhantom = phantomTransports.has(transport);
+        const serverNames = raw.server_names
+            ? raw.server_names.split(',').map(s => s.trim()).filter(Boolean)
+            : [];
+        let params = {};
+        if (!usesPhantom && raw.params_json) {
+            try { params = JSON.parse(raw.params_json); } catch { params = {}; }
+        }
+        const data = {
+            tag: raw.tag,
+            protocol: raw.protocol,
+            port: parseInt(raw.port),
+            stream_settings: {
+                network: transport,
+                security: usesPhantom ? 'phantom' : 'none',
+                phantom: usesPhantom ? { server_names: serverNames } : undefined,
+                params: Object.keys(params).length > 0 ? params : undefined
+            }
+        };
 
         try {
             await api.addInbound(data);
@@ -1784,11 +1844,10 @@ class WhisperaApp {
 
         const rule = {
             type: data.type,
-            outboundTag: data.outboundTag,
+            condition: data.value,
+            outbound: data.outboundTag,
             priority: 0
         };
-        if (data.type === 'domain') rule.domain = data.value;
-        if (data.type === 'ip') rule.ip = data.value;
 
         try {
             await api.addRoutingRule(rule);
@@ -1802,7 +1861,13 @@ class WhisperaApp {
 
     async handleAddSubscription() {
         const form = document.getElementById('add-subscription-form');
-        const data = Object.fromEntries(new FormData(form));
+        const raw = Object.fromEntries(new FormData(form));
+        const data = {
+            name: raw.name,
+            transports: raw.transports
+                ? raw.transports.split(',').map(s => s.trim()).filter(Boolean)
+                : []
+        };
 
         try {
             await api.addSubscription(data);
@@ -2178,21 +2243,22 @@ class WhisperaApp {
             }
 
             tbody.innerHTML = subs.map(s => `
-    <tr>
+                <tr>
                     <td>${s.name}</td>
-                    <td>${s.url}</td>
-                    <td>${s.interval || '-'}</td>
-                    <td>${s.serverCount || 0}</td>
+                    <td style="max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
+                        <span title="${s.sub_url || ''}">${s.sub_url || '-'}</span>
+                    </td>
+                    <td>${(s.transports || []).join(', ') || 'все'}</td>
                     <td>
-                        <button class="btn btn-secondary btn-sm" onclick="app.updateSubscription('${s.id}')">
-                            <i class="fas fa-sync"></i>
+                        <button class="btn btn-secondary btn-sm" onclick="navigator.clipboard.writeText('${s.sub_url || ''}').then(()=>app.showNotification('URL скопирован','success'))" title="Копировать URL">
+                            <i class="fas fa-copy"></i>
                         </button>
                         <button class="btn btn-danger btn-sm" onclick="app.deleteSubscription('${s.id}')">
                             <i class="fas fa-trash"></i>
                         </button>
                     </td>
                 </tr>
-    `).join('');
+            `).join('');
         } catch (error) {
             tbody.innerHTML = '<tr><td colspan="5" class="text-center">Ошибка загрузки</td></tr>';
         }

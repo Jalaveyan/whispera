@@ -171,6 +171,13 @@ func (s *Server) registerDefaultRoutes() {
 	s.Handle("POST /api/subscriptions/delete", s.handleDeleteSubscription)
 	s.Handle("GET /sub/{token}", s.handleServeSubscription)
 
+	s.Handle("GET /api/adblock/stats", s.handleAdblockStats)
+	s.Handle("GET /api/adblock/rules", s.handleAdblockRules)
+	s.Handle("POST /api/adblock/rules/add", s.handleAdblockAddRule)
+	s.Handle("POST /api/adblock/rules/delete", s.handleAdblockDeleteRule)
+	s.Handle("POST /api/adblock/settings", s.handleAdblockSettings)
+	s.Handle("POST /api/v1/config/renew-cert", s.handleRenewCert)
+
 	s.Handle("GET /api/sessions", s.handleGetSessionsAPI)
 	s.Handle("GET /api/stats", s.handleGetStatsAPI)
 	s.Handle("GET /api/stats/traffic", s.handleTrafficStatsAPI)

@@ -4,9 +4,12 @@ import { UsersService } from './users.service';
 
 class CreateUserDto {
     email: string;
-    password: string;
+    password?: string;
     traffic_limit?: number;
     valid_until?: string;
+    obfs_profile?: string;
+    marionette_profile?: string;
+    russian_service?: string;
 }
 
 @Controller()
@@ -32,25 +35,35 @@ export class UsersController {
     ) {
         try {
             const token = auth?.replace('Bearer ', '');
-            const user = await this.usersService.createUser(token, dto.email, dto.password, dto.traffic_limit, dto.valid_until);
+            const user = await this.usersService.createUser(token, {
+                username: dto.email,
+                trafficLimit: dto.traffic_limit,
+                expiryDate: dto.valid_until,
+                obfsProfile: dto.obfs_profile,
+                marionetteProfile: dto.marionette_profile,
+                russianService: dto.russian_service,
+            });
             return res.json({ success: true, user });
         } catch {
             return res.status(HttpStatus.BAD_REQUEST).json({ success: false, error: 'Failed to create user' });
         }
     }
 
-    @Put('api/v2/users/:id')
+    @Put('api/users/:id')
     async updateUser(
         @Headers('authorization') auth: string,
         @Param('id') id: string,
-        @Body() body: { email: string; password?: string },
+        @Body() body: { email?: string; status?: string },
         @Res() res: Response,
     ) {
         try {
             const token = auth?.replace('Bearer ', '');
-            await this.usersService.updateUser(token, id, body.email, body.password);
-            return res.json({ success: true });
-        } catch (error) {
+            const user = await this.usersService.updateUser(token, id, {
+                username: body.email,
+                status: body.status,
+            });
+            return res.json({ success: true, user });
+        } catch {
             return res.status(HttpStatus.BAD_REQUEST).json({ success: false, error: 'Failed to update user' });
         }
     }

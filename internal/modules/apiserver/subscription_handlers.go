@@ -291,6 +291,13 @@ func buildServerList(cfg *config.ServerConfig, serverIP string, preferredTranspo
 			entry["ws_path"] = inbound.StreamSettings.WS.Path
 		}
 
+		// Include transport-specific params (password, sni, method, node_id, uuid, etc.)
+		for k, v := range inbound.StreamSettings.Params {
+			if _, exists := entry[k]; !exists {
+				entry[k] = v
+			}
+		}
+
 		servers = append(servers, entry)
 	}
 
