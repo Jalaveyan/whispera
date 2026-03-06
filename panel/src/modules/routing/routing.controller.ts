@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Put, Delete, Body, Param, Headers, Res, HttpStatus } from '@nestjs/common';
+import { Controller, Get, Post, Delete, Body, Param, Headers, Res, HttpStatus } from '@nestjs/common';
 import type { Response } from 'express';
 import { RoutingService, RoutingRule } from './routing.service';
 
@@ -29,22 +29,6 @@ export class RoutingController {
             return res.json({ success: true, rule: result });
         } catch {
             return res.status(HttpStatus.BAD_REQUEST).json({ success: false, error: 'Failed to add routing rule' });
-        }
-    }
-
-    @Put('api/routing/rules/:id')
-    async updateRule(
-        @Headers('authorization') auth: string,
-        @Param('id') id: string,
-        @Body() rule: Partial<RoutingRule>,
-        @Res() res: Response,
-    ) {
-        try {
-            const token = auth?.replace('Bearer ', '');
-            const result = await this.routingService.updateRule(token, id, rule);
-            return res.json({ success: true, rule: result });
-        } catch {
-            return res.status(HttpStatus.BAD_REQUEST).json({ success: false, error: 'Failed to update routing rule' });
         }
     }
 
