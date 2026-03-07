@@ -931,7 +931,8 @@ class WhisperaApp {
     init() {
         if (api.token) {
             this.showMainApp();
-            this.loadDashboard();
+            const savedPage = localStorage.getItem('whispera_page') || 'dashboard';
+            this.navigateTo(savedPage);
         } else {
             this.showLogin();
         }
@@ -1471,7 +1472,8 @@ class WhisperaApp {
             if (response.token) {
                 api.setToken(response.token);
                 this.showMainApp();
-                this.loadDashboard();
+                localStorage.setItem('whispera_page', 'dashboard');
+                this.navigateTo('dashboard');
                 this.showNotification('Welcome back, Commander.', 'success');
             } else {
                 throw new Error('Invalid credentials');
@@ -2175,6 +2177,7 @@ class WhisperaApp {
     }
 
     navigateTo(page) {
+        localStorage.setItem('whispera_page', page);
         if (this.threeCity) {
             this.threeCity.onNavigate(page);
         }
