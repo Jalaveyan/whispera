@@ -33,7 +33,7 @@ export interface ChartData {
 export class StatsService {
     private readonly logger = new Logger(StatsService.name);
     private readonly backendUrl: string;
-    private readonly requestTimeout = 10000; // 10s timeout
+    private readonly requestTimeout = 10000;
 
     constructor(
         private readonly httpService: HttpService,

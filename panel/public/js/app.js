@@ -2185,7 +2185,7 @@ class WhisperaApp {
     navigateTo(page) {
         localStorage.setItem('whispera_page', page);
         if (this.threeCity) {
-            this.threeCity.onNavigate(page);
+            try { this.threeCity.onNavigate(page); } catch (e) {}
         }
 
         document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'));
@@ -2210,7 +2210,9 @@ class WhisperaApp {
                 'settings': 'settings.title'
             };
             const key = titleMap[page] || 'page.dashboard.title';
-            document.getElementById('page-title').textContent = this.t(key);
+            const lang = localStorage.getItem('whispera_lang') || 'ru';
+            const dict = this.translations[lang] || this.translations['ru'];
+            document.getElementById('page-title').textContent = dict[key] || key;
             document.getElementById('page-title').dataset.i18n = key;
         }
 
