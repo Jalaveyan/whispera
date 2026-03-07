@@ -1041,8 +1041,10 @@ func (s *Server) handleGetUsers(w http.ResponseWriter, r *http.Request) {
 		users = append(users, u)
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(users)
+	s.jsonOK(w, map[string]interface{}{
+		"success": true,
+		"users":   users,
+	})
 }
 
 func (s *Server) handleAddUser(w http.ResponseWriter, r *http.Request) {
