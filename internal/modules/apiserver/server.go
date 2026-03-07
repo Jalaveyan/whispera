@@ -116,12 +116,7 @@ func New(cfg *Config) (*Server, error) {
 	loadUsers()
 	loadSubscriptions()
 
-	tokenBytes := make([]byte, 32)
-	if _, err := rand.Read(tokenBytes); err != nil {
-		return nil, fmt.Errorf("failed to generate session token: %w", err)
-	}
-	sessionToken := base64.StdEncoding.EncodeToString(tokenBytes)
-	log.Println("[API] Generated new session token on startup")
+	sessionToken := loadOrCreateSessionToken()
 
 	s := &Server{
 		Module:        base.NewModule(ModuleName, ModuleVersion, nil),
@@ -985,6 +980,31 @@ func GetRegisteredUsers() []RegisteredUser {
 		}
 	}
 	return result
+}
+
+const sessionTokenFile = "/etc/whispera/session.token"
+
+func loadOrCreateSessionToken() string {
+	data, err := os.ReadFile(sessionTokenFile)
+	if err == nil {
+		token := strings.TrimSpace(string(data))
+		if token != "" {
+			log.Println("[API] Loaded existing session token")
+			return token
+		}
+	}
+	tokenBytes := make([]byte, 32)
+	if _, err := rand.Read(tokenBytes); err != nil {
+		log.Printf("[API] Failed to generate session token: %v", err)
+		return base64.StdEncoding.EncodeToString([]byte("fallback-token"))
+	}
+	token := base64.StdEncoding.EncodeToString(tokenBytes)
+	if err := os.WriteFile(sessionTokenFile, []byte(token), 0600); err != nil {
+		log.Printf("[API] Warning: failed to save session token: %v", err)
+	} else {
+		log.Println("[API] Generated and saved new session token")
+	}
+	return token
 }
 
 func saveUsers() {
