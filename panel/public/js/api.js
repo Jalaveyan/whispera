@@ -236,22 +236,46 @@ class WhisperaAPI {
         return this.request('/api/bridges');
     }
 
+    // Прямой запрос к Go backend — возвращает полные BridgeInfo (is_alive, latency_ms, trust_level и т.д.)
+    async getBridgesAdmin() {
+        return this.request('/api/bridge-admin');
+    }
+
+    async getBridgeStats() {
+        return this.request('/api/bridge-stats');
+    }
+
+    async checkBridge(id) {
+        return this.request('/api/bridge-check', {
+            method: 'POST',
+            body: JSON.stringify({ id })
+        });
+    }
+
+    async getBridgeToken() {
+        return this.request('/api/bridge-token');
+    }
+
+    async regenerateBridgeToken() {
+        return this.request('/api/bridge-token-regenerate', { method: 'POST' });
+    }
+
     async addBridge(bridge) {
-        return this.request('/api/bridges', {
+        return this.request('/api/bridge-add', {
             method: 'POST',
             body: JSON.stringify(bridge)
         });
     }
 
     async deleteBridge(id) {
-        return this.request('/api/bridges/delete', {
+        return this.request('/api/bridge-delete', {
             method: 'POST',
             body: JSON.stringify({ id })
         });
     }
 
     async getBridgeCloudInit() {
-        return this.request('/api/bridges/cloudinit', {
+        return this.request('/api/bridge-cloudinit', {
             headers: { 'Accept': 'text/plain' }
         });
     }
@@ -308,6 +332,36 @@ class WhisperaAPI {
         });
     }
 
+    async getProbeStats() {
+        return this.request('/api/probe/stats');
+    }
+
+    async probeBlockIP(ip, reason) {
+        return this.request('/api/probe/block', {
+            method: 'POST',
+            body: JSON.stringify({ ip, reason })
+        });
+    }
+
+    async probeUnblockIP(ip) {
+        return this.request('/api/probe/unblock', {
+            method: 'POST',
+            body: JSON.stringify({ ip })
+        });
+    }
+
+    async updateStealthMode(mode) {
+        return this.request('/api/v1/config/update', {
+            method: 'POST',
+            body: JSON.stringify({ stealth_mode: mode })
+        });
+    }
+
+    async getStealthMode() {
+        const cfg = await this.request('/api/v1/config');
+        return cfg.stealth_mode || '';
+    }
+
     async renewCertificate() {
         return this.request('/api/v1/config/renew-cert', { method: 'POST' });
     }
@@ -324,15 +378,15 @@ class WhisperaAPI {
     }
 
     async getBackup() {
-        return this.request('/api/v1/config', { method: 'GET' });
+        return this.request('/api/backup', { method: 'GET' });
     }
 
     async restoreBackup(file) {
         const text = await file.text();
-        const config = JSON.parse(text);
-        return this.request('/api/v1/config/update', {
+        const backup = JSON.parse(text);
+        return this.request('/api/backup/restore', {
             method: 'POST',
-            body: JSON.stringify(config),
+            body: JSON.stringify(backup),
         });
     }
 }

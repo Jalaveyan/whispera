@@ -60,6 +60,7 @@ type ServerConfig struct {
 	UpstreamServer string             `yaml:"upstream_server" json:"upstream_server"`
 	Bridge         BridgeConfig       `yaml:"bridge" json:"bridge"`
 	VKRelay        VKRelayConfig      `yaml:"vk_relay" json:"vk_relay"`
+	StealthMode    string             `yaml:"stealth_mode" json:"stealth_mode"`
 	Cache          CacheConfig        `yaml:"cache" json:"cache"`
 	Database       DatabaseConfig     `yaml:"database" json:"database"`
 	Notifications  NotificationConfig `yaml:"notifications" json:"notifications"`

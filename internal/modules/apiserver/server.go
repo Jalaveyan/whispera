@@ -88,6 +88,7 @@ type Server struct {
 	mfaManager    *auth.MFAManager
 	bridgePool    *bridgepool.Registry
 	bridgeHandler *bridgepool.APIHandler
+	probeDetector interface{ Stats() map[string]interface{}; BlockIP(ip, reason string); UnblockIP(ip string) }
 
 	loginAttempts   map[string][]time.Time
 	loginAttemptsMu sync.Mutex
@@ -132,6 +133,7 @@ func New(cfg *Config) (*Server, error) {
 
 	s.registerDefaultRoutes()
 	go s.cpuSampler()
+	bridgeReg.StartHealthMonitor()
 
 	s.registerUserV2Routes()
 
@@ -198,6 +200,12 @@ func (s *Server) registerDefaultRoutes() {
 	s.Handle("POST /api/adblock/rules/delete", s.handleAdblockDeleteRule)
 	s.Handle("POST /api/adblock/settings", s.handleAdblockSettings)
 	s.Handle("POST /api/v1/config/renew-cert", s.handleRenewCert)
+	s.Handle("GET /api/firewall/status", s.handleFirewallStatus)
+	s.Handle("POST /api/firewall/rules", s.handleFirewallAddRule)
+	s.Handle("DELETE /api/firewall/rules", s.handleFirewallDeleteRule)
+	s.Handle("POST /api/firewall/toggle", s.handleFirewallToggle)
+	s.Handle("GET /api/backup", s.handleGetBackup)
+	s.Handle("POST /api/backup/restore", s.handleRestoreBackup)
 
 	s.Handle("GET /api/sessions", s.handleGetSessionsAPI)
 	s.Handle("POST /api/sessions/{id}/kill", s.handleKillSessionAPI)
@@ -218,6 +226,8 @@ func (s *Server) registerDefaultRoutes() {
 	s.Handle("GET /api/bridge-token", s.bridgeHandler.HandleGetRegistrationToken)
 	s.Handle("POST /api/bridge-token-regenerate", s.bridgeHandler.HandleRegenerateToken)
 	s.Handle("GET /api/bridge-cloudinit", s.bridgeHandler.HandleGetCloudInit)
+	s.Handle("GET /api/bridge-stats", s.handleBridgeStats)
+	s.Handle("POST /api/bridge-check", s.handleBridgeCheck)
 }
 
 func (s *Server) Init(ctx context.Context, cfg interfaces.ModuleConfig) error {
@@ -678,12 +688,23 @@ func (s *Server) handleModules(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
-	s.jsonOK(w, map[string]interface{}{
+	resp := map[string]interface{}{
 		"api": map[string]interface{}{
 			"listen_addr": s.config.ListenAddr,
 			"cors":        s.config.EnableCORS,
 		},
-	})
+	}
+
+	if s.registry != nil {
+		if module, ok := s.registry.Get("config.provider"); ok {
+			if cfgProvider, ok := module.(*config.Provider); ok {
+				cfg := cfgProvider.GetConfig()
+				resp["stealth_mode"] = cfg.StealthMode
+			}
+		}
+	}
+
+	s.jsonOK(w, resp)
 }
 
 func (s *Server) handleReloadConfig(w http.ResponseWriter, r *http.Request) {
@@ -720,6 +741,7 @@ func (s *Server) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 			DefaultMarionette string `json:"defaultMarionette"`
 			AutoProfile       bool   `json:"autoProfile"`
 		} `json:"obfuscation"`
+		StealthMode string `json:"stealth_mode"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -757,6 +779,7 @@ func (s *Server) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 		if req.Obfuscation.DefaultProfile != "" {
 			cfg.Obfuscation.Profile = req.Obfuscation.DefaultProfile
 		}
+		cfg.StealthMode = req.StealthMode
 	})
 
 	if err != nil {

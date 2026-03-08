@@ -1224,24 +1224,103 @@ EOF
 generate_panel_cert() {
     local CERT="$CONF_PATH/panel.crt"
     local KEY="$CONF_PATH/panel.key"
+    local SERVER_IP
+    SERVER_IP=$(get_public_ip)
 
     if [[ -f "$CERT" && -f "$KEY" ]]; then
         log_info "Panel TLS cert already exists, skipping generation"
         return
     fi
 
-    log_info "Generating self-signed TLS certificate for panel..."
+    log_info "Generating self-signed TLS certificate for panel (CN=whispera-ui)..."
     if command -v openssl &>/dev/null; then
         openssl req -x509 -newkey rsa:2048 -nodes \
             -keyout "$KEY" -out "$CERT" \
-            -days 3650 -subj "/CN=whispera-panel" \
-            -extensions v3_req \
-            -addext "subjectAltName=IP:127.0.0.1" \
+            -days 3650 -subj "/CN=whispera-ui" \
+            -addext "subjectAltName=DNS:whispera-ui,IP:127.0.0.1,IP:${SERVER_IP}" \
             2>/dev/null
         chmod 600 "$KEY"
         log_success "Panel TLS cert generated: $CERT"
     else
         log_warn "openssl not found — panel will run without HTTPS"
+    fi
+}
+
+setup_nginx_proxy() {
+    local SERVER_IP
+    SERVER_IP=$(get_public_ip)
+    local CERT="$CONF_PATH/panel.crt"
+    local KEY="$CONF_PATH/panel.key"
+
+    # Install nginx if missing
+    if ! command -v nginx &>/dev/null; then
+        log_info "Installing nginx..."
+        if command -v apt-get &>/dev/null; then
+            apt-get install -y nginx >/dev/null 2>&1
+        elif command -v yum &>/dev/null; then
+            yum install -y nginx >/dev/null 2>&1
+        else
+            log_warn "Cannot install nginx — package manager not found"
+            return
+        fi
+    fi
+
+    # Add whispera-ui to /etc/hosts
+    if ! grep -q "whispera-ui" /etc/hosts; then
+        echo "127.0.0.1 whispera-ui" >> /etc/hosts
+        log_info "Added whispera-ui to /etc/hosts"
+    fi
+
+    # Write nginx config
+    cat > /etc/nginx/sites-available/whispera-ui <<NGINX
+server {
+    listen 80;
+    server_name whispera-ui ${SERVER_IP};
+    return 301 https://\$host\$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    server_name whispera-ui ${SERVER_IP};
+
+    ssl_certificate     ${CERT};
+    ssl_certificate_key ${KEY};
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_ciphers         HIGH:!aNULL:!MD5;
+
+    location / {
+        proxy_pass         https://127.0.0.1:3000;
+        proxy_ssl_verify   off;
+        proxy_set_header   Host \$host;
+        proxy_set_header   X-Forwarded-For \$remote_addr;
+        proxy_set_header   X-Forwarded-Host \$host;
+        proxy_set_header   X-Forwarded-Proto https;
+        proxy_http_version 1.1;
+        proxy_set_header   Upgrade \$http_upgrade;
+        proxy_set_header   Connection "upgrade";
+    }
+}
+NGINX
+
+    # Enable site
+    mkdir -p /etc/nginx/sites-enabled
+    ln -sf /etc/nginx/sites-available/whispera-ui /etc/nginx/sites-enabled/whispera-ui
+
+    # Disable default site if present
+    rm -f /etc/nginx/sites-enabled/default
+
+    # Open ports
+    if command -v ufw &>/dev/null; then
+        ufw allow 80/tcp >/dev/null 2>&1 || true
+        ufw allow 443/tcp >/dev/null 2>&1 || true
+    fi
+
+    if nginx -t 2>/dev/null; then
+        systemctl enable nginx >/dev/null 2>&1
+        systemctl restart nginx
+        log_success "Nginx reverse proxy configured: https://whispera-ui/"
+    else
+        log_warn "Nginx config test failed — check /etc/nginx/sites-available/whispera-ui"
     fi
 }
 
@@ -1446,6 +1525,7 @@ main() {
     setup_firewall
     generate_panel_cert
     setup_systemd
+    setup_nginx_proxy
     
     local PG_PASS=""
     local ADMIN_PASS=""
@@ -1462,10 +1542,13 @@ main() {
     echo ""
     echo -e "  Manage:         ${GREEN}whispera-mgmt${PLAIN}"
     echo -e "  Config:         ${GREEN}$CONF_PATH/config.yaml${PLAIN}"
-    local PANEL_PROTO="http"
-    [[ -f "$CONF_PATH/panel.crt" ]] && PANEL_PROTO="https"
-    echo -e "  Web Panel:      ${GREEN}${PANEL_PROTO}://$(get_public_ip):3000${PLAIN}"
-    [[ "$PANEL_PROTO" == "https" ]] && echo -e "  ${YELLOW}(самоподписанный сертификат — в браузере нажмите «Продолжить»)${PLAIN}"
+    local SERVER_IP
+    SERVER_IP=$(get_public_ip)
+    echo -e "  Web Panel:      ${GREEN}https://whispera-ui/${PLAIN}"
+    echo -e "  (или напрямую: ${GREEN}https://${SERVER_IP}:3000/${PLAIN})"
+    echo -e "  ${YELLOW}Чтобы открыть панель по имени, добавьте на своём компьютере:${PLAIN}"
+    echo -e "  ${GREEN}${SERVER_IP} whispera-ui${PLAIN}  → в файл /etc/hosts (Linux/Mac) или C:\\Windows\\System32\\drivers\\etc\\hosts (Windows)"
+    echo -e "  ${YELLOW}(самоподписанный сертификат — в браузере нажмите «Продолжить»)${PLAIN}"
     echo ""
     echo -e "  ${YELLOW}Admin User:${PLAIN}     admin"
     echo -e "  ${YELLOW}Admin Password:${PLAIN} ${GREEN}$ADMIN_PASS${PLAIN}"

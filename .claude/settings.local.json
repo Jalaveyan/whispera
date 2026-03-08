@@ -137,7 +137,16 @@
       "Bash(xargs grep -l \"time.Sleep\\\\|time.After\\\\|ticker\\\\|select\\\\|chan\\\\|Ticker\")",
       "Bash(grep -n \"NumWorkers\\\\|workerPool\\\\|New.*Pool\\\\|NewDecrypt\\\\|NewEncrypt\" c:/Whispera-test/internal/crypto/crypt/*.go)",
       "Bash(grep -n \"go.*Start\\\\|go.*loop\\\\|go.*Loop\\\\|go.*Run\\\\b\\\\|go.*sampler\\\\|go.*worker\\\\|go.*goroutine\" c:/Whispera-test/internal/modules/obfuscator/*.go)",
-      "Bash(grep -n \"WorkerPool\\\\|func.*WorkerPool\\\\|func.*worker\" c:/Whispera-test/internal/core/base/*.go)"
+      "Bash(grep -n \"WorkerPool\\\\|func.*WorkerPool\\\\|func.*worker\" c:/Whispera-test/internal/core/base/*.go)",
+      "Bash(go build ./internal/modules/apiserver/...)",
+      "Bash(grep -E \"\\\\.\\(go|yaml\\)$\")",
+      "Bash(go build ./internal/modules/config/...)",
+      "Bash(go build ./internal/modules/dataplane/...)",
+      "Bash(grep -E \"\\\\.\\(go\\)$\")",
+      "Bash(xargs grep -l \"detect\\\\|Detection\")",
+      "Bash(go build ./internal/modules/probedetector/...)",
+      "Bash(go build ./internal/modules/phantom/...)",
+      "Bash(grep -n \"case ''outbounds''\\\\|case ''routing''\\\\|case ''settings''\\\\|case ''subscriptions''\\\\|loadOutbounds\\\\|loadSettings\\\\|navigateTo\\\\|loadPage\" c:/Whispera-test/panel/public/js/app.js)"
     ]
   }
 }

@@ -128,6 +128,26 @@ export class SystemService {
         return response.data;
     }
 
+    async getBackup(token: string): Promise<any> {
+        const response = await firstValueFrom(
+            this.httpService.get(`${this.backendUrl}/api/backup`, {
+                headers: { Authorization: `Bearer ${token}` },
+                timeout: 30000,
+            }),
+        );
+        return response.data;
+    }
+
+    async restoreBackup(token: string, backup: any): Promise<any> {
+        const response = await firstValueFrom(
+            this.httpService.post(`${this.backendUrl}/api/backup/restore`, backup, {
+                headers: { Authorization: `Bearer ${token}` },
+                timeout: 30000,
+            }),
+        );
+        return response.data;
+    }
+
     async getHealth(): Promise<any> {
         try {
             const response = await firstValueFrom(

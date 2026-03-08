@@ -16,6 +16,7 @@ import { SubscriptionsModule } from './modules/subscriptions/subscriptions.modul
 import { AdblockModule } from './modules/adblock/adblock.module';
 import { LogsModule } from './modules/logs/logs.module';
 import { UploadModule } from './modules/upload/upload.module';
+import { FirewallModule } from './modules/firewall/firewall.module';
 
 @Module({
   imports: [
@@ -37,6 +38,7 @@ import { UploadModule } from './modules/upload/upload.module';
     AdblockModule,
     LogsModule,
     UploadModule,
+    FirewallModule,
   ],
 })
 export class AppModule { }

@@ -246,22 +246,17 @@ func (s *Selector) calculateScore(t interfaces.TransportType, m *TransportMetric
 	var score float64
 
 	stealthScores := map[interfaces.TransportType]float64{
-		// Direct transports — visible to DPI
 		interfaces.TransportUDP:       0.3,
 		interfaces.TransportTCP:       0.6,
 		interfaces.TransportQUIC:      0.7,
 		interfaces.TransportH2C:       0.8,
 		interfaces.TransportWebSocket: 0.8,
 		interfaces.TransportXHTTP:     0.9,
-		// Russian-service relay — traffic looks like legit Russian service
 		interfaces.TransportVKVideo:   0.95,
 		interfaces.TransportOKWebRTC:  0.95,
-		// Bot API relays — traffic indistinguishable from app API calls
 		interfaces.TransportVKBot:     0.97,
 		interfaces.TransportTGBot:     0.97,
-		// CDN Worker — traffic to Cloudflare/Vercel, impossible to block selectively
 		interfaces.TransportCDNWorker: 0.98,
-		// VK WebRTC — encrypted DTLS over TURN, looks like video call
 		interfaces.TransportVKWebRTC:  0.99,
 		interfaces.TransportYaTelemost: 0.99,
 	}
@@ -276,8 +271,8 @@ func (s *Selector) calculateScore(t interfaces.TransportType, m *TransportMetric
 		interfaces.TransportVKWebRTC:  0.6,
 		interfaces.TransportYaTelemost: 0.55,
 		interfaces.TransportOKWebRTC:  0.6,
-		interfaces.TransportCDNWorker: 0.65, // +20-50ms CDN edge
-		interfaces.TransportVKBot:     0.3,  // LP polling latency ~500ms
+		interfaces.TransportCDNWorker: 0.65,
+		interfaces.TransportVKBot:     0.3,
 		interfaces.TransportTGBot:     0.3,
 		interfaces.TransportVKVideo:   0.5,
 	}
@@ -289,12 +284,12 @@ func (s *Selector) calculateScore(t interfaces.TransportType, m *TransportMetric
 		interfaces.TransportWebSocket: 0.75,
 		interfaces.TransportH2C:       0.8,
 		interfaces.TransportXHTTP:     0.7,
-		interfaces.TransportVKWebRTC:  0.7,  // ~15 Mbps via TURN (3 tracks)
+		interfaces.TransportVKWebRTC:  0.7,
 		interfaces.TransportYaTelemost: 0.65,
 		interfaces.TransportOKWebRTC:  0.7,
 		interfaces.TransportCDNWorker: 0.75,
-		interfaces.TransportVKBot:     0.15, // ~60 KB/s
-		interfaces.TransportTGBot:     0.15, // ~60 KB/s
+		interfaces.TransportVKBot:     0.15,
+		interfaces.TransportTGBot:     0.15,
 		interfaces.TransportVKVideo:   0.6,
 	}
 
@@ -305,11 +300,11 @@ func (s *Selector) calculateScore(t interfaces.TransportType, m *TransportMetric
 		interfaces.TransportH2C:       0.95,
 		interfaces.TransportXHTTP:     0.85,
 		interfaces.TransportUDP:       0.7,
-		interfaces.TransportCDNWorker: 0.95, // CDN infra is highly reliable
+		interfaces.TransportCDNWorker: 0.95,
 		interfaces.TransportVKWebRTC:  0.85,
 		interfaces.TransportYaTelemost: 0.8,
 		interfaces.TransportOKWebRTC:  0.85,
-		interfaces.TransportVKBot:     0.9,  // HTTP API — very reliable
+		interfaces.TransportVKBot:     0.9,
 		interfaces.TransportTGBot:     0.9,
 		interfaces.TransportVKVideo:   0.8,
 	}

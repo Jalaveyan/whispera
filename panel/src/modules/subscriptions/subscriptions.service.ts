@@ -31,11 +31,15 @@ export class SubscriptionsService {
         this.backendUrl = this.configService.get('BACKEND_URL') || 'http://localhost:8080';
     }
 
-    async getSubscriptions(token: string): Promise<Subscription[]> {
+    async getSubscriptions(token: string, host = '', proto = 'https'): Promise<Subscription[]> {
         try {
             const response = await firstValueFrom(
                 this.httpService.get(`${this.backendUrl}/api/subscriptions`, {
-                    headers: { Authorization: `Bearer ${token}` },
+                    headers: {
+                        Authorization: `Bearer ${token}`,
+                        'X-Forwarded-Host': host,
+                        'X-Forwarded-Proto': proto,
+                    },
                 }),
             );
             return response.data.subscriptions || response.data || [];
@@ -45,12 +49,18 @@ export class SubscriptionsService {
         }
     }
 
-    async addSubscription(token: string, dto: CreateSubscriptionDto): Promise<Subscription> {
+    async addSubscription(token: string, dto: CreateSubscriptionDto, host = '', proto = 'https'): Promise<Subscription> {
         const response = await firstValueFrom(
             this.httpService.post(
                 `${this.backendUrl}/api/subscriptions/add`,
                 dto,
-                { headers: { Authorization: `Bearer ${token}` } },
+                {
+                    headers: {
+                        Authorization: `Bearer ${token}`,
+                        'X-Forwarded-Host': host,
+                        'X-Forwarded-Proto': proto,
+                    },
+                },
             ),
         );
         return response.data.subscription;

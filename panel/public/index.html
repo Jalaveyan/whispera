@@ -4,7 +4,10 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Whispera Admin</title>
+    <title>whispera-ui</title>
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0%25' y1='0%25' x2='100%25' y2='0%25'%3E%3Cstop offset='0%25' stop-color='%2300e5ff'/%3E%3Cstop offset='100%25' stop-color='%23c800ff'/%3E%3C/linearGradient%3E%3Cfilter id='glow'%3E%3CfeGaussianBlur stdDeviation='2' result='blur'/%3E%3CfeMerge%3E%3CfeMergeNode in='blur'/%3E%3CfeMergeNode in='SourceGraphic'/%3E%3C/feMerge%3E%3C/filter%3E%3C/defs%3E%3Crect width='64' height='64' rx='10' fill='%2307080f'/%3E%3Ctext x='50%25' y='52%25' dominant-baseline='middle' text-anchor='middle' font-family='Arial Black,sans-serif' font-weight='900' font-size='38' fill='url(%23g)' filter='url(%23glow)'%3EW%3C/text%3E%3C/svg%3E">
+    <link rel="shortcut icon" type="image/svg+xml" href="/favicon.svg">
+    <link rel="apple-touch-icon" href="/favicon.svg">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <link rel="stylesheet" href="/css/style.css">
     <link rel="stylesheet" href="/css/custom-bg.css">
@@ -70,7 +73,7 @@
             <div class="cyber-card-inner"></div>
             <div class="login-container">
                 <div class="login-header">
-                    <h1 class="cyber-logo-text flicker">Whispera</h1>
+                    <img src="/logo.svg" alt="Whispera" style="width:220px;height:auto;margin-bottom:4px;">
                     <p data-i18n="common.login_desc">Management panel</p>
                 </div>
                 <form id="login-form" class="login-form" onsubmit="event.preventDefault(); app.handleLogin();">
@@ -93,7 +96,7 @@
     <div id="main-app" class="screen">
         <nav class="sidebar">
             <div class="sidebar-header">
-                <span class="cyber-logo-text">Whispera</span>
+                <img src="/logo.svg" alt="Whispera" style="width:150px;height:auto;">
             </div>
             <ul class="nav-menu">
                 <li class="nav-item active" data-page="dashboard">
@@ -119,6 +122,10 @@
                 <li class="nav-item" data-page="routing">
                     <i class="fas fa-route"></i>
                     <span data-i18n="nav.routing">Маршрутизация</span>
+                </li>
+                <li class="nav-item" data-page="bridges">
+                    <i class="fas fa-network-wired"></i>
+                    <span>Мосты</span>
                 </li>
                 <li class="nav-item" data-page="subscriptions">
                     <i class="fas fa-rss"></i>
@@ -375,13 +382,14 @@
                                 <th data-i18n="table.header.tag">Тег</th>
                                 <th data-i18n="table.header.type">Тип</th>
                                 <th data-i18n="table.header.address">Адрес</th>
+                                <th>Multi-hop</th>
                                 <th data-i18n="table.header.latency">Латентность</th>
                                 <th data-i18n="table.header.actions">Действия</th>
                             </tr>
                         </thead>
                         <tbody id="outbounds-table-body">
                             <tr>
-                                <td colspan="5" class="text-center">
+                                <td colspan="6" class="text-center">
                                     <div style="display: flex; flex-direction: column; align-items: center; gap: 12px;">
                                         <i class="fas fa-server" style="font-size: 32px; opacity: 0.3;"></i>
                                         <span data-i18n="table.empty.outbounds">Нет исходящих серверов</span>
@@ -424,6 +432,89 @@
                     </table>
                 </div>
             </section>
+
+            <!-- ===== BRIDGES PAGE ===== -->
+            <section id="page-bridges" class="page">
+                <div class="page-header" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;">
+                    <h2><i class="fas fa-network-wired" style="margin-right:8px;"></i>Мосты</h2>
+                    <div style="display:flex;gap:8px;align-items:center;">
+                        <span id="bridges-auto-refresh-badge" style="font-size:0.78em;color:var(--md-sys-color-on-surface-variant);"></span>
+                        <button id="bridges-refresh-btn" class="btn btn-secondary btn-sm">
+                            <i class="fas fa-sync-alt"></i> Обновить
+                        </button>
+                        <button id="bridges-add-btn" class="btn btn-primary btn-sm">
+                            <i class="fas fa-plus"></i> Добавить мост
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Stats row -->
+                <div class="stats-grid" style="margin-bottom:20px;">
+                    <div class="stat-card">
+                        <div class="stat-label">Всего мостов</div>
+                        <div class="stat-value" id="bstat-total">—</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-label" style="color:#4ade80;">Активных</div>
+                        <div class="stat-value" id="bstat-alive" style="color:#4ade80;">—</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-label" style="color:#f87171;">Недоступных</div>
+                        <div class="stat-value" id="bstat-dead" style="color:#f87171;">—</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-label">Средняя задержка</div>
+                        <div class="stat-value" id="bstat-latency">—</div>
+                    </div>
+                </div>
+
+                <!-- Bridge table -->
+                <div class="card">
+                    <div class="card-body" style="padding:0;overflow-x:auto;">
+                        <table class="data-table" id="bridges-table">
+                            <thead>
+                                <tr>
+                                    <th style="width:36px;"></th>
+                                    <th>ID</th>
+                                    <th>Адрес</th>
+                                    <th>Регион</th>
+                                    <th>Тип</th>
+                                    <th>Задержка</th>
+                                    <th>Доверие</th>
+                                    <th>Последняя проверка</th>
+                                    <th style="width:80px;"></th>
+                                </tr>
+                            </thead>
+                            <tbody id="bridges-tbody">
+                                <tr><td colspan="9" style="text-align:center;color:#555;padding:32px;">Загрузка...</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Registration token card -->
+                <div class="card" style="margin-top:20px;">
+                    <div class="card-header">
+                        <div class="card-title"><i class="fas fa-key"></i> Токен регистрации мостов</div>
+                    </div>
+                    <div class="card-body">
+                        <p style="color:var(--md-sys-color-on-surface-variant);font-size:0.87em;margin-bottom:12px;">
+                            Передайте этот токен при установке нового моста через <code>install-bridge.sh</code>.
+                            Мост автоматически зарегистрируется и появится в таблице выше.
+                        </p>
+                        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+                            <code id="bridge-reg-token" style="flex:1;background:rgba(0,0,0,0.2);padding:8px 12px;border-radius:6px;font-size:0.9em;word-break:break-all;">загрузка...</code>
+                            <button id="bridge-copy-token-btn" class="btn btn-secondary btn-sm" title="Скопировать">
+                                <i class="fas fa-copy"></i>
+                            </button>
+                            <button id="bridge-regen-token-btn" class="btn btn-danger btn-sm" title="Перегенерировать токен">
+                                <i class="fas fa-redo"></i> Новый токен
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </section>
+            <!-- ===== END BRIDGES PAGE ===== -->
 
             <section id="page-subscriptions" class="page">
                 <div class="page-header">
@@ -529,6 +620,30 @@
                 </div>
 
                 <div class="dashboard-grid">
+                    <div class="card" style="grid-column: 1 / -1;">
+                        <div class="card-header">
+                            <div class="card-title"><i class="fas fa-shield-virus"></i> Режим обхода блокировок</div>
+                        </div>
+                        <div class="card-body">
+                            <p style="color:var(--md-sys-color-on-surface-variant);margin-bottom:16px;font-size:0.9em;">
+                                Выберите стратегию обхода DPI/блокировок для клиентских подключений. В режиме <b>Россия</b> приоритет отдаётся транспортам через инфраструктуру ВКонтакте и Яндекса, которые технически невозможно заблокировать без масштабных коллатеральных потерь.
+                            </p>
+                            <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:center;">
+                                <div class="form-group" style="margin:0;min-width:260px;">
+                                    <label for="stealth-mode-select">Стратегия транспорта</label>
+                                    <select id="stealth-mode-select" style="width:100%;">
+                                        <option value="">Авто (оптимальный)</option>
+                                        <option value="russia">Россия — ВК / Яндекс приоритет</option>
+                                    </select>
+                                </div>
+                                <div id="stealth-mode-hint" style="padding:10px 14px;border-radius:8px;font-size:0.85em;background:rgba(99,102,241,0.08);border:1px solid rgba(99,102,241,0.2);color:var(--md-sys-color-on-surface-variant);max-width:420px;"></div>
+                            </div>
+                            <button type="button" id="save-stealth-mode-btn" class="btn btn-primary" style="margin-top:16px;">
+                                <i class="fas fa-save"></i> Сохранить режим
+                            </button>
+                        </div>
+                    </div>
+
                     <div class="card">
                         <div class="card-header">
                             <div class="card-title"><i class="fas fa-server"></i> <span
@@ -613,6 +728,39 @@
                                         data-i18n="settings.security.firewall">Управление Firewall</span>
                                 </button>
                             </div>
+                        </div>
+                    </div>
+
+                    <div class="card">
+                        <div class="card-header" style="display:flex;justify-content:space-between;align-items:center;">
+                            <div class="card-title"><i class="fas fa-user-secret"></i> Защита от активного зондирования</div>
+                            <button id="probe-refresh-btn" class="btn btn-secondary btn-sm" title="Обновить">
+                                <i class="fas fa-sync-alt"></i>
+                            </button>
+                        </div>
+                        <div class="card-body">
+                            <div id="probe-stats" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:12px;margin-bottom:16px;">
+                                <div class="stat-item"><span class="stat-label">Заблокировано IP</span><span class="stat-value" id="probe-stat-blocked">—</span></div>
+                                <div class="stat-item"><span class="stat-label">Под наблюдением</span><span class="stat-value" id="probe-stat-tracked">—</span></div>
+                                <div class="stat-item"><span class="stat-label">DNS-knock</span><span class="stat-value" id="probe-stat-dns">—</span></div>
+                                <div class="stat-item"><span class="stat-label">SNI-ownership</span><span class="stat-value" id="probe-stat-sni">—</span></div>
+                            </div>
+                            <div style="display:flex;gap:8px;margin-bottom:12px;">
+                                <input type="text" id="probe-block-ip" placeholder="IP для блокировки" style="flex:1;">
+                                <button id="probe-block-btn" class="btn btn-danger btn-sm">
+                                    <i class="fas fa-ban"></i> Заблокировать
+                                </button>
+                            </div>
+                            <div style="display:flex;gap:8px;">
+                                <input type="text" id="probe-unblock-ip" placeholder="IP для разблокировки" style="flex:1;">
+                                <button id="probe-unblock-btn" class="btn btn-secondary btn-sm">
+                                    <i class="fas fa-unlock"></i> Разблокировать
+                                </button>
+                            </div>
+                            <p style="color:var(--md-sys-color-on-surface-variant);font-size:0.8em;margin-top:12px;">
+                                После <b>5 неудачных</b> попыток Phantom-аутентификации IP блокируется на 30 мин.
+                                Не-TLS трафик и ошибки чтения ClientHello тоже засчитываются как провал.
+                            </p>
                         </div>
                     </div>
 
@@ -820,6 +968,48 @@
         </div>
     </div>
 
+    <!-- Add Bridge Modal -->
+    <div id="add-bridge-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Добавить мост</h3>
+                <button class="modal-close modal-close-icon">&times;</button>
+            </div>
+            <form id="add-bridge-form" class="modal-form">
+                <div class="form-group">
+                    <label>Адрес <small style="color:#888;">(host:port)</small></label>
+                    <input type="text" name="address" required placeholder="1.2.3.4:443">
+                </div>
+                <div class="form-group">
+                    <label>Регион</label>
+                    <input type="text" name="region" placeholder="EU, RU, US...">
+                </div>
+                <div class="form-group">
+                    <label>Провайдер</label>
+                    <input type="text" name="provider" placeholder="hetzner, vk-cloud...">
+                </div>
+                <div class="form-group">
+                    <label>Тип</label>
+                    <select name="type">
+                        <option value="operator">Operator (trust 100)</option>
+                        <option value="user" selected>User (trust 75)</option>
+                        <option value="community">Community (trust 50)</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>Публичный ключ <small style="color:#888;">(необязательно)</small></label>
+                    <input type="text" name="public_key" placeholder="base64...">
+                </div>
+                <div style="display:flex;gap:8px;margin-top:16px;">
+                    <button type="submit" class="btn btn-primary">
+                        <i class="fas fa-plus"></i> Добавить
+                    </button>
+                    <button type="button" class="btn btn-secondary modal-close">Отмена</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
     <div id="add-inbound-modal" class="modal">
         <div class="modal-content">
             <div class="modal-header">
@@ -912,17 +1102,26 @@
                     <label data-i18n="modal.common.protocol">Протокол</label>
                     <select name="protocol">
                         <option value="whispera">Whispera</option>
+                        <option value="socks5">SOCKS5</option>
+                        <option value="http">HTTP CONNECT</option>
                         <option value="freedom">Direct (Freedom)</option>
                         <option value="blackhole">Block (Blackhole)</option>
                     </select>
                 </div>
                 <div class="form-group">
                     <label data-i18n="modal.common.address">Адрес</label>
-                    <input type="text" name="address" placeholder="example.com">
+                    <input type="text" name="address" placeholder="1.2.3.4:8080">
                 </div>
-                <div class="form-group">
-                    <label data-i18n="modal.common.port">Порт</label>
-                    <input type="number" name="port" placeholder="443">
+                <div class="form-group" id="outbound-chain-group">
+                    <label>Multi-hop цепочка</label>
+                    <input type="text" name="chain" id="outbound-chain-input"
+                        placeholder="тег или bridge:id, через запятую"
+                        autocomplete="off" list="outbound-chain-datalist">
+                    <datalist id="outbound-chain-datalist"></datalist>
+                    <div id="outbound-chain-bridges" style="margin-top:6px;display:flex;flex-wrap:wrap;gap:4px;"></div>
+                    <small style="color:#888;font-size:11px;margin-top:4px;display:block;">
+                        Трафик пройдёт через указанные узлы. Нажмите на мост чтобы добавить в цепочку.
+                    </small>
                 </div>
                 <div class="modal-footer">
                     <button type="button" class="btn btn-secondary modal-close"

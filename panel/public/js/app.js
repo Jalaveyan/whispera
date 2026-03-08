@@ -10,9 +10,6 @@ class ThreeCity {
 
         if (!EffectComposer || !RenderPass) {
             console.error("❌ Three.js Post-processing classes MISSING!");
-            document.title = "ERR: Three.js Modules";
-        } else {
-            document.title = "Whispera: 3D City Active";
         }
 
         this.renderer = new THREE.WebGLRenderer({
@@ -750,6 +747,7 @@ class WhisperaApp {
                 "table.header.count": "Серверов",
                 "table.empty.subscriptions": "Нет активных подписок",
 
+                "page.bridges.title": "Мониторинг мостов",
                 "page.adblock.title": "Блокировщик рекламы",
                 "page.adblock.total": "Всего заблокировано",
                 "page.adblock.dns": "DNS",
@@ -912,6 +910,7 @@ class WhisperaApp {
                 "table.header.count": "Servers",
                 "table.empty.subscriptions": "No active subscriptions",
 
+                "page.bridges.title": "Bridge Monitor",
                 "page.adblock.title": "AdBlock",
                 "page.adblock.total": "Total Blocked",
                 "page.adblock.dns": "DNS",
@@ -1552,6 +1551,61 @@ class WhisperaApp {
             }
         });
 
+        // Bridges page
+        document.getElementById('bridges-refresh-btn')?.addEventListener('click', () => {
+            this._fetchBridgeStats();
+            this._fetchBridgeList();
+        });
+        document.getElementById('bridges-add-btn')?.addEventListener('click', () => this.showModal('add-bridge-modal'));
+        document.getElementById('add-bridge-form')?.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const fd = new FormData(e.target);
+            const submitBtn = e.target.querySelector('button[type="submit"]');
+            const origHtml = submitBtn.innerHTML;
+            submitBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Проверка...';
+            submitBtn.disabled = true;
+            try {
+                const res = await api.addBridge({
+                    address:    fd.get('address'),
+                    region:     fd.get('region'),
+                    provider:   fd.get('provider'),
+                    type:       fd.get('type'),
+                    public_key: fd.get('public_key'),
+                });
+                this.closeModals();
+                e.target.reset();
+                // Show real health status from the immediate check
+                if (res && res.is_alive) {
+                    this.showNotification(`Мост добавлен ✓ доступен (${res.latency_ms} мс)`, 'success');
+                } else if (res && res.id) {
+                    this.showNotification('Мост добавлен, но недоступен — проверьте адрес', 'warning');
+                } else {
+                    this.showNotification('Мост добавлен', 'success');
+                }
+                await Promise.all([this._fetchBridgeStats(), this._fetchBridgeList()]);
+            } catch (err) {
+                this.showNotification('Ошибка: ' + err.message, 'error');
+            } finally {
+                submitBtn.innerHTML = origHtml;
+                submitBtn.disabled = false;
+            }
+        });
+        document.getElementById('bridge-copy-token-btn')?.addEventListener('click', () => {
+            const token = document.getElementById('bridge-reg-token')?.textContent;
+            if (token) navigator.clipboard.writeText(token).then(() => this.showNotification('Токен скопирован', 'success'));
+        });
+        document.getElementById('bridge-regen-token-btn')?.addEventListener('click', async () => {
+            if (!await this.showConfirm('Перегенерировать токен? Все мосты потеряют связь до обновления.')) return;
+            try {
+                const data = await api.regenerateBridgeToken();
+                const el = document.getElementById('bridge-reg-token');
+                if (el) el.textContent = data.token || '—';
+                this.showNotification('Токен обновлён', 'success');
+            } catch (e) {
+                this.showNotification('Ошибка: ' + e.message, 'error');
+            }
+        });
+
         document.getElementById('add-inbound-btn')?.addEventListener('click', () => this.showModal('add-inbound-modal'));
         document.getElementById('add-inbound-form')?.addEventListener('submit', (e) => {
             e.preventDefault();
@@ -1566,7 +1620,10 @@ class WhisperaApp {
             this._updateUserPort();
         });
 
-        document.getElementById('add-outbound-btn')?.addEventListener('click', () => this.showModal('add-outbound-modal'));
+        document.getElementById('add-outbound-btn')?.addEventListener('click', () => {
+            this.showModal('add-outbound-modal');
+            this._loadBridgesForChainPicker();
+        });
         document.getElementById('add-outbound-form')?.addEventListener('submit', (e) => {
             e.preventDefault();
             this.handleAddOutbound();
@@ -1612,6 +1669,21 @@ class WhisperaApp {
             this.handleSaveServerSettings();
         });
 
+        const stealthSelect = document.getElementById('stealth-mode-select');
+        if (stealthSelect) {
+            stealthSelect.addEventListener('change', () => this._updateStealthHint(stealthSelect.value));
+            this._updateStealthHint(stealthSelect.value);
+        }
+        document.getElementById('save-stealth-mode-btn')?.addEventListener('click', async () => {
+            const mode = document.getElementById('stealth-mode-select')?.value || '';
+            try {
+                await api.updateStealthMode(mode);
+                this.showNotification(mode === 'russia' ? 'Режим «Россия» активирован' : 'Режим транспорта сброшен в Авто', 'success');
+            } catch (e) {
+                this.showNotification('Ошибка сохранения: ' + e.message, 'error');
+            }
+        });
+
         document.getElementById('force-reload-btn')?.addEventListener('click', async () => {
             if (await this.showConfirm('Вы уверены? Это приведет к перезапуску ядра сервера.')) {
                 try {
@@ -1642,7 +1714,29 @@ class WhisperaApp {
         });
 
         document.getElementById('firewall-manage-btn')?.addEventListener('click', () => {
-            this.showNotification('Управление Firewall будет доступно в версии 1.1', 'info');
+            this.showFirewallModal();
+        });
+
+        document.getElementById('probe-refresh-btn')?.addEventListener('click', () => this._loadProbeStats());
+        document.getElementById('probe-block-btn')?.addEventListener('click', async () => {
+            const ip = document.getElementById('probe-block-ip')?.value.trim();
+            if (!ip) return;
+            try {
+                await api.probeBlockIP(ip, 'manual');
+                this.showNotification(`IP ${ip} заблокирован`, 'success');
+                document.getElementById('probe-block-ip').value = '';
+                this._loadProbeStats();
+            } catch (e) { this.showNotification('Ошибка: ' + e.message, 'error'); }
+        });
+        document.getElementById('probe-unblock-btn')?.addEventListener('click', async () => {
+            const ip = document.getElementById('probe-unblock-ip')?.value.trim();
+            if (!ip) return;
+            try {
+                await api.probeUnblockIP(ip);
+                this.showNotification(`IP ${ip} разблокирован`, 'success');
+                document.getElementById('probe-unblock-ip').value = '';
+                this._loadProbeStats();
+            } catch (e) { this.showNotification('Ошибка: ' + e.message, 'error'); }
         });
 
         document.getElementById('panel-theme')?.addEventListener('change', (e) => {
@@ -2016,6 +2110,7 @@ class WhisperaApp {
         const form = document.getElementById('add-outbound-form');
         const data = Object.fromEntries(new FormData(form));
         data.port = parseInt(data.port) || 0;
+        data.chain = data.chain ? data.chain.split(',').map(s => s.trim()).filter(Boolean) : [];
 
         try {
             await api.addOutbound(data);
@@ -2025,6 +2120,46 @@ class WhisperaApp {
         } catch (error) {
             this.showNotification('Ошибка: ' + error.message, 'error');
         }
+    }
+
+    async _loadBridgesForChainPicker() {
+        const datalist = document.getElementById('outbound-chain-datalist');
+        const badgeBox = document.getElementById('outbound-chain-bridges');
+        const chainInput = document.getElementById('outbound-chain-input');
+        if (!datalist || !badgeBox) return;
+        try {
+            const data = await api.getBridges();
+            const bridges = Array.isArray(data) ? data : (data.bridges || []);
+            datalist.innerHTML = '';
+            badgeBox.innerHTML = '';
+            bridges.forEach(b => {
+                const id = b.id || b.ID;
+                const addr = b.address || b.Address || '';
+                const region = b.region || b.Region || '';
+                const alive = b.is_alive ?? b.IsAlive ?? true;
+                if (!id) return;
+                const opt = document.createElement('option');
+                opt.value = `bridge:${id}`;
+                opt.label = `${region || addr}`;
+                datalist.appendChild(opt);
+                const badge = document.createElement('button');
+                badge.type = 'button';
+                badge.style.cssText = `background:rgba(0,229,255,${alive ? '0.12' : '0.04'});color:${alive ? '#00e5ff' : '#555'};
+                    border:1px solid ${alive ? '#00e5ff44' : '#333'};border-radius:4px;padding:2px 8px;
+                    font-size:11px;cursor:pointer;white-space:nowrap;`;
+                badge.title = addr;
+                badge.textContent = `${alive ? '●' : '○'} ${region || id.slice(0, 8)}`;
+                badge.addEventListener('click', () => {
+                    const cur = chainInput.value.split(',').map(s => s.trim()).filter(Boolean);
+                    const key = `bridge:${id}`;
+                    if (!cur.includes(key)) {
+                        cur.push(key);
+                        chainInput.value = cur.join(', ');
+                    }
+                });
+                badgeBox.appendChild(badge);
+            });
+        } catch (_) { /* bridge list unavailable */ }
     }
 
     async handleAddRoutingRule() {
@@ -2082,6 +2217,33 @@ class WhisperaApp {
         }
     }
 
+
+    async _loadProbeStats() {
+        try {
+            const s = await api.getProbeStats();
+            const set = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val; };
+            set('probe-stat-blocked', s.blocked_ips ?? '—');
+            set('probe-stat-tracked', s.tracked_ips ?? '—');
+            set('probe-stat-dns',     s.require_dns   ? `вкл (лог: ${s.dns_log_size ?? 0})` : 'выкл');
+            set('probe-stat-sni',     s.check_sni_own ? `вкл (${(s.own_ips ?? []).join(', ')})` : 'выкл');
+        } catch (e) {
+            // detector may not be configured yet
+        }
+    }
+
+    _updateStealthHint(mode) {
+        const hint = document.getElementById('stealth-mode-hint');
+        if (!hint) return;
+        if (mode === 'russia') {
+            hint.innerHTML = '<b>🇷🇺 Россия:</b> VK WebRTC → Яндекс.Телемост → ОК WebRTC → VK Bot → CDN Worker → остальные.<br>Приоритет — транспорты через российскую инфраструктуру, блокировка которых невозможна без масштабных коллатеральных потерь.';
+            hint.style.borderColor = 'rgba(239,68,68,0.4)';
+            hint.style.background = 'rgba(239,68,68,0.06)';
+        } else {
+            hint.innerHTML = '<b>Авто:</b> Все доступные транспорты конкурируют в параллельном режиме. Побеждает первый успешно установивший соединение.';
+            hint.style.borderColor = 'rgba(99,102,241,0.2)';
+            hint.style.background = 'rgba(99,102,241,0.08)';
+        }
+    }
 
     async handleSaveServerSettings() {
         const port = document.getElementById('server-port').value;
@@ -2188,6 +2350,9 @@ class WhisperaApp {
             try { this.threeCity.onNavigate(page); } catch (e) {}
         }
 
+        // Stop bridge auto-refresh when leaving the bridges page
+        if (page !== 'bridges') this._stopBridgeAutoRefresh();
+
         document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'));
         const navItem = document.querySelector(`.nav-item[data-page="${page}"]`);
         if (navItem) navItem.classList.add('active');
@@ -2206,6 +2371,7 @@ class WhisperaApp {
                 'routing': 'page.routing.title',
                 'subscriptions': 'page.subscriptions.title',
                 'adblock': 'page.adblock.title',
+                'bridges': 'page.bridges.title',
                 'logs': 'page.logs.title',
                 'settings': 'settings.title'
             };
@@ -2222,6 +2388,7 @@ class WhisperaApp {
             case 'sessions': this.loadSessions(); break;
             case 'inbounds': this.loadInbounds(); break;
             case 'outbounds': this.loadOutbounds(); break;
+            case 'bridges': this.loadBridges(); break;
             case 'routing': this.loadRouting(); break;
             case 'subscriptions': this.loadSubscriptions(); break;
             case 'adblock': this.loadAdblock(); break;
@@ -2288,6 +2455,19 @@ class WhisperaApp {
         } catch (e) {
             console.log('Failed to load system info for settings');
         }
+
+        try {
+            const stealthMode = await api.getStealthMode();
+            const sel = document.getElementById('stealth-mode-select');
+            if (sel) {
+                sel.value = stealthMode || '';
+                this._updateStealthHint(sel.value);
+            }
+        } catch (e) {
+            console.log('Failed to load stealth mode');
+        }
+
+        this._loadProbeStats();
     }
 
     initTrafficChart() {
@@ -2361,23 +2541,202 @@ class WhisperaApp {
                 return;
             }
 
-            tbody.innerHTML = inbounds.map(i => `
-    <tr>
+            tbody.innerHTML = inbounds.map(i => {
+                const allPorts = i.ports?.length
+                    ? [...new Set([i.port, ...i.ports].filter(p => p > 0))].join(', ')
+                    : i.port;
+                const network = i.stream_settings?.network || i.streamSettings?.network || 'tcp';
+                return `<tr>
                     <td>${i.tag}</td>
                     <td>${i.protocol}</td>
-                    <td>${i.port}</td>
-                    <td>${i.streamSettings?.network || 'tcp'}</td>
+                    <td>${allPorts}</td>
+                    <td>${network}</td>
                     <td>
                         <button class="btn btn-danger btn-sm" onclick="app.deleteInbound('${i.tag}')">
                             <i class="fas fa-trash"></i>
                         </button>
                     </td>
-                </tr>
-    `).join('');
+                </tr>`;
+            }).join('');
         } catch (error) {
             tbody.innerHTML = '<tr><td colspan="5" class="text-center">Ошибка загрузки</td></tr>';
         }
     }
+
+    // ===================== BRIDGES =====================
+
+    async loadBridges() {
+        this._stopBridgeAutoRefresh();
+        await Promise.all([this._fetchBridgeStats(), this._fetchBridgeList(), this._fetchBridgeToken()]);
+        this._startBridgeAutoRefresh();
+    }
+
+    _startBridgeAutoRefresh() {
+        this._stopBridgeAutoRefresh();
+        let countdown = 30;
+        const badge = document.getElementById('bridges-auto-refresh-badge');
+        this._bridgeRefreshTimer = setInterval(async () => {
+            countdown--;
+            if (badge) badge.textContent = `авто-обновление через ${countdown}с`;
+            if (countdown <= 0) {
+                countdown = 30;
+                await Promise.all([this._fetchBridgeStats(), this._fetchBridgeList()]);
+            }
+        }, 1000);
+        if (badge) badge.textContent = `авто-обновление через ${countdown}с`;
+    }
+
+    _stopBridgeAutoRefresh() {
+        if (this._bridgeRefreshTimer) {
+            clearInterval(this._bridgeRefreshTimer);
+            this._bridgeRefreshTimer = null;
+        }
+    }
+
+    async _fetchBridgeStats() {
+        try {
+            const s = await api.getBridgeStats();
+            const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+            set('bstat-total',   s.total   ?? '—');
+            set('bstat-alive',   s.alive   ?? '—');
+            set('bstat-dead',    s.dead    ?? '—');
+            set('bstat-latency', s.avg_latency ? s.avg_latency + ' мс' : '—');
+        } catch {}
+    }
+
+    async _fetchBridgeList() {
+        const tbody = document.getElementById('bridges-tbody');
+        if (!tbody) return;
+        try {
+            const data = await api.getBridgesAdmin();
+            const bridges = Array.isArray(data) ? data : (data.bridges || []);
+            if (!bridges.length) {
+                tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;color:#555;padding:32px;">Мостов нет. Добавьте первый мост.</td></tr>';
+                return;
+            }
+            tbody.innerHTML = bridges.map(b => this._renderBridgeRow(b)).join('');
+            // Bind check buttons
+            tbody.querySelectorAll('.bridge-check-btn').forEach(btn => {
+                btn.addEventListener('click', () => this._checkBridge(btn.dataset.id, btn));
+            });
+            tbody.querySelectorAll('.bridge-delete-btn').forEach(btn => {
+                btn.addEventListener('click', () => this._deleteBridge(btn.dataset.id));
+            });
+        } catch (e) {
+            tbody.innerHTML = `<tr><td colspan="9" style="text-align:center;color:#f87171;padding:32px;">Ошибка загрузки: ${e.message}</td></tr>`;
+        }
+    }
+
+    _renderBridgeRow(b) {
+        const alive = b.is_alive ?? b.IsAlive ?? false;
+        const latency = b.latency_ms ?? b.Latency ?? 0;
+        const trust = b.trust_level ?? b.TrustLevel ?? 0;
+        const region = b.region || b.Region || '—';
+        const type = b.type || b.Type || '—';
+        const address = b.address || b.Address || '—';
+        const id = b.id || b.ID || '';
+        const shortID = id.length > 8 ? id.slice(0, 8) + '…' : id;
+        const lastCheck = b.last_check || b.LastCheck;
+        const lastCheckStr = lastCheck ? this._relativeTime(new Date(lastCheck)) : '—';
+
+        const statusDot = alive
+            ? '<span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#4ade80;" title="Онлайн"></span>'
+            : '<span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#f87171;" title="Недоступен"></span>';
+
+        const latencyColor = latency === 0 ? '#555' : latency < 100 ? '#4ade80' : latency < 300 ? '#facc15' : '#f87171';
+        const latencyStr = latency > 0 ? `<span style="color:${latencyColor}">${latency} мс</span>` : '<span style="color:#555">—</span>';
+
+        const typeBadge = {
+            operator:  '<span style="background:rgba(99,102,241,0.2);color:#a5b4fc;padding:2px 7px;border-radius:4px;font-size:0.8em;">operator</span>',
+            community: '<span style="background:rgba(34,197,94,0.15);color:#86efac;padding:2px 7px;border-radius:4px;font-size:0.8em;">community</span>',
+            user:      '<span style="background:rgba(234,179,8,0.15);color:#fde047;padding:2px 7px;border-radius:4px;font-size:0.8em;">user</span>',
+        }[type] || `<span style="color:#888;font-size:0.85em;">${type}</span>`;
+
+        const trustBar = `<div style="display:flex;align-items:center;gap:6px;">
+            <div style="width:48px;height:6px;background:rgba(255,255,255,0.1);border-radius:3px;overflow:hidden;">
+                <div style="width:${trust}%;height:100%;background:${trust>=70?'#4ade80':trust>=40?'#facc15':'#f87171'};border-radius:3px;"></div>
+            </div>
+            <span style="font-size:0.82em;color:#aaa;">${trust}</span>
+        </div>`;
+
+        return `<tr data-bridge-id="${id}">
+            <td style="text-align:center;">${statusDot}</td>
+            <td><code style="font-size:0.85em;" title="${id}">${shortID}</code></td>
+            <td style="font-size:0.87em;">${address}</td>
+            <td style="font-size:0.87em;">${region}</td>
+            <td>${typeBadge}</td>
+            <td>${latencyStr}</td>
+            <td>${trustBar}</td>
+            <td style="font-size:0.82em;color:#888;">${lastCheckStr}</td>
+            <td style="text-align:right;">
+                <button class="btn btn-icon btn-sm bridge-check-btn" data-id="${id}" title="Проверить сейчас">
+                    <i class="fas fa-stethoscope"></i>
+                </button>
+                <button class="btn btn-icon btn-sm bridge-delete-btn" data-id="${id}" title="Удалить" style="color:#f87171;">
+                    <i class="fas fa-trash-alt"></i>
+                </button>
+            </td>
+        </tr>`;
+    }
+
+    async _checkBridge(id, btn) {
+        const icon = btn.querySelector('i');
+        const orig = icon.className;
+        icon.className = 'fas fa-spinner fa-spin';
+        btn.disabled = true;
+        try {
+            const res = await api.checkBridge(id);
+            // Update row in-place
+            const row = document.querySelector(`tr[data-bridge-id="${id}"]`);
+            if (row) {
+                const dot = row.cells[0];
+                dot.innerHTML = res.is_alive
+                    ? '<span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#4ade80;" title="Онлайн"></span>'
+                    : '<span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#f87171;" title="Недоступен"></span>';
+                const latencyColor = res.latency_ms < 100 ? '#4ade80' : res.latency_ms < 300 ? '#facc15' : '#f87171';
+                row.cells[5].innerHTML = res.latency_ms > 0
+                    ? `<span style="color:${latencyColor}">${res.latency_ms} мс</span>`
+                    : '<span style="color:#555">—</span>';
+                row.cells[7].textContent = 'только что';
+            }
+            await this._fetchBridgeStats();
+        } catch (e) {
+            this.showNotification('Ошибка проверки: ' + e.message, 'error');
+        } finally {
+            icon.className = orig;
+            btn.disabled = false;
+        }
+    }
+
+    async _deleteBridge(id) {
+        if (!await this.showConfirm('Удалить мост ' + id + '?')) return;
+        try {
+            await api.deleteBridge(id);
+            this.showNotification('Мост удалён', 'success');
+            await Promise.all([this._fetchBridgeStats(), this._fetchBridgeList()]);
+        } catch (e) {
+            this.showNotification('Ошибка: ' + e.message, 'error');
+        }
+    }
+
+    async _fetchBridgeToken() {
+        try {
+            const data = await api.getBridgeToken();
+            const el = document.getElementById('bridge-reg-token');
+            if (el) el.textContent = data.token || '—';
+        } catch {}
+    }
+
+    _relativeTime(date) {
+        const diff = Math.floor((Date.now() - date.getTime()) / 1000);
+        if (diff < 5)   return 'только что';
+        if (diff < 60)  return diff + ' сек. назад';
+        if (diff < 3600) return Math.floor(diff / 60) + ' мин. назад';
+        if (diff < 86400) return Math.floor(diff / 3600) + ' ч. назад';
+        return Math.floor(diff / 86400) + ' д. назад';
+    }
+
+    // ===================== END BRIDGES =====================
 
     async loadOutbounds() {
         const tbody = document.getElementById('outbounds-table-body');
@@ -2386,25 +2745,29 @@ class WhisperaApp {
             const outbounds = data.outbounds || data || [];
 
             if (outbounds.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="5" class="text-center">Нет исходящих серверов</td></tr>';
+                tbody.innerHTML = '<tr><td colspan="6" class="text-center">Нет исходящих серверов</td></tr>';
                 return;
             }
 
-            tbody.innerHTML = outbounds.map(o => `
-    <tr>
+            tbody.innerHTML = outbounds.map(o => {
+                const chain = Array.isArray(o.chain) && o.chain.length
+                    ? o.chain.map(h => `<span style="background:rgba(0,229,255,0.1);color:#00e5ff;padding:1px 6px;border-radius:3px;font-size:11px;margin:1px;">${h}</span>`).join(' → ')
+                    : '<span style="color:#555;">—</span>';
+                return `<tr>
                     <td>${o.tag}</td>
                     <td>${o.protocol}</td>
                     <td>${o.address || '-'}</td>
+                    <td>${chain}</td>
                     <td>${o.latency ? o.latency + 'ms' : '-'}</td>
                     <td>
                         <button class="btn btn-danger btn-sm" onclick="app.deleteOutbound('${o.tag}')">
                             <i class="fas fa-trash"></i>
                         </button>
                     </td>
-                </tr>
-    `).join('');
+                </tr>`;
+            }).join('');
         } catch (error) {
-            tbody.innerHTML = '<tr><td colspan="5" class="text-center">Ошибка загрузки</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="6" class="text-center">Ошибка загрузки</td></tr>';
         }
     }
 
@@ -2610,7 +2973,6 @@ class WhisperaApp {
                 container.textContent = 'Нет доступных логов.';
             } else {
                 container.textContent = logs.join('\n');
-                container.scrollTop = container.scrollHeight;
             }
         } catch (error) {
             container.textContent = 'Ошибка загрузки логов: ' + error.message;
@@ -2747,6 +3109,169 @@ class WhisperaApp {
         container.appendChild(toast);
     }
 
+    async showFirewallModal() {
+        const modal = document.createElement('div');
+        modal.className = 'modal active';
+        modal.style.zIndex = '10000';
+        modal.innerHTML = `
+        <div class="modal-content" style="max-width:680px;">
+            <div class="modal-header">
+                <h3><i class="fas fa-fire-alt" style="margin-right:8px;color:#f59e0b;"></i>Управление Firewall (UFW)</h3>
+                <button class="modal-close modal-close-icon" onclick="this.closest('.modal').remove()"><i class="fas fa-times"></i></button>
+            </div>
+            <div class="modal-body" style="display:flex;flex-direction:column;gap:16px;">
+                <div id="fw-status-bar" style="display:flex;align-items:center;gap:12px;padding:10px 14px;border-radius:8px;background:var(--bg-secondary,#1a1a2e);">
+                    <span id="fw-status-text" style="flex:1;font-size:0.9em;">Загрузка...</span>
+                    <button id="fw-toggle-btn" style="padding:6px 16px;border-radius:6px;border:none;cursor:pointer;font-size:13px;display:none;"></button>
+                </div>
+                <div>
+                    <div style="font-size:0.8em;text-transform:uppercase;opacity:0.6;letter-spacing:0.05em;margin-bottom:8px;">Правила</div>
+                    <div id="fw-rules-table" style="overflow-x:auto;">
+                        <table style="width:100%;border-collapse:collapse;font-size:0.88em;">
+                            <thead>
+                                <tr style="border-bottom:1px solid var(--border,#333);opacity:0.7;">
+                                    <th style="text-align:left;padding:6px 8px;">#</th>
+                                    <th style="text-align:left;padding:6px 8px;">Назначение</th>
+                                    <th style="text-align:left;padding:6px 8px;">Действие</th>
+                                    <th style="text-align:left;padding:6px 8px;">Откуда</th>
+                                    <th style="padding:6px 8px;"></th>
+                                </tr>
+                            </thead>
+                            <tbody id="fw-rules-body"><tr><td colspan="5" style="text-align:center;padding:16px;opacity:0.5;">Загрузка...</td></tr></tbody>
+                        </table>
+                    </div>
+                </div>
+                <div style="border-top:1px solid var(--border,#333);padding-top:14px;">
+                    <div style="font-size:0.8em;text-transform:uppercase;opacity:0.6;letter-spacing:0.05em;margin-bottom:10px;">Добавить правило</div>
+                    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;">
+                        <div style="display:flex;flex-direction:column;gap:4px;">
+                            <label style="font-size:0.78em;opacity:0.7;">Действие</label>
+                            <select id="fw-new-action" style="padding:8px 10px;border-radius:6px;border:1px solid var(--border,#333);background:var(--bg-secondary,#1a1a2e);color:inherit;font-size:13px;">
+                                <option value="allow">ALLOW</option>
+                                <option value="deny">DENY</option>
+                            </select>
+                        </div>
+                        <div style="display:flex;flex-direction:column;gap:4px;">
+                            <label style="font-size:0.78em;opacity:0.7;">Порт</label>
+                            <input id="fw-new-port" type="text" placeholder="80 или 8080:9090" style="width:140px;padding:8px 10px;border-radius:6px;border:1px solid var(--border,#333);background:var(--bg-secondary,#1a1a2e);color:inherit;font-size:13px;">
+                        </div>
+                        <div style="display:flex;flex-direction:column;gap:4px;">
+                            <label style="font-size:0.78em;opacity:0.7;">Протокол</label>
+                            <select id="fw-new-proto" style="padding:8px 10px;border-radius:6px;border:1px solid var(--border,#333);background:var(--bg-secondary,#1a1a2e);color:inherit;font-size:13px;">
+                                <option value="any">any</option>
+                                <option value="tcp">tcp</option>
+                                <option value="udp">udp</option>
+                            </select>
+                        </div>
+                        <div style="display:flex;flex-direction:column;gap:4px;">
+                            <label style="font-size:0.78em;opacity:0.7;">Откуда (опц.)</label>
+                            <input id="fw-new-from" type="text" placeholder="Anywhere" style="width:140px;padding:8px 10px;border-radius:6px;border:1px solid var(--border,#333);background:var(--bg-secondary,#1a1a2e);color:inherit;font-size:13px;">
+                        </div>
+                        <button id="fw-add-btn" style="padding:8px 18px;border-radius:6px;border:none;background:var(--accent,#6366f1);color:#fff;cursor:pointer;font-size:13px;white-space:nowrap;">
+                            <i class="fas fa-plus"></i> Добавить
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>`;
+        document.body.appendChild(modal);
+
+        const renderRules = (status) => {
+            const statusBar = modal.querySelector('#fw-status-bar');
+            const statusText = modal.querySelector('#fw-status-text');
+            const toggleBtn = modal.querySelector('#fw-toggle-btn');
+            const tbody = modal.querySelector('#fw-rules-body');
+
+            if (status.active) {
+                statusBar.style.borderLeft = '3px solid #22c55e';
+                statusText.innerHTML = '<i class="fas fa-circle" style="color:#22c55e;margin-right:6px;font-size:10px;"></i><strong>UFW активен</strong>';
+                toggleBtn.textContent = 'Отключить';
+                toggleBtn.style.background = '#ef4444';
+                toggleBtn.style.color = '#fff';
+            } else {
+                statusBar.style.borderLeft = '3px solid #ef4444';
+                statusText.innerHTML = '<i class="fas fa-circle" style="color:#ef4444;margin-right:6px;font-size:10px;"></i><strong>UFW неактивен</strong>';
+                toggleBtn.textContent = 'Включить';
+                toggleBtn.style.background = '#22c55e';
+                toggleBtn.style.color = '#fff';
+            }
+            toggleBtn.style.display = '';
+
+            if (!status.rules || status.rules.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;padding:16px;opacity:0.5;">Правил нет</td></tr>';
+            } else {
+                tbody.innerHTML = status.rules.map(r => `
+                    <tr style="border-bottom:1px solid var(--border,#222);">
+                        <td style="padding:7px 8px;opacity:0.6;">${r.number}</td>
+                        <td style="padding:7px 8px;font-family:monospace;">${r.to}${r.ipv6 ? ' <span style="opacity:0.5;font-size:0.8em;">v6</span>' : ''}</td>
+                        <td style="padding:7px 8px;">
+                            <span style="padding:2px 8px;border-radius:4px;font-size:0.82em;background:${r.action.includes('ALLOW') ? 'rgba(34,197,94,0.15)' : 'rgba(239,68,68,0.15)'};color:${r.action.includes('ALLOW') ? '#22c55e' : '#ef4444'};">
+                                ${r.action}
+                            </span>
+                        </td>
+                        <td style="padding:7px 8px;opacity:0.8;">${r.from}</td>
+                        <td style="padding:7px 8px;text-align:right;">
+                            <button onclick="app._firewallDeleteRule(${r.number})" style="padding:4px 10px;border-radius:4px;border:none;background:rgba(239,68,68,0.15);color:#ef4444;cursor:pointer;font-size:12px;">
+                                <i class="fas fa-trash"></i>
+                            </button>
+                        </td>
+                    </tr>`).join('');
+            }
+        };
+
+        this._firewallModal = modal;
+        this._firewallRenderRules = renderRules;
+
+        try {
+            const status = await api.request('/api/firewall/status');
+            renderRules(status);
+        } catch (e) {
+            modal.querySelector('#fw-rules-body').innerHTML = '<tr><td colspan="5" style="text-align:center;padding:16px;color:#ef4444;">Ошибка загрузки</td></tr>';
+        }
+
+        modal.querySelector('#fw-toggle-btn').addEventListener('click', async () => {
+            const isActive = modal.querySelector('#fw-status-text').textContent.includes('активен');
+            try {
+                const res = await api.request('/api/firewall/toggle', { method: 'POST', body: JSON.stringify({ enable: !isActive }) });
+                renderRules(res.status);
+                this.showNotification(res.message || 'Готово', 'success');
+            } catch (e) {
+                this.showNotification('Ошибка: ' + e.message, 'error');
+            }
+        });
+
+        modal.querySelector('#fw-add-btn').addEventListener('click', async () => {
+            const port = modal.querySelector('#fw-new-port').value.trim();
+            if (!port) { this.showNotification('Укажите порт', 'error'); return; }
+            const body = {
+                action: modal.querySelector('#fw-new-action').value,
+                port,
+                proto: modal.querySelector('#fw-new-proto').value,
+                from: modal.querySelector('#fw-new-from').value.trim(),
+            };
+            try {
+                const res = await api.request('/api/firewall/rules', { method: 'POST', body: JSON.stringify(body) });
+                renderRules(res.status);
+                modal.querySelector('#fw-new-port').value = '';
+                modal.querySelector('#fw-new-from').value = '';
+                this.showNotification(res.message || 'Правило добавлено', 'success');
+            } catch (e) {
+                this.showNotification('Ошибка: ' + e.message, 'error');
+            }
+        });
+    }
+
+    async _firewallDeleteRule(number) {
+        if (!(await this.showConfirm(`Удалить правило #${number}?`))) return;
+        try {
+            const res = await api.request('/api/firewall/rules', { method: 'DELETE', body: JSON.stringify({ number }) });
+            if (this._firewallRenderRules) this._firewallRenderRules(res.status);
+            this.showNotification(res.message || 'Правило удалено', 'success');
+        } catch (e) {
+            this.showNotification('Ошибка: ' + e.message, 'error');
+        }
+    }
+
     showKeyModal(email, privKey, connectionURI) {
         const modal = document.createElement('div');
         modal.className = 'modal active';
@@ -2798,7 +3323,11 @@ class WhisperaApp {
         if (connectionURI) {
             const canvas = modal.querySelector('#key-modal-qr');
             if (canvas && typeof QRCode !== 'undefined') {
-                QRCode.toCanvas(canvas, connectionURI, { width: 180, margin: 1 }, () => {});
+                QRCode.toCanvas(canvas, connectionURI, {
+                    width: 200, margin: 2,
+                    errorCorrectionLevel: 'L',
+                    color: { dark: '#000000', light: '#ffffff' }
+                }, (err) => { if (err) console.error('QR error:', err, connectionURI?.length); });
             }
         }
     }

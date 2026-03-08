@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -244,11 +245,31 @@ func (s *Server) handleServeSubscription(w http.ResponseWriter, r *http.Request)
 		}
 	}
 
+	// Collect user connection keys from userStore
+	var keys []string
+	userStoreMu.RLock()
+	if len(sub.UserIDs) > 0 {
+		for _, uid := range sub.UserIDs {
+			if u, ok := userStore[uid]; ok && u.ConnectionURI != "" {
+				keys = append(keys, u.ConnectionURI)
+			}
+		}
+	} else {
+		// No specific users — include all users that have a connection URI
+		for _, u := range userStore {
+			if u.ConnectionURI != "" {
+				keys = append(keys, u.ConnectionURI)
+			}
+		}
+	}
+	userStoreMu.RUnlock()
+
 	payload := map[string]interface{}{
-		"version":   "2",
-		"name":      sub.Name,
-		"updated":   sub.UpdatedAt.UTC().Format(time.RFC3339),
-		"servers":   servers,
+		"version": "2",
+		"name":    sub.Name,
+		"updated": sub.UpdatedAt.UTC().Format(time.RFC3339),
+		"servers": servers,
+		"keys":    keys,
 	}
 
 	raw, err := json.Marshal(payload)
@@ -266,15 +287,19 @@ func (s *Server) handleServeSubscription(w http.ResponseWriter, r *http.Request)
 
 func buildSubURL(r *http.Request, serverIP, token string) string {
 	scheme := "http"
-	if r.TLS != nil {
+	if proto := r.Header.Get("X-Forwarded-Proto"); proto != "" {
+		scheme = proto
+	} else if r.TLS != nil {
 		scheme = "https"
 	}
-	host := r.Host
+
+	host := r.Header.Get("X-Forwarded-Host")
 	if host == "" {
+		host = r.Host
+	}
+	if host == "" || strings.HasPrefix(host, "127.0.0.1") || strings.HasPrefix(host, "localhost") {
 		if serverIP != "" && serverIP != "0.0.0.0" {
 			host = serverIP
-		} else {
-			host = "localhost"
 		}
 	}
 	return fmt.Sprintf("%s://%s/sub/%s", scheme, host, token)

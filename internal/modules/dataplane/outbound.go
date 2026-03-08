@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"whispera/internal/logger"
+	"whispera/internal/modules/bridgepool"
 	"whispera/internal/modules/config"
 	"whispera/internal/modules/crypto"
 	"whispera/internal/modules/handshake"
@@ -17,9 +18,11 @@ import (
 )
 
 type OutboundManager struct {
-	outbounds map[string]*tunnel.Manager
-	mu        sync.RWMutex
-	log       *logger.Logger
+	outbounds   map[string]*tunnel.Manager
+	mu          sync.RWMutex
+	log         *logger.Logger
+	bridgeReg   *bridgepool.Registry
+	stealthMode string
 }
 
 func NewOutboundManager() *OutboundManager {
@@ -27,6 +30,16 @@ func NewOutboundManager() *OutboundManager {
 		outbounds: make(map[string]*tunnel.Manager),
 		log:       logger.Module("outbound"),
 	}
+}
+
+func (om *OutboundManager) SetBridgeRegistry(reg *bridgepool.Registry) {
+	om.bridgeReg = reg
+}
+
+func (om *OutboundManager) SetStealthMode(mode string) {
+	om.mu.Lock()
+	om.stealthMode = mode
+	om.mu.Unlock()
 }
 
 func (om *OutboundManager) AddOutbound(cfg config.OutboundConfig) error {
@@ -37,11 +50,18 @@ func (om *OutboundManager) AddOutbound(cfg config.OutboundConfig) error {
 		return fmt.Errorf("outbound %s already exists", cfg.Tag)
 	}
 
+	russiaMode := om.stealthMode == "russia"
+
 	tCfg := &tunnel.Config{
 		ServerAddr:        cfg.Address,
 		KeepaliveInterval: 15 * time.Second,
 		ReconnectInterval: 5 * time.Second,
 		EnableRotation:    false,
+	}
+
+	// In Russia mode, exclude direct UDP/TCP and prefer stealth transports only.
+	if russiaMode {
+		tCfg.Transport = "vkwebrtc,yatelemost,okwebrtc,vkbot,cdnworker,russian,asn_bypass,quic"
 	}
 
 	if pubKey, ok := cfg.Settings["server_pub_key"].(string); ok && pubKey != "" {
@@ -53,13 +73,42 @@ func (om *OutboundManager) AddOutbound(cfg config.OutboundConfig) error {
 		}
 	}
 
+	if len(cfg.Chain) > 0 {
+		firstHop := cfg.Chain[0]
+		targetAddr := cfg.Address
+		tCfg.CustomDialFn = func(ctx context.Context) (net.Conn, error) {
+			om.mu.RLock()
+			hopTunnel, exists := om.outbounds[firstHop]
+			om.mu.RUnlock()
+			if exists {
+				return hopTunnel.DialStream(ctx, "tcp", targetAddr)
+			}
+
+			bridgeID := firstHop
+			if len(bridgeID) > 7 && bridgeID[:7] == "bridge:" {
+				bridgeID = bridgeID[7:]
+			}
+			if om.bridgeReg != nil {
+				if br, err := om.bridgeReg.GetBridge(bridgeID); err == nil && br.IsAlive {
+					return (&net.Dialer{}).DialContext(ctx, "tcp", br.Address)
+				}
+			}
+
+			return nil, fmt.Errorf("chain hop %q not found as outbound or bridge", firstHop)
+		}
+	}
+
 	cryptoMod, _ := crypto.New(nil)
 	_ = cryptoMod.Init(context.Background(), nil)
 	_ = cryptoMod.Start()
 
+	threatLevel := 5
+	if russiaMode {
+		threatLevel = 8
+	}
 	obfsMod, _ := obfuscator.New(&obfuscator.Config{
 		DefaultProfile: "default",
-		ThreatLevel:    5,
+		ThreatLevel:    threatLevel,
 		EnableFTE:      true,
 	})
 	_ = obfsMod.Init(context.Background(), nil)

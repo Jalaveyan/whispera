@@ -76,6 +76,30 @@ export class SystemController {
         }
     }
 
+    @Get('api/backup')
+    async getBackup(@Headers('authorization') auth: string, @Res() res: Response) {
+        try {
+            const token = auth?.replace('Bearer ', '');
+            const data = await this.systemService.getBackup(token);
+            return res.json(data);
+        } catch (err: any) {
+            return res.status(err?.response?.status || HttpStatus.INTERNAL_SERVER_ERROR)
+                .json({ error: err?.response?.data?.error || err?.message || 'Failed' });
+        }
+    }
+
+    @Post('api/backup/restore')
+    async restoreBackup(@Headers('authorization') auth: string, @Body() body: any, @Res() res: Response) {
+        try {
+            const token = auth?.replace('Bearer ', '');
+            const data = await this.systemService.restoreBackup(token, body);
+            return res.json(data);
+        } catch (err: any) {
+            return res.status(err?.response?.status || HttpStatus.INTERNAL_SERVER_ERROR)
+                .json({ error: err?.response?.data?.error || err?.message || 'Failed' });
+        }
+    }
+
     @Post('api/v1/config/renew-cert')
     async renewCert(@Headers('authorization') auth: string, @Res() res: Response) {
         try {

@@ -131,7 +131,15 @@ type Handler struct {
 
 	replayCacheCleanupStop chan struct{}
 
+	probeDetector probeDetectorIface
+
 	stats Stats
+}
+
+type probeDetectorIface interface {
+	CheckConnection(clientAddr, sni string) (allowed bool, reason string)
+	RecordAuthFailure(clientAddr string)
+	RecordAuthSuccess(clientAddr string)
 }
 
 type Stats struct {
@@ -192,6 +200,23 @@ func New(cfg *Config) (*Handler, error) {
 	}
 
 	return h, nil
+}
+
+// SetProbeDetector attaches an active-probing detector. Must be called before Start().
+func (h *Handler) SetProbeDetector(d probeDetectorIface) {
+	h.probeDetector = d
+}
+
+// RecordDNSQuery forwards a DNS query log entry to the probe detector (if configured).
+// resolvedIPs — список IP-адресов из DNS-ответа, отправленного клиенту. Передайте nil
+// если DNS-ответ недоступен (факт запроса всё равно записывается, IP-проверка пропускается).
+func (h *Handler) RecordDNSQuery(clientAddr, hostname string, resolvedIPs []string) {
+	type dnsRecorder interface {
+		RecordDNSQuery(clientAddr, hostname string, resolvedIPs []string)
+	}
+	if r, ok := h.probeDetector.(dnsRecorder); ok {
+		r.RecordDNSQuery(clientAddr, hostname, resolvedIPs)
+	}
 }
 
 func (h *Handler) Init(ctx context.Context, cfg interfaces.ModuleConfig) error {
@@ -295,12 +320,25 @@ func (h *Handler) HandleConnection(conn net.Conn) {
 		h.mu.Unlock()
 	}()
 
+	// Layer 1: check IP blocklist before touching any data.
+	if h.probeDetector != nil {
+		if allowed, reason := h.probeDetector.CheckConnection(remoteAddr, ""); !allowed {
+			log.Debug("[probe] blocked %s (blocklist): %s", remoteAddr, reason)
+			h.stats.ProxiedConnections++
+			h.handleHTTPFallback(conn)
+			return
+		}
+	}
+
 	conn.SetReadDeadline(time.Now().Add(10 * time.Second))
 
 	clientHello, err := h.readClientHello(conn)
 	if err != nil {
 		if strings.Contains(err.Error(), "non-TLS") {
 			log.Debug("Detected non-TLS traffic from %s - activating active probing defense", remoteAddr)
+			if h.probeDetector != nil {
+				h.probeDetector.RecordAuthFailure(remoteAddr)
+			}
 			h.handleHTTPFallback(conn)
 		} else {
 			log.Printf("Failed to read ClientHello from %s: %v", remoteAddr, err)
@@ -317,11 +355,24 @@ func (h *Handler) HandleConnection(conn net.Conn) {
 		return
 	}
 
+	// Layer 2 & 3: DNS-knock and SNI-ownership check (now that we have the SNI).
+	if h.probeDetector != nil {
+		if allowed, reason := h.probeDetector.CheckConnection(remoteAddr, sni); !allowed {
+			log.Debug("[probe] blocked %s (SNI=%s): %s", remoteAddr, sni, reason)
+			h.stats.ProxiedConnections++
+			h.proxyToDestination(conn, clientHello)
+			return
+		}
+	}
+
 	clientID, ok := h.authenticateClient(clientRandom, sessionID)
 
 	if ok {
 		h.stats.AuthenticatedClients++
 		log.Printf("Authenticated client: %s from %s (SNI: %s)", clientID, remoteAddr, sni)
+		if h.probeDetector != nil {
+			h.probeDetector.RecordAuthSuccess(remoteAddr)
+		}
 
 		if h.config.OnAuthenticated != nil {
 			obfuscatedConn := h.WrapWithObfuscation(conn)
@@ -330,6 +381,12 @@ func (h *Handler) HandleConnection(conn net.Conn) {
 		}
 		return
 	}
+
+	// Auth failed — record it for probe detection.
+	if h.probeDetector != nil {
+		h.probeDetector.RecordAuthFailure(remoteAddr)
+	}
+
 	if !h.isAllowedSNI(sni) {
 		log.Printf("Rejected SNI: %s from %s", sni, remoteAddr)
 		h.proxyToDestination(conn, clientHello)
@@ -540,7 +597,6 @@ func (h *Handler) authenticateClient(clientRandom, sessionID []byte) (string, bo
 		return "", false
 	}
 
-	// verifyHMAC checks sessionID HMAC using the ECDH shared secret.
 	verifyHMAC := func(sharedSecret []byte) bool {
 		hkdfR := hkdf.New(sha256.New, sharedSecret, nil, []byte("whispera-auth-key"))
 		authKey := make([]byte, 32)
@@ -555,8 +611,6 @@ func (h *Handler) authenticateClient(clientRandom, sessionID []byte) (string, bo
 		return hmac.Equal(sessionID[8:32], mac.Sum(nil)[:24])
 	}
 
-	// Per-user auth: client sends clientRandom = X25519(userPSK, Basepoint) = userPublicKey.
-	// We match clientRandom against each registered user's expected public key.
 	if h.config.GetUsers != nil {
 		for _, u := range h.config.GetUsers() {
 			if !hmac.Equal(clientRandom, u.PublicKey[:]) {
@@ -576,7 +630,6 @@ func (h *Handler) authenticateClient(clientRandom, sessionID []byte) (string, bo
 		return "", false
 	}
 
-	// Fallback: no user list configured — accept any valid ECDH client as "default".
 	sharedSecret, err := curve25519.X25519(h.privateKey, clientRandom)
 	if err != nil {
 		return "", false

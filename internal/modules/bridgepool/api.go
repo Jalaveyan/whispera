@@ -111,11 +111,19 @@ func (h *APIHandler) HandleAddBridge(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("[BridgePool] Registered new bridge: %s (%s)", info.ID, info.Address)
 
+	isAlive, latencyMS, checkErr := h.registry.CheckBridgeNow(info.ID)
+	msg := "Bridge registered and checked"
+	if checkErr != nil {
+		msg = "Bridge registered (health check failed: " + checkErr.Error() + ")"
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"success": true,
-		"id":      info.ID,
-		"message": "Bridge registered successfully",
+		"success":    true,
+		"id":         info.ID,
+		"is_alive":   isAlive,
+		"latency_ms": latencyMS,
+		"message":    msg,
 	})
 }
 
@@ -219,6 +227,8 @@ func (h *APIHandler) HandleRegisterBridge(w http.ResponseWriter, r *http.Request
 		Provider:  req.Provider,
 		Region:    req.Region,
 		PublicKey: req.PublicKey,
+		// Self-registration proves reachability — mark alive immediately.
+		IsAlive: true,
 	}
 
 	if err := h.registry.RegisterBridge(info); err != nil {
@@ -227,6 +237,9 @@ func (h *APIHandler) HandleRegisterBridge(w http.ResponseWriter, r *http.Request
 	}
 
 	log.Printf("[BridgePool] Self-registration: %s (%s) from %s", info.ID, info.Address, r.RemoteAddr)
+
+	// Async latency measurement — doesn't block the registration response.
+	go func(id string) { h.registry.CheckBridgeNow(id) }(info.ID) //nolint:errcheck
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{

@@ -131,7 +131,7 @@ type Config struct {
 	PhantomSNI          string
 	PhantomShortId      string
 	PhantomServerPubKey string
-	PhantomPSK          []byte // user's Curve25519 private key (PSK) for per-user auth
+	PhantomPSK          []byte
 
 	RussianService    string
 	BehavioralProfile string
@@ -153,6 +153,10 @@ type Config struct {
 	RekeyInterval time.Duration
 
 	TransportConfig map[string]interface{}
+
+	// CustomDialFn overrides the default transport dial when set.
+	// Used for multi-hop: dial the next hop through an existing tunnel stream.
+	CustomDialFn func(ctx context.Context) (net.Conn, error)
 }
 
 func DefaultConfig() *Config {
@@ -686,6 +690,9 @@ type dialCandidate struct {
 }
 
 func (m *Manager) dial(ctx context.Context) (net.Conn, error) {
+	if m.config.CustomDialFn != nil {
+		return m.config.CustomDialFn(ctx)
+	}
 	m.preparePhantomASN()
 	candidates := m.buildCandidates()
 	if len(candidates) == 0 {

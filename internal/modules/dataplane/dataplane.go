@@ -12,6 +12,7 @@ import (
 	"whispera/internal/core/events"
 	"whispera/internal/core/interfaces"
 	"whispera/internal/core/registry"
+	"whispera/internal/modules/bridgepool"
 )
 
 func init() {
@@ -184,6 +185,22 @@ func (p *Processor) SetDependencies(
 
 func (p *Processor) SetTUN(tun interfaces.TUNDevice) {
 	p.tun = tun
+}
+
+func (p *Processor) SetBridgeRegistry(reg *bridgepool.Registry) {
+	if p.outboundManager != nil {
+		p.outboundManager.SetBridgeRegistry(reg)
+	}
+}
+
+func (p *Processor) GetOutboundManager() *OutboundManager {
+	return p.outboundManager
+}
+
+func (p *Processor) SetStealthMode(mode string) {
+	if p.outboundManager != nil {
+		p.outboundManager.SetStealthMode(mode)
+	}
 }
 func (p *Processor) ProcessInbound(ctx context.Context, packet *interfaces.Packet, session interfaces.Session) error {
 	p.UpdateActivity()

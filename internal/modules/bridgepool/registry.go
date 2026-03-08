@@ -60,7 +60,9 @@ func (r *Registry) RegisterBridge(info *BridgeInfo) error {
 	if info.CreatedAt.IsZero() {
 		info.CreatedAt = time.Now()
 	}
-	info.IsAlive = true
+	// IsAlive starts as false — status becomes true only after a successful health check.
+	// Callers that know the bridge is reachable (e.g. self-registration) may set it to true
+	// before calling RegisterBridge.
 	info.LastCheck = time.Now()
 
 	if info.TrustLevel == 0 {
@@ -149,6 +151,45 @@ func (r *Registry) StartHealthMonitor() {
 }
 func (r *Registry) StopHealthMonitor() {
 	r.healthMonitor.Stop()
+}
+
+// CheckBridgeNow запускает немедленную проверку доступности одного моста.
+// Возвращает обновлённые is_alive и latency_ms.
+func (r *Registry) CheckBridgeNow(id string) (isAlive bool, latencyMS int, err error) {
+	return r.healthMonitor.CheckSingle(id)
+}
+
+// BridgeStats возвращает сводную статистику по всем мостам.
+func (r *Registry) BridgeStats() map[string]interface{} {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	total := len(r.bridges)
+	alive := 0
+	sumLatency := 0
+	countLatency := 0
+
+	for _, b := range r.bridges {
+		if b.IsAlive {
+			alive++
+			if b.Latency > 0 {
+				sumLatency += b.Latency
+				countLatency++
+			}
+		}
+	}
+
+	avgLatency := 0
+	if countLatency > 0 {
+		avgLatency = sumLatency / countLatency
+	}
+
+	return map[string]interface{}{
+		"total":       total,
+		"alive":       alive,
+		"dead":        total - alive,
+		"avg_latency": avgLatency,
+	}
 }
 
 func (r *Registry) persist() error {
