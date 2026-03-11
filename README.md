@@ -6,16 +6,14 @@ Masquerades as legitimate HTTPS traffic. Includes a Web Admin Panel for manageme
 
 ### 🚀 **Installation**
 ```bash
-git clone https://github.com/Jalaveyan/Whispera.git
-cd Whispera
-bash install.sh
+bash <(curl -sL https://raw.githubusercontent.com/Jalaveyan/Whispera/main/install.sh)
 ```
 
 ### 🔄 **Update**
 Update the server and panel to the latest version.
 ```bash
-cd /opt/whispera
-bash update.sh
+bash menu
+Select item 18
 ```
 
 ### 🌐 **Admin Panel**
