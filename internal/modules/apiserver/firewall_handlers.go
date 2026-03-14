@@ -77,7 +77,6 @@ func getFirewallStatus() (*FirewallStatus, error) {
 func (s *Server) handleFirewallStatus(w http.ResponseWriter, r *http.Request) {
 	status, err := getFirewallStatus()
 	if err != nil {
-		// Return HTTP 200 with inactive state so the UI can render; surface error in field.
 		s.jsonOK(w, map[string]interface{}{
 			"active": false,
 			"rules":  []FirewallRule{},

@@ -29,17 +29,14 @@ const (
 	ModuleName    = "transport.splithttp"
 	ModuleVersion = "1.0.0"
 
-	maxChunkSize = 1 << 17 // 128KB
+	maxChunkSize = 1 << 17
 )
 
-// SplitHTTP (XHTTP) sends data via POST and receives via chunked GET.
-// This makes it hard for DPI to distinguish from regular HTTP traffic.
 type Config struct {
 	BaseURL string
 	Host    string
 	Path    string
 
-	// Server-mode fields
 	ServerMode bool
 	TLSCert    string
 	TLSKey     string
@@ -63,8 +60,7 @@ type Transport struct {
 	config *Config
 	client *http.Client
 
-	// server mode
-	sessions   sync.Map // sessionID → *serverSession
+	sessions   sync.Map
 	acceptCh   chan net.Conn
 	httpServer *http.Server
 
@@ -96,7 +92,6 @@ func New(cfg *Config) (*Transport, error) {
 
 func (t *Transport) Type() interfaces.TransportType { return interfaces.TransportSplitHTTP }
 
-// ── Server mode ──────────────────────────────────────────────────────────────
 
 func (t *Transport) Listen(addr string) error {
 	t.acceptCh = make(chan net.Conn, 64)
@@ -125,15 +120,11 @@ func (t *Transport) Listen(addr string) error {
 	return nil
 }
 
-// serverSession holds the pipes for one virtual connection.
 type serverSession struct {
 	conn *serverSplitConn
 	once sync.Once
 }
 
-// serverSplitConn implements net.Conn for an accepted XHTTP session.
-// Client→Server data arrives via POSTs (written to recvPw).
-// Server→Client data goes out via the streaming GET response (read from sendPr).
 type serverSplitConn struct {
 	t         *Transport
 	sessionID string
@@ -166,7 +157,6 @@ func (t *Transport) getOrCreateSession(sessionID string) *serverSession {
 	val, loaded := t.sessions.LoadOrStore(sessionID, &serverSession{})
 	sess := val.(*serverSession)
 	if !loaded {
-		// First time seeing this session — create the conn and emit to acceptCh
 		conn := newServerSplitConn(t, sessionID)
 		sess.conn = conn
 		atomic.AddUint64(&t.totalConns, 1)
@@ -188,7 +178,6 @@ func (t *Transport) handleHTTP(w http.ResponseWriter, r *http.Request) {
 
 	switch r.Method {
 	case http.MethodGet:
-		// Streaming response: server→client data flows here
 		w.Header().Set("Content-Type", "application/octet-stream")
 		w.Header().Set("X-Accel-Buffering", "no")
 		w.Header().Set("Cache-Control", "no-cache")
@@ -218,7 +207,6 @@ func (t *Transport) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 
 	case http.MethodPost:
-		// Client→server data arrives in POST body
 		n, err := io.Copy(conn.recvPw, r.Body)
 		if n > 0 {
 			atomic.AddUint64(&t.bytesIn, uint64(n))
@@ -278,7 +266,6 @@ func (t *Transport) Close() error {
 	return nil
 }
 
-// ── Client mode ──────────────────────────────────────────────────────────────
 
 func (t *Transport) Dial(ctx context.Context, _ string) (net.Conn, error) {
 	b := make([]byte, 16)
@@ -294,9 +281,7 @@ func (t *Transport) Dial(ctx context.Context, _ string) (net.Conn, error) {
 		done:      make(chan struct{}),
 	}
 
-	// Start GET stream for receiving data
 	go conn.startRecvStream(ctx)
-	// Start POST loop for sending data
 	go conn.sendLoop(ctx, pw)
 
 	atomic.AddUint64(&t.totalConns, 1)

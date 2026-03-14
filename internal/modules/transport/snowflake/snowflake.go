@@ -132,7 +132,6 @@ func (t *Transport) Dial(ctx context.Context, _ string) (net.Conn, error) {
 		return nil, err
 	}
 
-	// Wait for ICE gathering
 	gatherDone := webrtc.GatheringCompletePromise(pc)
 	select {
 	case <-ctx.Done():

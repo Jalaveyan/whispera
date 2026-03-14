@@ -9,21 +9,14 @@ import (
 	"time"
 )
 
-// botConn implements net.Conn over VK messages.
-// Each instance represents one logical connection between a VPN client and server.
-//
-// Write: splits payload into maxChunk chunks, sends each as a VK message.
-// Read:  blocks until a complete reassembled frame arrives via deliver().
 type botConn struct {
 	transport *Transport
-	peerID    int64 // who to reply to (server: client user ID; client: 2e9+groupID)
+	peerID    int64
 
-	// recv pipeline
 	recvMu   sync.Mutex
 	recvBuf  []byte
 	recvCond *sync.Cond
 
-	// frame reassembly: seq → assembler
 	asmMu  sync.Mutex
 	frames map[uint32]*frameAsm
 
@@ -32,7 +25,7 @@ type botConn struct {
 	closeOnce sync.Once
 	done      chan struct{}
 
-	readDeadline  atomic.Value // stores time.Time; zero = no deadline
+	readDeadline  atomic.Value
 	writeDeadline atomic.Value
 }
 
@@ -52,7 +45,6 @@ func newBotConn(t *Transport, peerID int64) *botConn {
 	return c
 }
 
-// ─── net.Conn ────────────────────────────────────────────────────────────────
 
 func (c *botConn) Write(data []byte) (int, error) {
 	if c.closed.Load() {
@@ -62,7 +54,6 @@ func (c *botConn) Write(data []byte) (int, error) {
 	total := len(data)
 	seq := c.sendSeq.Add(1)
 
-	// Split into chunks.
 	var chunks [][]byte
 	for len(data) > 0 {
 		n := maxChunk
@@ -73,13 +64,12 @@ func (c *botConn) Write(data []byte) (int, error) {
 		data = data[n:]
 	}
 	if len(chunks) == 0 {
-		chunks = [][]byte{{}} // single empty chunk so seq advances
+		chunks = [][]byte{{}}
 	}
 	if len(chunks) > 255 {
 		return 0, fmt.Errorf("vkbot: write too large (%d bytes, max %d)", total, 255*maxChunk)
 	}
 
-	// Check write deadline.
 	if dl, ok := c.writeDeadline.Load().(time.Time); ok && !dl.IsZero() && time.Now().After(dl) {
 		return 0, &net.OpError{Op: "write", Net: "vkbot", Err: fmt.Errorf("i/o timeout")}
 	}
@@ -101,7 +91,6 @@ func (c *botConn) Read(buf []byte) (int, error) {
 		if c.closed.Load() {
 			return 0, net.ErrClosed
 		}
-		// Honour read deadline: wake the cond after the deadline passes.
 		if dl, ok := c.readDeadline.Load().(time.Time); ok && !dl.IsZero() {
 			remaining := time.Until(dl)
 			if remaining <= 0 {
@@ -113,7 +102,6 @@ func (c *botConn) Read(buf []byte) (int, error) {
 			}()
 		}
 		c.recvCond.Wait()
-		// Recheck deadline after wake.
 		if dl, ok := c.readDeadline.Load().(time.Time); ok && !dl.IsZero() && time.Now().After(dl) {
 			return 0, &net.OpError{Op: "read", Net: "vkbot", Err: fmt.Errorf("i/o timeout")}
 		}
@@ -155,10 +143,7 @@ func (c *botConn) SetWriteDeadline(t time.Time) error {
 	return nil
 }
 
-// ─── Reassembly ──────────────────────────────────────────────────────────────
 
-// deliver is called with the raw WRP text of an incoming VK message.
-// It reassembles chunks into frames and pushes completed frames to recvBuf.
 func (c *botConn) deliver(text string) {
 	seq, total, chunkIdx, payload, err := decodeMsg(text)
 	if err != nil {
@@ -179,7 +164,6 @@ func (c *botConn) deliver(text string) {
 		return
 	}
 
-	// All chunks arrived — reconstruct the frame in order.
 	var frame []byte
 	for i := 0; i < asm.total; i++ {
 		frame = append(frame, asm.chunks[i]...)
@@ -193,10 +177,7 @@ func (c *botConn) deliver(text string) {
 	c.recvMu.Unlock()
 }
 
-// ─── Client-side receive loop ─────────────────────────────────────────────
 
-// userPollLoop runs in a goroutine on the client side.
-// It listens for responses from the community bot via the VK User Long Poll API.
 func (c *botConn) userPollLoop(ctx context.Context, cancel context.CancelFunc) {
 	defer func() {
 		cancel()
@@ -239,7 +220,6 @@ func (c *botConn) userPollLoop(ctx context.Context, cancel context.CancelFunc) {
 	}
 }
 
-// ─── net.Addr helper ────────────────────────────────────────────────────────
 
 type vkAddr struct{ id string }
 

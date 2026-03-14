@@ -24,6 +24,11 @@ type Config struct {
 	CheckSNIOwnership bool
 	OwnPublicIPs      []string
 	SNICacheExpiry    time.Duration
+
+	EscalatingBans     bool
+	MaxBanEscalation   int
+	BurstThreshold     int
+	BurstWindow        time.Duration
 }
 
 func DefaultConfig() Config {
@@ -37,12 +42,18 @@ func DefaultConfig() Config {
 
 		CheckSNIOwnership: false,
 		SNICacheExpiry:    5 * time.Minute,
+
+		EscalatingBans:   true,
+		MaxBanEscalation: 5,
+		BurstThreshold:   10,
+		BurstWindow:      30 * time.Second,
 	}
 }
 
 type blockEntry struct {
-	until  time.Time
-	reason string
+	until      time.Time
+	reason     string
+	escalation int
 }
 
 type dnsEntry struct {
@@ -63,6 +74,8 @@ type Detector struct {
 	blocked  map[string]blockEntry
 	dnsLog   map[string]map[string]dnsEntry
 	sniCache map[string]sniCacheEntry
+
+	banHistory map[string]int
 
 	ownIPs map[string]struct{}
 
@@ -92,6 +105,7 @@ func New(cfg Config) *Detector {
 		blocked:     make(map[string]blockEntry),
 		dnsLog:      make(map[string]map[string]dnsEntry),
 		sniCache:    make(map[string]sniCacheEntry),
+		banHistory:  make(map[string]int),
 		ownIPs:      make(map[string]struct{}),
 		cleanupStop: make(chan struct{}),
 	}
@@ -148,13 +162,43 @@ func (d *Detector) RecordAuthFailure(clientAddr string) {
 	d.failures[ip] = append(d.failures[ip], now)
 	d.failures[ip] = pruneOlderThan(d.failures[ip], now.Add(-d.cfg.FailWindow))
 
-	if len(d.failures[ip]) >= d.cfg.MaxAuthFailures {
+	threshold := d.cfg.MaxAuthFailures
+
+	if d.cfg.BurstThreshold > 0 && d.cfg.BurstWindow > 0 {
+		burstCutoff := now.Add(-d.cfg.BurstWindow)
+		burstCount := 0
+		for _, t := range d.failures[ip] {
+			if t.After(burstCutoff) {
+				burstCount++
+			}
+		}
+		if burstCount >= d.cfg.BurstThreshold {
+			threshold = 1
+		}
+	}
+
+	if len(d.failures[ip]) >= threshold {
+		banDuration := d.cfg.BlockDuration
+		escalation := 0
+
+		if d.cfg.EscalatingBans {
+			escalation = d.banHistory[ip]
+			if escalation > d.cfg.MaxBanEscalation {
+				escalation = d.cfg.MaxBanEscalation
+			}
+			for i := 0; i < escalation; i++ {
+				banDuration *= 2
+			}
+			d.banHistory[ip] = escalation + 1
+		}
+
 		d.blocked[ip] = blockEntry{
-			until:  now.Add(d.cfg.BlockDuration),
-			reason: fmt.Sprintf("%d auth failures in %v", len(d.failures[ip]), d.cfg.FailWindow),
+			until:      now.Add(banDuration),
+			reason:     fmt.Sprintf("%d auth failures in %v (escalation=%d)", len(d.failures[ip]), d.cfg.FailWindow, escalation),
+			escalation: escalation,
 		}
 		delete(d.failures, ip)
-		log.Info("[probe] blocked %s for %v: too many auth failures", ip, d.cfg.BlockDuration)
+		log.Info("[probe] blocked %s for %v (escalation=%d): too many auth failures", ip, banDuration, escalation)
 	}
 }
 
@@ -294,13 +338,15 @@ func (d *Detector) Stats() map[string]interface{} {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 	return map[string]interface{}{
-		"blocked_ips":   len(d.blocked),
-		"tracked_ips":   len(d.failures),
-		"dns_log_size":  len(d.dnsLog),
-		"sni_cache":     len(d.sniCache),
-		"own_ips":       d.ownIPsList(),
-		"require_dns":   d.cfg.RequireDNSQuery,
-		"check_sni_own": d.cfg.CheckSNIOwnership,
+		"blocked_ips":      len(d.blocked),
+		"tracked_ips":      len(d.failures),
+		"dns_log_size":     len(d.dnsLog),
+		"sni_cache":        len(d.sniCache),
+		"own_ips":          d.ownIPsList(),
+		"require_dns":      d.cfg.RequireDNSQuery,
+		"check_sni_own":    d.cfg.CheckSNIOwnership,
+		"escalating_bans":  d.cfg.EscalatingBans,
+		"repeat_offenders": len(d.banHistory),
 	}
 }
 

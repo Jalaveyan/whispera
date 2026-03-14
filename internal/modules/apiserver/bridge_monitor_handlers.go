@@ -8,15 +8,10 @@ import (
 	"runtime"
 )
 
-// handleBridgeStats возвращает сводную статистику по всем мостам:
-// total / alive / dead / avg_latency.
 func (s *Server) handleBridgeStats(w http.ResponseWriter, r *http.Request) {
 	s.jsonOK(w, s.bridgePool.BridgeStats())
 }
 
-// handleBridgeCheck запускает немедленную проверку доступности конкретного моста.
-// Тело запроса: {"id": "<bridge_id>"}
-// Возвращает обновлённые is_alive и latency_ms.
 func (s *Server) handleBridgeCheck(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		ID string `json:"id"`
@@ -39,15 +34,11 @@ func (s *Server) handleBridgeCheck(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleServeBridgeScript отдаёт scripts/install-bridge.sh публично (без auth),
-// чтобы bridge VPS мог скачать его напрямую с этого сервера.
 func (s *Server) handleServeBridgeScript(w http.ResponseWriter, r *http.Request) {
-	// Ищем скрипт относительно бинаря, затем относительно рабочей директории
 	candidates := []string{
 		"/opt/whispera/scripts/install-bridge.sh",
 		"/usr/local/share/whispera/install-bridge.sh",
 	}
-	// В dev-режиме: рядом с исходниками
 	if _, file, _, ok := runtime.Caller(0); ok {
 		root := filepath.Join(filepath.Dir(file), "..", "..", "..", "..", "scripts", "install-bridge.sh")
 		candidates = append([]string{root}, candidates...)

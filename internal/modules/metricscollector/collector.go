@@ -11,6 +11,7 @@ import (
 	"whispera/internal/core/events"
 	"whispera/internal/core/interfaces"
 	"whispera/internal/core/registry"
+	"whispera/internal/metrics"
 )
 
 func init() {
@@ -242,10 +243,23 @@ func (c *Collector) RegisterHistogram(name, help string, labelNames []string, bu
 }
 
 func (c *Collector) handleMetrics(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+
+	c.writeGlobalMetrics(w)
+
+	c.defsMu.RLock()
+	defs := make(map[string]*metricDef, len(c.definitions))
+	for k, v := range c.definitions {
+		defs[k] = v
+	}
+	c.defsMu.RUnlock()
 
 	c.countersMu.RLock()
 	for name, values := range c.counters {
+		if def, ok := defs[name]; ok {
+			fmt.Fprintf(w, "# HELP %s %s\n", name, def.Help)
+			fmt.Fprintf(w, "# TYPE %s counter\n", name)
+		}
 		for labels, value := range values {
 			if labels != "" {
 				fmt.Fprintf(w, "%s{%s} %g\n", name, labels, value)
@@ -258,6 +272,10 @@ func (c *Collector) handleMetrics(w http.ResponseWriter, r *http.Request) {
 
 	c.gaugesMu.RLock()
 	for name, values := range c.gauges {
+		if def, ok := defs[name]; ok {
+			fmt.Fprintf(w, "# HELP %s %s\n", name, def.Help)
+			fmt.Fprintf(w, "# TYPE %s gauge\n", name)
+		}
 		for labels, value := range values {
 			if labels != "" {
 				fmt.Fprintf(w, "%s{%s} %g\n", name, labels, value)
@@ -267,6 +285,42 @@ func (c *Collector) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	c.gaugesMu.RUnlock()
+
+	c.histogramsMu.RLock()
+	for name, h := range c.histograms {
+		if def, ok := defs[name]; ok {
+			fmt.Fprintf(w, "# HELP %s %s\n", name, def.Help)
+			fmt.Fprintf(w, "# TYPE %s histogram\n", name)
+		}
+		for bucket, count := range h.buckets {
+			fmt.Fprintf(w, "%s_bucket{le=\"%g\"} %d\n", name, bucket, count)
+		}
+		fmt.Fprintf(w, "%s_bucket{le=\"+Inf\"} %d\n", name, h.count)
+		fmt.Fprintf(w, "%s_sum %g\n", name, h.sum)
+		fmt.Fprintf(w, "%s_count %d\n", name, h.count)
+	}
+	c.histogramsMu.RUnlock()
+}
+
+func (c *Collector) writeGlobalMetrics(w http.ResponseWriter) {
+	fmt.Fprintf(w, "# HELP whispera_global_packets_rx Total packets received (global)\n")
+	fmt.Fprintf(w, "# TYPE whispera_global_packets_rx counter\n")
+	fmt.Fprintf(w, "whispera_global_packets_rx %d\n", metrics.PacketsRx.Value())
+	fmt.Fprintf(w, "# HELP whispera_global_packets_tx Total packets sent (global)\n")
+	fmt.Fprintf(w, "# TYPE whispera_global_packets_tx counter\n")
+	fmt.Fprintf(w, "whispera_global_packets_tx %d\n", metrics.PacketsTx.Value())
+	fmt.Fprintf(w, "# HELP whispera_global_bytes_rx Total bytes received (global)\n")
+	fmt.Fprintf(w, "# TYPE whispera_global_bytes_rx counter\n")
+	fmt.Fprintf(w, "whispera_global_bytes_rx %d\n", metrics.BytesRx.Value())
+	fmt.Fprintf(w, "# HELP whispera_global_bytes_tx Total bytes sent (global)\n")
+	fmt.Fprintf(w, "# TYPE whispera_global_bytes_tx counter\n")
+	fmt.Fprintf(w, "whispera_global_bytes_tx %d\n", metrics.BytesTx.Value())
+	fmt.Fprintf(w, "# HELP whispera_xhttp_streams_created Total XHTTP streams created\n")
+	fmt.Fprintf(w, "# TYPE whispera_xhttp_streams_created counter\n")
+	fmt.Fprintf(w, "whispera_xhttp_streams_created %d\n", metrics.XHTTPStreamsCreated.Value())
+	fmt.Fprintf(w, "# HELP whispera_xhttp_sessions_active Active XHTTP sessions\n")
+	fmt.Fprintf(w, "# TYPE whispera_xhttp_sessions_active gauge\n")
+	fmt.Fprintf(w, "whispera_xhttp_sessions_active %d\n", metrics.XHTTPSessionsActive.Value())
 }
 
 func (c *Collector) handleHealth(w http.ResponseWriter, r *http.Request) {

@@ -765,6 +765,7 @@ class WhisperaApp {
                 "common.refresh": "Обновить",
                 "common.loading": "Загрузка...",
                 "nav.bridges": "Мосты",
+                "nav.bridge_map": "Карта мостов",
                 "dashboard.stats.memory": "Память",
                 "bridges.btn.add": "Добавить мост",
                 "bridges.stat.total": "Всего мостов",
@@ -996,6 +997,7 @@ class WhisperaApp {
                 "common.refresh": "Refresh",
                 "common.loading": "Loading...",
                 "nav.bridges": "Bridges",
+                "nav.bridge_map": "Bridge Map",
                 "dashboard.stats.memory": "Memory",
                 "bridges.btn.add": "Add Bridge",
                 "bridges.stat.total": "Total Bridges",
@@ -2601,6 +2603,7 @@ class WhisperaApp {
                 'subscriptions': 'page.subscriptions.title',
                 'adblock': 'page.adblock.title',
                 'bridges': 'page.bridges.title',
+                'bridge-map': 'nav.bridge_map',
                 'logs': 'page.logs.title',
                 'settings': 'settings.title'
             };
@@ -2618,6 +2621,7 @@ class WhisperaApp {
             case 'inbounds': this.loadInbounds(); break;
             case 'outbounds': this.loadOutbounds(); break;
             case 'bridges': this.loadBridges(); break;
+            case 'bridge-map': this.loadBridgeMap(); break;
             case 'routing': this.loadRouting(); break;
             case 'subscriptions': this.loadSubscriptions(); break;
             case 'adblock': this.loadAdblock(); break;
@@ -2977,6 +2981,293 @@ class WhisperaApp {
         return Math.floor(diff / 86400) + ' д. назад';
     }
 
+
+    async loadBridgeMap() {
+        this._bridgeMapData = [];
+        try {
+            const data = await api.getBridgeMap();
+            const bridges = Array.isArray(data) ? data : [];
+            this._bridgeMapData = bridges;
+
+            const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+            set('map-total', bridges.length);
+            set('map-alive', bridges.filter(b => b.is_alive).length);
+            set('map-white', bridges.filter(b => b.type === 'white').length);
+            const countries = new Set(bridges.map(b => b.country).filter(Boolean));
+            set('map-countries', countries.size);
+
+            this._renderBridgeMapCanvas(bridges);
+            this._renderBridgeMapTable(bridges);
+        } catch (e) {
+            const tbody = document.getElementById('bridge-map-tbody');
+            if (tbody) tbody.innerHTML = `<tr><td colspan="7" style="text-align:center;color:#f87171;padding:32px;">Ошибка: ${e.message}</td></tr>`;
+        }
+
+        const scanBtn = document.getElementById('bridge-map-scan-btn');
+        if (scanBtn && !scanBtn._bound) {
+            scanBtn._bound = true;
+            scanBtn.addEventListener('click', async () => {
+                scanBtn.disabled = true;
+                scanBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Сканирование...';
+                try {
+                    await api.scanBridges();
+                    await this.loadBridgeMap();
+                    this.showNotification('Сканирование завершено', 'success');
+                } catch (e) {
+                    this.showNotification('Ошибка сканирования: ' + e.message, 'error');
+                } finally {
+                    scanBtn.disabled = false;
+                    scanBtn.innerHTML = '<i class="fas fa-satellite-dish"></i> Сканировать';
+                }
+            });
+        }
+        const refreshBtn = document.getElementById('bridge-map-refresh-btn');
+        if (refreshBtn && !refreshBtn._bound) {
+            refreshBtn._bound = true;
+            refreshBtn.addEventListener('click', () => this.loadBridgeMap());
+        }
+    }
+
+    _renderBridgeMapCanvas(bridges) {
+        requestAnimationFrame(() => this._doRenderBridgeMap(bridges));
+    }
+
+    _doRenderBridgeMap(bridges) {
+        const canvas = document.getElementById('bridge-map-canvas');
+        if (!canvas) return;
+        const container = canvas.parentElement;
+        const w = container.offsetWidth || 800;
+        const h = container.offsetHeight || 500;
+        const dpr = window.devicePixelRatio || 1;
+        canvas.width = w * dpr;
+        canvas.height = h * dpr;
+        canvas.style.width = w + 'px';
+        canvas.style.height = h + 'px';
+        const ctx = canvas.getContext('2d');
+        ctx.scale(dpr, dpr);
+
+        ctx.fillStyle = '#0a0e1a';
+        ctx.fillRect(0, 0, w, h);
+
+        ctx.strokeStyle = 'rgba(0,229,255,0.06)';
+        ctx.lineWidth = 0.5;
+        for (let lat = -60; lat <= 80; lat += 20) {
+            const y = this._latToY(lat, h);
+            ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke();
+        }
+        for (let lon = -180; lon <= 180; lon += 30) {
+            const x = this._lonToX(lon, w);
+            ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke();
+        }
+
+        this._drawSimplifiedContinents(ctx, w, h);
+
+        this._bridgeMapPoints = [];
+
+        if (!bridges.some(b => b.lat || b.lon)) {
+            ctx.fillStyle = 'rgba(255,255,255,0.15)';
+            ctx.font = '16px sans-serif';
+            ctx.textAlign = 'center';
+            ctx.fillText('Нет мостов с координатами', w / 2, h / 2);
+            ctx.font = '12px sans-serif';
+            ctx.fillStyle = 'rgba(255,255,255,0.08)';
+            ctx.fillText('Добавьте lat/lon при регистрации моста', w / 2, h / 2 + 24);
+            return;
+        }
+
+        for (const b of bridges) {
+            if (!b.lat && !b.lon) continue;
+            const x = this._lonToX(b.lon, w);
+            const y = this._latToY(b.lat, h);
+
+            const color = !b.is_alive ? '#f87171' : b.type === 'white' ? '#a5b4fc' : '#4ade80';
+            const glow = ctx.createRadialGradient(x, y, 0, x, y, 18);
+            glow.addColorStop(0, color + '40');
+            glow.addColorStop(1, 'transparent');
+            ctx.fillStyle = glow;
+            ctx.fillRect(x - 18, y - 18, 36, 36);
+
+            ctx.beginPath();
+            ctx.arc(x, y, 5, 0, Math.PI * 2);
+            ctx.fillStyle = color;
+            ctx.fill();
+            ctx.strokeStyle = color + '80';
+            ctx.lineWidth = 1.5;
+            ctx.stroke();
+
+            this._bridgeMapPoints.push({ x, y, bridge: b, radius: 12 });
+        }
+
+        if (!canvas._mousebound) {
+            canvas._mousebound = true;
+            const tooltip = document.getElementById('bridge-map-tooltip');
+            canvas.addEventListener('mousemove', (e) => {
+                const cr = canvas.getBoundingClientRect();
+                const mx = e.clientX - cr.left;
+                const my = e.clientY - cr.top;
+                let found = null;
+                for (const p of (this._bridgeMapPoints || [])) {
+                    if (Math.hypot(mx - p.x, my - p.y) < p.radius) { found = p; break; }
+                }
+                if (found && tooltip) {
+                    const b = found.bridge;
+                    const typeBadge = b.type === 'white' ? '<span style="color:#a5b4fc;">WHITE</span>' : b.type;
+                    tooltip.innerHTML = `
+                        <div style="font-weight:600;margin-bottom:4px;">${b.country || '?'}, ${b.city || '?'}</div>
+                        <div>Тип: ${typeBadge}</div>
+                        <div>Задержка: <span style="color:${b.latency<100?'#4ade80':b.latency<300?'#facc15':'#f87171'}">${b.latency} мс</span></div>
+                        <div>Нагрузка: ${Math.round((b.load||0)*100)}%</div>
+                        <div>Пользователи: ${b.users || 0}</div>
+                        <div style="margin-top:6px;font-size:0.8em;color:#888;">Нажмите для подключения</div>`;
+                    tooltip.style.display = 'block';
+                    tooltip.style.left = Math.min(found.x + 15, cr.width - 200) + 'px';
+                    tooltip.style.top = Math.min(found.y + 15, cr.height - 120) + 'px';
+                    canvas.style.cursor = 'pointer';
+                } else {
+                    if (tooltip) tooltip.style.display = 'none';
+                    canvas.style.cursor = 'default';
+                }
+            });
+            canvas.addEventListener('click', (e) => {
+                const cr = canvas.getBoundingClientRect();
+                const mx = e.clientX - cr.left;
+                const my = e.clientY - cr.top;
+                for (const p of (this._bridgeMapPoints || [])) {
+                    if (Math.hypot(mx - p.x, my - p.y) < p.radius) {
+                        this._showBridgeConnectDialog(p.bridge);
+                        break;
+                    }
+                }
+            });
+            canvas.addEventListener('mouseleave', () => {
+                if (tooltip) tooltip.style.display = 'none';
+            });
+        }
+    }
+
+    _lonToX(lon, w) { return ((lon + 180) / 360) * w; }
+    _latToY(lat, h) { return ((90 - lat) / 180) * h; }
+
+    _drawSimplifiedContinents(ctx, w, h) {
+        const continents = [
+            [[[-10,35],[30,35],[45,10],[50,-35],[20,-35],[-15,5]]],
+            [[[-130,50],[-60,50],[-35,0],[-60,-55],[-80,-55],[-110,15],[-130,50]]],
+            [[[60,60],[150,60],[150,10],[100,0],[60,10]]],
+            [[[110,-10],[155,-10],[155,-40],[115,-40]]],
+            [[[-25,65],[35,70],[60,60],[35,37],[-10,37],[-25,50]]],
+        ];
+        ctx.fillStyle = 'rgba(0,229,255,0.04)';
+        ctx.strokeStyle = 'rgba(0,229,255,0.12)';
+        ctx.lineWidth = 0.8;
+        for (const shapes of continents) {
+            for (const pts of shapes) {
+                ctx.beginPath();
+                for (let i = 0; i < pts.length; i++) {
+                    const x = this._lonToX(pts[i][0], w);
+                    const y = this._latToY(pts[i][1], h);
+                    i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+                }
+                ctx.closePath();
+                ctx.fill();
+                ctx.stroke();
+            }
+        }
+    }
+
+    _renderBridgeMapTable(bridges) {
+        const tbody = document.getElementById('bridge-map-tbody');
+        if (!tbody) return;
+        const alive = bridges.filter(b => b.is_alive);
+        if (!alive.length) {
+            tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:#555;padding:32px;">Нет доступных мостов</td></tr>';
+            return;
+        }
+        tbody.innerHTML = alive.map(b => {
+            const typeBadge = b.type === 'white'
+                ? '<span style="background:rgba(99,102,241,0.2);color:#a5b4fc;padding:2px 7px;border-radius:4px;font-size:0.8em;">white</span>'
+                : `<span style="color:#888;font-size:0.85em;">${b.type || '—'}</span>`;
+            const latColor = b.latency < 100 ? '#4ade80' : b.latency < 300 ? '#facc15' : '#f87171';
+            const loadPct = Math.round((b.load || 0) * 100);
+            const loadColor = loadPct < 50 ? '#4ade80' : loadPct < 80 ? '#facc15' : '#f87171';
+            return `<tr>
+                <td style="text-align:center;"><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#4ade80;"></span></td>
+                <td>${b.country || '?'}, ${b.city || '?'}</td>
+                <td>${typeBadge}</td>
+                <td><span style="color:${latColor}">${b.latency} мс</span></td>
+                <td>
+                    <div style="display:flex;align-items:center;gap:6px;">
+                        <div style="width:48px;height:6px;background:rgba(255,255,255,0.1);border-radius:3px;overflow:hidden;">
+                            <div style="width:${loadPct}%;height:100%;background:${loadColor};border-radius:3px;"></div>
+                        </div>
+                        <span style="font-size:0.82em;color:#aaa;">${loadPct}%</span>
+                    </div>
+                </td>
+                <td style="font-size:0.85em;color:#aaa;">${b.users || 0}</td>
+                <td style="text-align:right;">
+                    <button class="btn btn-primary btn-sm bridge-map-connect-btn" data-id="${b.id}" ${b.requires_key ? 'title="Требуется ключ доступа"' : ''}>
+                        <i class="fas fa-plug"></i> ${b.requires_key ? 'Ключ' : 'Подключиться'}
+                    </button>
+                </td>
+            </tr>`;
+        }).join('');
+
+        tbody.querySelectorAll('.bridge-map-connect-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const b = alive.find(x => x.id === btn.dataset.id);
+                if (b) this._showBridgeConnectDialog(b);
+            });
+        });
+    }
+
+    async _showBridgeConnectDialog(bridge) {
+        const isWhite = bridge.type === 'white' || bridge.requires_key;
+        const title = `${bridge.country || '?'}, ${bridge.city || '?'}`;
+        const body = `
+            <div style="margin-bottom:16px;">
+                <div style="font-size:1.1em;font-weight:600;margin-bottom:8px;">${title}</div>
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;font-size:0.88em;color:#aaa;">
+                    <div>Тип: <span style="color:${isWhite ? '#a5b4fc' : '#4ade80'}">${bridge.type}</span></div>
+                    <div>Задержка: <span style="color:#4ade80">${bridge.latency} мс</span></div>
+                    <div>Нагрузка: ${Math.round((bridge.load||0)*100)}%</div>
+                    <div>Пользователи: ${bridge.users || 0}</div>
+                </div>
+            </div>
+            ${isWhite ? '<p style="color:#facc15;font-size:0.85em;margin-bottom:12px;"><i class="fas fa-key"></i> White мост — требуется ключ доступа</p>' : ''}
+            <p style="font-size:0.85em;color:#888;">Подключиться к этому мосту?</p>`;
+
+        if (!await this.showConfirm(body)) return;
+
+        try {
+            const res = await api.connectToBridge(bridge.id);
+            if (res.success && res.connection) {
+                const conn = res.connection;
+                const configStr = JSON.stringify({
+                    address: conn.address,
+                    public_key: conn.public_key,
+                    type: conn.type,
+                }, null, 2);
+                this.showNotification(`Подключение к мосту ${title} — конфигурация получена`, 'success');
+
+                const configModal = document.createElement('div');
+                configModal.className = 'modal active';
+                configModal.innerHTML = `
+                    <div class="modal-content" style="max-width:500px;">
+                        <div class="modal-header"><h3>Конфигурация подключения</h3></div>
+                        <div class="modal-body">
+                            <pre style="background:rgba(0,0,0,0.3);padding:12px;border-radius:8px;font-size:0.82em;overflow-x:auto;color:#7ef7c8;">${configStr}</pre>
+                            <p style="font-size:0.82em;color:#888;margin-top:8px;">Используйте эти данные в клиенте Whisp для подключения.</p>
+                        </div>
+                        <div class="modal-footer">
+                            <button class="btn btn-secondary" onclick="this.closest('.modal').remove()">Закрыть</button>
+                            <button class="btn btn-primary" onclick="navigator.clipboard.writeText(\`${configStr.replace(/`/g, '\\`')}\`);this.textContent='Скопировано!';">Копировать</button>
+                        </div>
+                    </div>`;
+                document.body.appendChild(configModal);
+            }
+        } catch (e) {
+            this.showNotification('Ошибка подключения: ' + e.message, 'error');
+        }
+    }
 
     async loadOutbounds() {
         const tbody = document.getElementById('outbounds-table-body');

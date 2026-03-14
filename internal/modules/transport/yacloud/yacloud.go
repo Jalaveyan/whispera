@@ -1,27 +1,5 @@
 package yacloud
 
-// yacloud — WebSocket tunnel through Yandex Cloud API Gateway.
-//
-// Traffic is encapsulated as binary WebSocket frames over a connection to
-// apigw.yandexcloud.net.  From the firewall's perspective the traffic looks
-// like a normal HTTPS/WSS request to Yandex Cloud, which is always in the
-// Russian IP CIDR whitelist.
-//
-// # Deployment
-//
-// Server side (outside Russia):
-//  1. Deploy a Yandex Cloud API Gateway with a WebSocket integration:
-//     https://cloud.yandex.ru/docs/api-gateway/concepts/extensions/websocket
-//  2. Point the integration to your VPN server's WebSocket listener
-//     (e.g. ws://YOUR_VPN_SERVER:8443/ws).
-//  3. Set Config.GatewayURL to wss://<gateway-id>.apigw.yandexcloud.net/ws
-//
-// Client side (in Russia):
-//  1. Set Config.GatewayURL to the same URL.
-//  2. Call Dial() — the transport connects to Yandex Cloud and the gateway
-//     transparently proxies the connection to your VPN server.
-//
-// No WebRTC or TURN is needed — the tunnel is a plain binary WebSocket.
 
 import (
 	"context"
@@ -50,19 +28,12 @@ const (
 	ModuleVersion = "1.0.0"
 )
 
-// Config holds the Yandex Cloud WebSocket transport configuration.
 type Config struct {
-	// GatewayURL is the full wss:// URL of the Yandex API Gateway endpoint.
-	// Example: wss://abcdef123456.apigw.yandexcloud.net/ws
 	GatewayURL string
 
-	// ServerMode: if true, Listen() accepts incoming proxied WS connections.
-	// In server mode GatewayURL is ignored; use ListenAddr instead.
 	ServerMode bool
 	ListenAddr string
 
-	// Headers added to the WebSocket upgrade request (for authentication
-	// or to mimic a Yandex web app).
 	ExtraHeaders map[string]string
 
 	BufferSize int
@@ -75,7 +46,6 @@ func DefaultConfig() *Config {
 	}
 }
 
-// Transport is the Yandex Cloud WebSocket VPN transport.
 type Transport struct {
 	*base.Module
 	config *Config
@@ -137,8 +107,6 @@ func (t *Transport) Stop() error {
 	return nil
 }
 
-// Dial connects to the Yandex API Gateway WebSocket and returns a net.Conn.
-// The addr parameter is ignored — the gateway URL is taken from Config.
 func (t *Transport) Dial(ctx context.Context, _ string) (net.Conn, error) {
 	if t.config.GatewayURL == "" {
 		return nil, fmt.Errorf("yacloud: GatewayURL is not set")
@@ -164,7 +132,6 @@ func (t *Transport) Dial(ctx context.Context, _ string) (net.Conn, error) {
 	return newWSConn(ws, t.config.GatewayURL), nil
 }
 
-// Accept returns the next client connection (server mode only).
 func (t *Transport) Accept() (net.Conn, error) {
 	select {
 	case conn := <-t.connCh:
@@ -174,7 +141,6 @@ func (t *Transport) Accept() (net.Conn, error) {
 	}
 }
 
-// wsHandler is the HTTP handler for incoming WebSocket connections (server mode).
 func (t *Transport) wsHandler(w http.ResponseWriter, r *http.Request) {
 	ws, err := websocket.Accept(w, r, &websocket.AcceptOptions{
 		InsecureSkipVerify: true,
@@ -192,7 +158,6 @@ func (t *Transport) wsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// wsConn wraps nhooyr.io/websocket as a net.Conn using binary messages.
 type wsConn struct {
 	ws       *websocket.Conn
 	addr     string
@@ -206,7 +171,6 @@ func newWSConn(ws *websocket.Conn, addr string) *wsConn {
 }
 
 func (c *wsConn) Read(p []byte) (int, error) {
-	// Drain leftover bytes from previous message first.
 	if c.bufStart < len(c.buf) {
 		n := copy(p, c.buf[c.bufStart:])
 		c.bufStart += n

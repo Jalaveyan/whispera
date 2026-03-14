@@ -1,19 +1,3 @@
-// Package vkbot provides a VPN tunnel transport over VK community messages.
-//
-// Architecture:
-//   Client  →  messages.send (api.vk.com)  →  VK servers  →  Group Long Poll  →  VPN server
-//   Client  ←  User Long Poll (api.vk.com) ←  VK servers  ←  messages.send   ←  VPN server
-//
-// All network traffic from the client goes only to api.vk.com, which is whitelisted
-// by all Russian ISPs. No own server IP is exposed on the censored network side.
-//
-// Protocol (WRP – Whispera Relay Protocol):
-//   Message text = "WRP:" + base64url( 4B_seq_BE | 1B_total | 1B_chunk_idx | payload )
-//   Max chunk payload: 2000 bytes → base64 ~2676 chars + prefix = 2680 total (< VK 4096 limit).
-//
-// Rate limits:
-//   VK community token: up to 50 messages/s → theoretical max ~100 KB/s.
-//   VK user token: 3 req/s → sustained write ~6 KB/s, bursts higher.
 package vkbot
 
 import (
@@ -52,29 +36,19 @@ const (
 	vkAPIBase    = "https://api.vk.com/method"
 	vkAPIVersion = "5.131"
 
-	msgPrefix = "WRP:" // Whispera Relay Protocol message prefix
-	maxChunk  = 2000   // max payload bytes per VK message before encoding
+	msgPrefix = "WRP:"
+	maxChunk  = 2000
 
-	// communityPeerOffset is added to group_id to get the peer_id for messaging
-	// a community from a user account (VK convention).
 	communityPeerOffset = 2_000_000_000
 )
 
-// Config holds VK Bot relay transport settings.
 type Config struct {
-	// GroupID is the VK community ID (required for both sides).
 	GroupID int64
 
-	// GroupToken is the community API token with "messages" permission.
-	// Required for server mode only.
 	GroupToken string
 
-	// UserToken is the VK user access token.
-	// Required for client mode only.
 	UserToken string
 
-	// ServerMode: true = server (polls group LP, replies to users).
-	//             false = client (sends to community, polls own user LP).
 	ServerMode bool
 }
 
@@ -91,7 +65,6 @@ func (c *Config) Validate() error {
 	return nil
 }
 
-// Transport implements interfaces.Transport over VK messages.
 type Transport struct {
 	*base.Module
 	cfg      *Config
@@ -138,7 +111,6 @@ func (t *Transport) Stop() error {
 
 func (t *Transport) Close() error { return t.Stop() }
 
-// Accept returns the next incoming connection (server mode only).
 func (t *Transport) Accept() (net.Conn, error) {
 	select {
 	case conn, ok := <-t.accept:
@@ -151,9 +123,7 @@ func (t *Transport) Accept() (net.Conn, error) {
 	}
 }
 
-// Dial creates a client-side connection through the VK community bot.
 func (t *Transport) Dial(ctx context.Context, addr string) (net.Conn, error) {
-	// Client-side peer_id is the community "mailbox" (2e9 + group_id).
 	peerID := communityPeerOffset + t.cfg.GroupID
 	conn := newBotConn(t, peerID)
 
@@ -169,10 +139,9 @@ func (t *Transport) Dial(ctx context.Context, addr string) (net.Conn, error) {
 	return conn, nil
 }
 
-// ─── Server Long Poll loop ──────────────────────────────────────────────────
 
 func (t *Transport) listenLoop() {
-	conns := make(map[int64]*botConn) // fromID → conn
+	conns := make(map[int64]*botConn)
 	server, key, ts := t.fetchGroupLPServer()
 
 	for {
@@ -212,11 +181,7 @@ func (t *Transport) listenLoop() {
 	}
 }
 
-// ─── VK API calls ───────────────────────────────────────────────────────────
 
-// sendMessage sends a text message via VK API.
-// On server side: token = GroupToken, peerID = client user ID.
-// On client side: token = UserToken,  peerID = 2e9+groupID.
 func (t *Transport) sendMessage(peerID int64, text string) error {
 	token := t.cfg.UserToken
 	if t.cfg.ServerMode {
@@ -251,7 +216,6 @@ func (t *Transport) sendMessage(peerID int64, text string) error {
 	return nil
 }
 
-// ─── Group Long Poll ────────────────────────────────────────────────────────
 
 type groupLPServer struct {
 	Key    string `json:"key"`
@@ -319,10 +283,8 @@ func (t *Transport) pollGroup(server, key, ts string) (events []json.RawMessage,
 	case 0:
 		return result.Updates, result.TS, nil
 	case 1:
-		// TS outdated — update ts and retry
 		return nil, result.TS, nil
 	case 2, 3:
-		// Key expired or data lost — signal need to re-fetch server
 		return nil, ts, fmt.Errorf("LP failed=%d", result.Failed)
 	}
 	return result.Updates, result.TS, nil
@@ -346,7 +308,6 @@ func parseGroupEvent(raw json.RawMessage) (fromID int64, text string) {
 	return ev.Object.Message.FromID, ev.Object.Message.Text
 }
 
-// ─── User Long Poll (client side) ───────────────────────────────────────────
 
 type userLPServer struct {
 	Key    string      `json:"key"`
@@ -386,8 +347,6 @@ type userLPResponse struct {
 	Failed  json.Number       `json:"failed"`
 }
 
-// pollUser fetches pending messages from the user Long Poll server.
-// Returns messages from the community (peer_id = 2e9+groupID), filtered to WRP only.
 func (t *Transport) pollUser(server, key, ts string) (msgs []string, newTS string, err error) {
 	reqURL := fmt.Sprintf("%s?act=a_check&key=%s&ts=%s&wait=25&mode=2&version=3",
 		server, url.QueryEscape(key), url.QueryEscape(ts))
@@ -408,7 +367,7 @@ func (t *Transport) pollUser(server, key, ts string) (msgs []string, newTS strin
 		failed, _ := strconv.Atoi(failedStr)
 		switch failed {
 		case 1:
-			return nil, result.TS.String(), nil // ts outdated, update and retry
+			return nil, result.TS.String(), nil
 		case 2, 3:
 			return nil, ts, fmt.Errorf("user LP failed=%d", failed)
 		}
@@ -417,20 +376,19 @@ func (t *Transport) pollUser(server, key, ts string) (msgs []string, newTS strin
 	communityPeerID := communityPeerOffset + t.cfg.GroupID
 
 	for _, raw := range result.Updates {
-		// User LP update format v3: [type, msg_id, flags, peer_id, ts, subj, text, ...]
 		var upd []json.RawMessage
 		if err := json.Unmarshal(raw, &upd); err != nil || len(upd) < 7 {
 			continue
 		}
 		var eventType int
 		json.Unmarshal(upd[0], &eventType)
-		if eventType != 4 { // 4 = new incoming message
+		if eventType != 4 {
 			continue
 		}
 		var peerID int64
 		json.Unmarshal(upd[3], &peerID)
 		if peerID != communityPeerID {
-			continue // not from our community
+			continue
 		}
 		var text string
 		json.Unmarshal(upd[6], &text)
@@ -441,10 +399,7 @@ func (t *Transport) pollUser(server, key, ts string) (msgs []string, newTS strin
 	return msgs, result.TS.String(), nil
 }
 
-// ─── WRP encoding ───────────────────────────────────────────────────────────
 
-// encodeMsg builds a WRP message string for VK transport.
-// Layout: "WRP:" + base64url( seq[4BE] | total[1] | chunk[1] | payload )
 func encodeMsg(seq uint32, total, chunk int, payload []byte) string {
 	hdr := make([]byte, 6)
 	binary.BigEndian.PutUint32(hdr[0:4], seq)
@@ -456,7 +411,6 @@ func encodeMsg(seq uint32, total, chunk int, payload []byte) string {
 	return msgPrefix + base64.RawURLEncoding.EncodeToString(buf)
 }
 
-// decodeMsg parses a WRP message string.
 func decodeMsg(text string) (seq uint32, total, chunk int, payload []byte, err error) {
 	if !isWRP(text) {
 		return 0, 0, 0, nil, fmt.Errorf("not a WRP message")
@@ -479,7 +433,6 @@ func isWRP(text string) bool {
 	return strings.HasPrefix(text, msgPrefix)
 }
 
-// ─── Factory ────────────────────────────────────────────────────────────────
 
 func Factory(cfg interface{}) (interfaces.Module, error) {
 	if c, ok := cfg.(*Config); ok {
@@ -488,9 +441,7 @@ func Factory(cfg interface{}) (interfaces.Module, error) {
 	return nil, fmt.Errorf("vkbot: invalid config type")
 }
 
-// Ensure Transport implements interfaces.Transport at compile time.
 var _ interfaces.Transport = (*Transport)(nil)
 
-// ─── Unused import guard ─────────────────────────────────────────────────────
 var _ = sync.Mutex{}
 var _ = atomic.Bool{}

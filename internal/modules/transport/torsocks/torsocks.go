@@ -109,9 +109,7 @@ func (t *Transport) Dial(ctx context.Context, addr string) (net.Conn, error) {
 	return &torConn{Conn: conn, t: t}, nil
 }
 
-// handshake performs SOCKS5 handshake with Tor
 func (t *Transport) handshake(conn net.Conn, host string, port uint16) error {
-	// Greeting: VER=5, NMETHODS=1, METHOD=0 (no auth)
 	if _, err := conn.Write([]byte{socks5Version, 1, socks5NoAuth}); err != nil {
 		return err
 	}
@@ -124,11 +122,10 @@ func (t *Transport) handshake(conn net.Conn, host string, port uint16) error {
 		return fmt.Errorf("SOCKS5 auth negotiation failed: %v", resp)
 	}
 
-	// CONNECT request: VER CMD RSV ATYP DST.ADDR DST.PORT
 	req := []byte{
 		socks5Version,
 		socks5Connect,
-		0x00,       // reserved
+		0x00,
 		socks5Domain,
 		byte(len(host)),
 	}
@@ -141,7 +138,6 @@ func (t *Transport) handshake(conn net.Conn, host string, port uint16) error {
 		return err
 	}
 
-	// Response: VER REP RSV ATYP [BND.ADDR] BND.PORT
 	header := make([]byte, 4)
 	if _, err := io.ReadFull(conn, header); err != nil {
 		return err
@@ -150,15 +146,14 @@ func (t *Transport) handshake(conn net.Conn, host string, port uint16) error {
 		return fmt.Errorf("SOCKS5 CONNECT failed, code=%d", header[1])
 	}
 
-	// Read bound address
 	switch header[3] {
-	case 0x01: // IPv4
+	case 0x01:
 		io.ReadFull(conn, make([]byte, 6))
-	case 0x03: // domain
+	case 0x03:
 		lenBuf := make([]byte, 1)
 		io.ReadFull(conn, lenBuf)
 		io.ReadFull(conn, make([]byte, int(lenBuf[0])+2))
-	case 0x04: // IPv6
+	case 0x04:
 		io.ReadFull(conn, make([]byte, 18))
 	}
 

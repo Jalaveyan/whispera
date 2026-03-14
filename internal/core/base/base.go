@@ -3,8 +3,11 @@ package base
 import (
 	"context"
 	"io"
+	"log"
 	"net/http"
+	"runtime"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"whispera/internal/core/events"
@@ -384,6 +387,121 @@ type CircuitError struct {
 
 func (e *CircuitError) Error() string {
 	return e.Message
+}
+
+type GoroutineLimiter struct {
+	sem     chan struct{}
+	active  int64
+	dropped int64
+	limit   int
+}
+
+func NewGoroutineLimiter(limit int) *GoroutineLimiter {
+	return &GoroutineLimiter{
+		sem:   make(chan struct{}, limit),
+		limit: limit,
+	}
+}
+
+func (gl *GoroutineLimiter) Go(fn func()) bool {
+	select {
+	case gl.sem <- struct{}{}:
+		atomic.AddInt64(&gl.active, 1)
+		go func() {
+			defer func() {
+				<-gl.sem
+				atomic.AddInt64(&gl.active, -1)
+			}()
+			fn()
+		}()
+		return true
+	default:
+		atomic.AddInt64(&gl.dropped, 1)
+		return false
+	}
+}
+
+func (gl *GoroutineLimiter) GoWithTimeout(fn func(), timeout time.Duration) bool {
+	t := time.NewTimer(timeout)
+	defer t.Stop()
+	select {
+	case gl.sem <- struct{}{}:
+		atomic.AddInt64(&gl.active, 1)
+		go func() {
+			defer func() {
+				<-gl.sem
+				atomic.AddInt64(&gl.active, -1)
+			}()
+			fn()
+		}()
+		return true
+	case <-t.C:
+		atomic.AddInt64(&gl.dropped, 1)
+		return false
+	}
+}
+
+func (gl *GoroutineLimiter) Active() int64  { return atomic.LoadInt64(&gl.active) }
+func (gl *GoroutineLimiter) Dropped() int64 { return atomic.LoadInt64(&gl.dropped) }
+func (gl *GoroutineLimiter) Limit() int     { return gl.limit }
+
+type MemoryWatchdog struct {
+	softLimit   uint64
+	hardLimit   uint64
+	checkPeriod time.Duration
+	onPressure  func(allocMB uint64)
+	ctx         context.Context
+	cancel      context.CancelFunc
+}
+
+func NewMemoryWatchdog(softLimitMB, hardLimitMB uint64, period time.Duration) *MemoryWatchdog {
+	ctx, cancel := context.WithCancel(context.Background())
+	return &MemoryWatchdog{
+		softLimit:   softLimitMB * 1024 * 1024,
+		hardLimit:   hardLimitMB * 1024 * 1024,
+		checkPeriod: period,
+		ctx:         ctx,
+		cancel:      cancel,
+	}
+}
+
+func (mw *MemoryWatchdog) OnPressure(fn func(allocMB uint64)) {
+	mw.onPressure = fn
+}
+
+func (mw *MemoryWatchdog) Start() {
+	go func() {
+		ticker := time.NewTicker(mw.checkPeriod)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-mw.ctx.Done():
+				return
+			case <-ticker.C:
+				var ms runtime.MemStats
+				runtime.ReadMemStats(&ms)
+				if ms.Alloc > mw.hardLimit {
+					log.Printf("[MemoryWatchdog] HARD limit exceeded: %dMB (limit %dMB), forcing GC",
+						ms.Alloc/1024/1024, mw.hardLimit/1024/1024)
+					runtime.GC()
+					runtime.ReadMemStats(&ms)
+					if ms.Alloc > mw.hardLimit {
+						log.Printf("[MemoryWatchdog] still above hard limit after GC: %dMB", ms.Alloc/1024/1024)
+					}
+				} else if ms.Alloc > mw.softLimit {
+					log.Printf("[MemoryWatchdog] soft limit exceeded: %dMB (limit %dMB)",
+						ms.Alloc/1024/1024, mw.softLimit/1024/1024)
+					if mw.onPressure != nil {
+						mw.onPressure(ms.Alloc / 1024 / 1024)
+					}
+				}
+			}
+		}
+	}()
+}
+
+func (mw *MemoryWatchdog) Stop() {
+	mw.cancel()
 }
 
 type Metrics struct {

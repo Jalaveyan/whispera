@@ -154,7 +154,7 @@ jobs:
         if: github.ref == 'refs/heads/main'
         run: |
           git fetch --tags
-          BASE="v2.1"
+          BASE="v1.0.0"
           LAST_TAG=$(git tag -l "${BASE}.*" | sort -V | tail -n1)
           
           if [ -z "$LAST_TAG" ]; then
@@ -174,7 +174,7 @@ jobs:
         run: |
           CHANGELOG="${{ steps.build_changelog.outputs.changelog }}"
           if [ -z "$CHANGELOG" ] || echo "$CHANGELOG" | grep -qi "no changes"; then
-            LAST_TAG=$(git tag -l "v2.1.*" | sort -V | tail -n1)
+            LAST_TAG=$(git tag -l "v1.0.0*" | sort -V | tail -n1)
             if [ -n "$LAST_TAG" ]; then
               BODY=$(git log "${LAST_TAG}..HEAD" --pretty=format:"- %s (%h)" --no-merges | head -50)
             else

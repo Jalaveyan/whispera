@@ -178,7 +178,7 @@ type ClientPhantomConfig struct {
 	SNI             string `yaml:"sni" json:"sni"`
 	ShortId         string `yaml:"short_id" json:"short_id"`
 	ServerPublicKey string `yaml:"server_public_key" json:"server_public_key"`
-	PSK             string `yaml:"psk" json:"psk"` // user's base64 Curve25519 private key
+	PSK             string `yaml:"psk" json:"psk"`
 }
 
 func LoadClient(path string) (*ClientConfig, error) {

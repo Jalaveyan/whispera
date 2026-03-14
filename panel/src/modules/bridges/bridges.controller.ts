@@ -146,6 +146,42 @@ export class BridgesController {
         }
     }
 
+    @Get('api/bridge-map')
+    async getBridgeMap(@Headers('authorization') auth: string, @Res() res: Response) {
+        try {
+            const token = auth?.replace('Bearer ', '');
+            const data = await this.bridgesService.getBridgeMap(token);
+            return res.json(data);
+        } catch (err: any) {
+            const status = err?.response?.status || HttpStatus.INTERNAL_SERVER_ERROR;
+            return res.status(status).json({ error: err?.response?.data?.error || err?.message });
+        }
+    }
+
+    @Post('api/bridge-connect')
+    async connectToBridge(@Headers('authorization') auth: string, @Body('bridge_id') bridgeId: string, @Res() res: Response) {
+        try {
+            const token = auth?.replace('Bearer ', '');
+            const data = await this.bridgesService.connectToBridge(token, bridgeId);
+            return res.json(data);
+        } catch (err: any) {
+            const status = err?.response?.status || HttpStatus.BAD_REQUEST;
+            return res.status(status).json({ error: err?.response?.data?.error || err?.message });
+        }
+    }
+
+    @Post('api/bridge-scan')
+    async scanBridges(@Headers('authorization') auth: string, @Res() res: Response) {
+        try {
+            const token = auth?.replace('Bearer ', '');
+            const data = await this.bridgesService.scanBridges(token);
+            return res.json(data);
+        } catch (err: any) {
+            const status = err?.response?.status || HttpStatus.INTERNAL_SERVER_ERROR;
+            return res.status(status).json({ error: err?.response?.data?.error || err?.message });
+        }
+    }
+
     @Get('api/bridge-cloudinit')
     async getBridgeCloudinit(@Headers('authorization') auth: string, @Res() res: Response) {
         try {

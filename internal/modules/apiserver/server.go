@@ -2,10 +2,13 @@ package apiserver
 
 import (
 	"context"
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/subtle"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
@@ -44,6 +47,17 @@ const (
 	ModuleName    = "api.server"
 	ModuleVersion = "1.0.0"
 )
+
+type ctxKey int
+
+const ctxKeyClaims ctxKey = 1
+
+func GetClaims(r *http.Request) *auth.Claims {
+	if c, ok := r.Context().Value(ctxKeyClaims).(*auth.Claims); ok {
+		return c
+	}
+	return nil
+}
 
 type Config struct {
 	Enabled        bool
@@ -86,6 +100,7 @@ type Server struct {
 	handlers map[string]http.HandlerFunc
 
 	mfaManager    *auth.MFAManager
+	jwtManager    *auth.JWTManager
 	bridgePool    *bridgepool.Registry
 	bridgeHandler *bridgepool.APIHandler
 	probeDetector interface{ Stats() map[string]interface{}; BlockIP(ip, reason string); UnblockIP(ip string) }
@@ -93,11 +108,29 @@ type Server struct {
 	loginAttempts   map[string][]time.Time
 	loginAttemptsMu sync.Mutex
 
-	sessionToken string
+	sessionToken  string
+	signingSecret []byte
+
+	revokedTokens   map[string]time.Time
+	revokedTokensMu sync.Mutex
+
+	revokedKeys   map[string]time.Time
+	revokedKeysMu sync.RWMutex
 
 	cpuLoad    float64
 	cpuMu      sync.Mutex
 	cpuPrev    [2]uint64
+
+	activeConns   map[string]int32
+	activeConnsMu sync.Mutex
+	maxConnsPerIP int
+
+	apiRateBuckets   map[string]*apiRateBucket
+	apiRateBucketsMu sync.Mutex
+	apiRateClean     time.Time
+
+	inflight  sync.WaitGroup
+	startTime time.Time
 }
 
 func New(cfg *Config) (*Server, error) {
@@ -118,6 +151,7 @@ func New(cfg *Config) (*Server, error) {
 	loadSubscriptions()
 
 	sessionToken := loadOrCreateSessionToken()
+	signingSecret := loadOrCreateSigningSecret()
 
 	s := &Server{
 		Module:        base.NewModule(ModuleName, ModuleVersion, nil),
@@ -125,12 +159,21 @@ func New(cfg *Config) (*Server, error) {
 		mux:           http.NewServeMux(),
 		handlers:      make(map[string]http.HandlerFunc),
 		mfaManager:    auth.NewMFAManager(),
+		jwtManager:    auth.NewJWTManager(signingSecret),
 		bridgePool:    bridgeReg,
 		bridgeHandler: bridgepool.NewAPIHandler(bridgeReg),
 		loginAttempts: make(map[string][]time.Time),
 		sessionToken:  sessionToken,
+		signingSecret: signingSecret,
+		revokedTokens: make(map[string]time.Time),
+		revokedKeys:   make(map[string]time.Time),
+		activeConns:    make(map[string]int32),
+		maxConnsPerIP:  50,
+		apiRateBuckets: make(map[string]*apiRateBucket),
+		apiRateClean:   time.Now(),
 	}
 
+	s.loadRevokedKeys()
 	s.registerDefaultRoutes()
 	go s.cpuSampler()
 	bridgeReg.StartHealthMonitor()
@@ -142,6 +185,10 @@ func New(cfg *Config) (*Server, error) {
 
 func (s *Server) registerDefaultRoutes() {
 	s.Handle("POST /api/login", s.handleLogin)
+	s.Handle("POST /api/logout", s.handleLogout)
+	s.Handle("POST /api/v2/auth/login", s.handleLoginV2)
+	s.Handle("POST /api/v2/auth/refresh", s.handleRefreshToken)
+	s.Handle("POST /api/v2/auth/logout", s.handleLogoutV2)
 
 	s.Handle("GET /api/v1/health", s.handleHealth)
 	s.Handle("GET /api/v1/status", s.handleStatus)
@@ -187,6 +234,9 @@ func (s *Server) registerDefaultRoutes() {
 	s.Handle("POST /api/keys/connection", s.handleGenerateConnectionKey)
 	s.Handle("POST /api/keys/transport", s.handleGenerateTransportKeys)
 	s.Handle("POST /api/keys/multi-transport", s.handleGenerateMultiTransportKeys)
+	s.Handle("POST /api/keys/revoke", s.handleRevokeKey)
+	s.Handle("GET /api/keys/revoked", s.handleListRevokedKeys)
+	s.Handle("POST /api/keys/check", s.handleCheckKey)
 
 	s.Handle("GET /api/subscriptions", s.handleGetSubscriptions)
 	s.Handle("POST /api/subscriptions/add", s.handleAddSubscription)
@@ -229,6 +279,16 @@ func (s *Server) registerDefaultRoutes() {
 	s.Handle("GET /api/bridge-stats", s.handleBridgeStats)
 	s.Handle("POST /api/bridge-check", s.handleBridgeCheck)
 	s.Handle("GET /install-bridge.sh", s.handleServeBridgeScript)
+	s.Handle("GET /api/bridge-white", s.bridgeHandler.HandleGetWhiteBridges)
+	s.Handle("GET /api/bridge-map", s.bridgeHandler.HandleGetBridgeMap)
+	s.Handle("POST /api/bridge-heartbeat", s.bridgeHandler.HandleBridgeHeartbeat)
+	s.Handle("POST /api/bridge-ssh-admin", s.bridgeHandler.HandleSetAdminSSHKey)
+	s.Handle("POST /api/bridge-access-key", s.bridgeHandler.HandleIssueAccessKey)
+	s.Handle("POST /api/bridge-access-validate", s.bridgeHandler.HandleValidateAccessKey)
+	s.Handle("POST /api/bridge-access-revoke", s.bridgeHandler.HandleRevokeAccessKey)
+	s.Handle("GET /api/bridge-white-cloudinit", s.bridgeHandler.HandleGetWhiteCloudInit)
+	s.Handle("POST /api/bridge-connect", s.bridgeHandler.HandleBridgeConnect)
+	s.Handle("POST /api/bridge-scan", s.bridgeHandler.HandleBridgeScan)
 }
 
 func (s *Server) Init(ctx context.Context, cfg interfaces.ModuleConfig) error {
@@ -247,6 +307,8 @@ func (s *Server) Start() error {
 	if err := s.Module.Start(); err != nil {
 		return err
 	}
+
+	s.startTime = time.Now()
 
 	if !s.config.Enabled {
 		s.SetHealthy(true, "API server disabled")
@@ -286,6 +348,14 @@ func (s *Server) Start() error {
 		}
 	}()
 
+	go func() {
+		ticker := time.NewTicker(5 * time.Minute)
+		defer ticker.Stop()
+		for range ticker.C {
+			s.cleanupRevokedTokens()
+		}
+	}()
+
 	s.SetHealthy(true, fmt.Sprintf("API server running on %s", s.config.ListenAddr))
 	s.PublishEvent(events.EventTypeModuleStarted, map[string]interface{}{
 		"listen_addr": s.config.ListenAddr,
@@ -299,6 +369,13 @@ func (s *Server) Stop() error {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		s.server.Shutdown(ctx)
+
+		done := make(chan struct{})
+		go func() { s.inflight.Wait(); close(done) }()
+		select {
+		case <-done:
+		case <-ctx.Done():
+		}
 	}
 
 	s.PublishEvent(events.EventTypeModuleStopped, nil)
@@ -378,11 +455,17 @@ func (s *Server) buildHandler() http.Handler {
 
 	handler = s.authMiddleware(handler)
 
+	handler = s.apiRateMiddleware(handler)
+
 	if s.config.EnableCORS {
 		handler = s.corsMiddleware(handler)
 	}
 
 	handler = s.loggingMiddleware(handler)
+
+	handler = s.connLimitMiddleware(handler)
+
+	handler = s.timeoutMiddleware(handler, 30*time.Second)
 
 	handler = s.recoveryMiddleware(handler)
 
@@ -445,8 +528,15 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 
 		if r.URL.Path == "/api/login" ||
 			r.URL.Path == "/api/v2/auth/login" ||
+			r.URL.Path == "/api/v2/auth/refresh" ||
+			r.URL.Path == "/api/logout" ||
 			r.URL.Path == "/api/bridge-register" ||
 			r.URL.Path == "/api/bridge-health" ||
+			r.URL.Path == "/api/bridge-heartbeat" ||
+			r.URL.Path == "/api/bridge-white-cloudinit" ||
+			r.URL.Path == "/api/bridge-access-validate" ||
+			r.URL.Path == "/api/bridge-map" ||
+			r.URL.Path == "/api/keys/check" ||
 			r.URL.Path == "/install-bridge.sh" ||
 			strings.HasSuffix(r.URL.Path, "/health") {
 			next.ServeHTTP(w, r)
@@ -455,32 +545,86 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 
 		auth := r.Header.Get("Authorization")
 		if auth == "" {
-			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
 			return
 		}
 
 		const prefix = "Bearer "
 		if !strings.HasPrefix(auth, prefix) {
-			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
 			return
 		}
 
 		token := auth[len(prefix):]
-		if token != s.sessionToken {
-			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+
+		if token == s.sessionToken {
+			next.ServeHTTP(w, r)
 			return
 		}
 
-		next.ServeHTTP(w, r)
+		if claims, err := s.jwtManager.ValidateAccessToken(token); err == nil {
+			ctx := context.WithValue(r.Context(), ctxKeyClaims, claims)
+			next.ServeHTTP(w, r.WithContext(ctx))
+			return
+		}
+
+		if s.validateTimedToken(token) {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		http.Error(w, `{"error":"session expired"}`, http.StatusUnauthorized)
 	})
 }
 
 func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		s.inflight.Add(1)
+		defer s.inflight.Done()
 		start := time.Now()
 		next.ServeHTTP(w, r)
 		s.UpdateActivity()
 		_ = start
+	})
+}
+
+func (s *Server) timeoutMiddleware(next http.Handler, timeout time.Duration) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), timeout)
+		defer cancel()
+		r = r.WithContext(ctx)
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (s *Server) connLimitMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ip := r.RemoteAddr
+		if i := strings.LastIndex(ip, ":"); i >= 0 {
+			ip = ip[:i]
+		}
+		ip = strings.Trim(ip, "[]")
+
+		s.activeConnsMu.Lock()
+		count := s.activeConns[ip]
+		if int(count) >= s.maxConnsPerIP {
+			s.activeConnsMu.Unlock()
+			http.Error(w, `{"error":"too many connections"}`, http.StatusTooManyRequests)
+			return
+		}
+		s.activeConns[ip] = count + 1
+		s.activeConnsMu.Unlock()
+
+		defer func() {
+			s.activeConnsMu.Lock()
+			s.activeConns[ip]--
+			if s.activeConns[ip] <= 0 {
+				delete(s.activeConns, ip)
+			}
+			s.activeConnsMu.Unlock()
+		}()
+
+		next.ServeHTTP(w, r)
 	})
 }
 
@@ -498,6 +642,63 @@ func (s *Server) recoveryMiddleware(next http.Handler) http.Handler {
 				})
 			}
 		}()
+		next.ServeHTTP(w, r)
+	})
+}
+
+type apiRateBucket struct {
+	tokens   float64
+	lastTime time.Time
+}
+
+func (s *Server) apiRateMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.URL.Path, "/api/") {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		ip := s.getClientIP(r)
+		key := ip + "|" + r.URL.Path
+
+		s.apiRateBucketsMu.Lock()
+		now := time.Now()
+
+		if now.Sub(s.apiRateClean) > 5*time.Minute {
+			cutoff := now.Add(-10 * time.Minute)
+			for k, b := range s.apiRateBuckets {
+				if b.lastTime.Before(cutoff) {
+					delete(s.apiRateBuckets, k)
+				}
+			}
+			s.apiRateClean = now
+		}
+
+		b, exists := s.apiRateBuckets[key]
+		if !exists {
+			b = &apiRateBucket{tokens: 60, lastTime: now}
+			s.apiRateBuckets[key] = b
+		}
+
+		elapsed := now.Sub(b.lastTime).Seconds()
+		b.lastTime = now
+		b.tokens += elapsed * 30
+		if b.tokens > 60 {
+			b.tokens = 60
+		}
+
+		allowed := b.tokens >= 1
+		if allowed {
+			b.tokens--
+		}
+		s.apiRateBucketsMu.Unlock()
+
+		if !allowed {
+			w.Header().Set("Retry-After", "2")
+			http.Error(w, `{"error":"too many requests"}`, http.StatusTooManyRequests)
+			return
+		}
+
 		next.ServeHTTP(w, r)
 	})
 }
@@ -521,16 +722,45 @@ func (s *Server) jsonError(w http.ResponseWriter, status int, message string) {
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	health := s.HealthCheck()
+	allHealthy := health.Healthy
 
 	response := map[string]interface{}{
 		"status":  "ok",
 		"healthy": health.Healthy,
 		"message": health.Message,
+		"uptime":  time.Since(s.startTime).String(),
+	}
+
+	deps := make(map[string]interface{})
+
+	if database := db.Global(); database != nil {
+		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+		defer cancel()
+		if err := database.Ping(ctx); err != nil {
+			deps["database"] = map[string]interface{}{"status": "unhealthy", "error": err.Error()}
+			allHealthy = false
+		} else {
+			deps["database"] = map[string]interface{}{"status": "healthy"}
+		}
+	} else {
+		deps["database"] = map[string]interface{}{"status": "disabled"}
 	}
 
 	if s.registry != nil {
 		moduleHealth := s.registry.HealthCheck()
 		response["modules"] = moduleHealth
+		for _, mh := range moduleHealth {
+			if !mh.Healthy {
+				allHealthy = false
+			}
+		}
+	}
+
+	response["dependencies"] = deps
+	response["healthy"] = allHealthy
+
+	if !allHealthy {
+		response["status"] = "degraded"
 	}
 
 	s.jsonOK(w, response)
@@ -560,10 +790,12 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 			s.clearLoginAttempts(clientIP)
 			log.Printf("[API] Successful DB login from IP: %s (user: %s)", clientIP, req.Username)
 
+			token := s.issueTimedToken(req.Username)
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(map[string]interface{}{
-				"success": true,
-				"token":   s.sessionToken,
+				"success":    true,
+				"token":      token,
+				"expires_in": 1800,
 				"user": map[string]string{
 					"username": req.Username,
 					"role":     "admin",
@@ -579,7 +811,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 
 	if expectedUsername == "" {
 		expectedUsername = "admin"
-		log.Printf("[API] ⚠ WARNING: No admin_username configured, falling back to 'admin'")
+		log.Printf("[API] WARNING: No admin_username configured, falling back to 'admin'")
 	}
 
 	if expectedPassword != "" {
@@ -589,11 +821,13 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		if usernameMatch && passwordMatch {
 			s.clearLoginAttempts(clientIP)
 
+			token := s.issueTimedToken(req.Username)
 			log.Printf("[API] Successful login from IP: %s", clientIP)
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(map[string]interface{}{
-				"success": true,
-				"token":   s.sessionToken,
+				"success":    true,
+				"token":      token,
+				"expires_in": 1800,
 				"user": map[string]string{
 					"username": req.Username,
 					"role":     "admin",
@@ -1013,6 +1247,8 @@ func GetRegisteredUsers() []RegisteredUser {
 }
 
 const sessionTokenFile = "/etc/whispera/session.token"
+const signingSecretFile = "/etc/whispera/signing.key"
+const tokenTTL = 30 * time.Minute
 
 func loadOrCreateSessionToken() string {
 	data, err := os.ReadFile(sessionTokenFile)
@@ -1035,6 +1271,237 @@ func loadOrCreateSessionToken() string {
 		log.Println("[API] Generated and saved new session token")
 	}
 	return token
+}
+
+func loadOrCreateSigningSecret() []byte {
+	data, err := os.ReadFile(signingSecretFile)
+	if err == nil && len(data) >= 32 {
+		return data[:32]
+	}
+	secret := make([]byte, 32)
+	rand.Read(secret)
+	os.WriteFile(signingSecretFile, secret, 0600)
+	return secret
+}
+
+func (s *Server) issueTimedToken(username string) string {
+	expiry := time.Now().Add(tokenTTL).Unix()
+	nonce := make([]byte, 8)
+	rand.Read(nonce)
+	payload := fmt.Sprintf("%s:%d:%s", username, expiry, base64.RawURLEncoding.EncodeToString(nonce))
+	sig := computeHMAC(s.signingSecret, payload)
+	return base64.RawURLEncoding.EncodeToString([]byte(payload)) + "." + base64.RawURLEncoding.EncodeToString(sig)
+}
+
+func (s *Server) validateTimedToken(token string) bool {
+	parts := strings.SplitN(token, ".", 2)
+	if len(parts) != 2 {
+		return false
+	}
+
+	s.revokedTokensMu.Lock()
+	if _, revoked := s.revokedTokens[token]; revoked {
+		s.revokedTokensMu.Unlock()
+		return false
+	}
+	s.revokedTokensMu.Unlock()
+
+	payloadBytes, err := base64.RawURLEncoding.DecodeString(parts[0])
+	if err != nil {
+		return false
+	}
+	sigBytes, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return false
+	}
+
+	payload := string(payloadBytes)
+	expectedSig := computeHMAC(s.signingSecret, payload)
+	if !hmacEqual(sigBytes, expectedSig) {
+		return false
+	}
+
+	fields := strings.SplitN(payload, ":", 3)
+	if len(fields) < 2 {
+		return false
+	}
+	var expiry int64
+	fmt.Sscanf(fields[1], "%d", &expiry)
+	if time.Now().Unix() > expiry {
+		return false
+	}
+
+	return true
+}
+
+func (s *Server) revokeToken(token string) {
+	s.revokedTokensMu.Lock()
+	s.revokedTokens[token] = time.Now()
+	s.revokedTokensMu.Unlock()
+}
+
+func (s *Server) cleanupRevokedTokens() {
+	s.revokedTokensMu.Lock()
+	cutoff := time.Now().Add(-tokenTTL)
+	for t, revokedAt := range s.revokedTokens {
+		if revokedAt.Before(cutoff) {
+			delete(s.revokedTokens, t)
+		}
+	}
+	s.revokedTokensMu.Unlock()
+}
+
+func computeHMAC(key []byte, data string) []byte {
+	mac := hmac.New(sha256.New, key)
+	mac.Write([]byte(data))
+	return mac.Sum(nil)
+}
+
+func hmacEqual(a, b []byte) bool {
+	return subtle.ConstantTimeCompare(a, b) == 1
+}
+
+func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
+	authHeader := r.Header.Get("Authorization")
+	if strings.HasPrefix(authHeader, "Bearer ") {
+		token := authHeader[7:]
+		s.revokeToken(token)
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success": true,
+	})
+}
+
+func (s *Server) handleLoginV2(w http.ResponseWriter, r *http.Request) {
+	clientIP := s.getClientIP(r)
+	if !s.checkLoginRateLimit(clientIP) {
+		s.jsonError(w, http.StatusTooManyRequests, "Too many login attempts")
+		return
+	}
+
+	var req struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+		MFACode  string `json:"mfa_code,omitempty"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.jsonError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+
+	var userID string
+	var role auth.Role
+	authenticated := false
+
+	if database := db.Global(); database != nil {
+		user, err := database.AuthenticateUser(r.Context(), req.Username, req.Password)
+		if err == nil {
+			userID = user.ID.String()
+			if user.IsAdmin {
+				role = auth.RoleAdmin
+			} else {
+				role = auth.RoleUser
+			}
+			authenticated = true
+		}
+	}
+
+	if !authenticated {
+		expectedUsername := s.config.AdminUsername
+		expectedPassword := s.config.AdminPassword
+		if expectedUsername == "" {
+			expectedUsername = "admin"
+		}
+		if expectedPassword != "" {
+			uMatch := subtle.ConstantTimeCompare([]byte(req.Username), []byte(expectedUsername)) == 1
+			pMatch := subtle.ConstantTimeCompare([]byte(req.Password), []byte(expectedPassword)) == 1
+			if uMatch && pMatch {
+				userID = "admin"
+				role = auth.RoleAdmin
+				authenticated = true
+			}
+		}
+	}
+
+	if !authenticated {
+		s.jsonError(w, http.StatusUnauthorized, "Invalid credentials")
+		return
+	}
+
+	if s.mfaManager.IsMFAEnabled(userID) {
+		ok, err := s.mfaManager.ValidateLogin(userID, req.MFACode)
+		if err != nil || !ok {
+			s.jsonError(w, http.StatusForbidden, "MFA verification failed")
+			return
+		}
+	}
+
+	s.clearLoginAttempts(clientIP)
+
+	deviceID := r.Header.Get("X-Device-ID")
+	accessToken, refreshToken, err := s.jwtManager.IssueTokenPair(userID, role, deviceID)
+	if err != nil {
+		s.jsonError(w, http.StatusInternalServerError, "Failed to issue tokens")
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success":       true,
+		"access_token":  accessToken,
+		"refresh_token": refreshToken,
+		"expires_in":    int(auth.AccessTokenTTL.Seconds()),
+		"token_type":    "Bearer",
+		"user": map[string]interface{}{
+			"id":   userID,
+			"role": string(role),
+		},
+	})
+}
+
+func (s *Server) handleRefreshToken(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		RefreshToken string `json:"refresh_token"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.jsonError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+
+	accessToken, refreshToken, err := s.jwtManager.RefreshAccessToken(req.RefreshToken)
+	if err != nil {
+		s.jsonError(w, http.StatusUnauthorized, "Invalid or expired refresh token")
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success":       true,
+		"access_token":  accessToken,
+		"refresh_token": refreshToken,
+		"expires_in":    int(auth.AccessTokenTTL.Seconds()),
+		"token_type":    "Bearer",
+	})
+}
+
+func (s *Server) handleLogoutV2(w http.ResponseWriter, r *http.Request) {
+	authHeader := r.Header.Get("Authorization")
+	if strings.HasPrefix(authHeader, "Bearer ") {
+		token := authHeader[7:]
+		s.jwtManager.RevokeAccessToken(token)
+	}
+
+	var req struct {
+		RefreshToken string `json:"refresh_token,omitempty"`
+	}
+	json.NewDecoder(r.Body).Decode(&req)
+	if req.RefreshToken != "" {
+		s.jwtManager.RevokeRefreshToken(req.RefreshToken)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{"success": true})
 }
 
 func saveUsers() {
@@ -1403,8 +1870,11 @@ func (s *Server) handleGenerateConnectionKey(w http.ResponseWriter, r *http.Requ
 		transport = "auto"
 	}
 
+	keyID := generateKeyID()
+
 	ck := config.ConnectionKey{
-		Version:         1,
+		Version:         2,
+		KeyID:           keyID,
 		Server:          serverAddr,
 		PSK:             userPrivKey,
 		ServerPub:       serverPubKey,
@@ -1430,6 +1900,7 @@ func (s *Server) handleGenerateConnectionKey(w http.ResponseWriter, r *http.Requ
 	s.jsonOK(w, map[string]interface{}{
 		"success":        true,
 		"key":            connectionKey,
+		"key_id":         keyID,
 		"psk":            userPrivKey,
 		"pub":            userPubKey,
 		"server":         serverAddr,
@@ -1438,6 +1909,87 @@ func (s *Server) handleGenerateConnectionKey(w http.ResponseWriter, r *http.Requ
 		"sni":            sni,
 		"russianService": req.RussianService,
 	})
+}
+
+func generateKeyID() string {
+	b := make([]byte, 8)
+	rand.Read(b)
+	return hex.EncodeToString(b)
+}
+
+func (s *Server) handleRevokeKey(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		KeyID  string `json:"key_id"`
+		Reason string `json:"reason"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.KeyID == "" {
+		s.jsonError(w, http.StatusBadRequest, "key_id required")
+		return
+	}
+
+	s.revokedKeysMu.Lock()
+	s.revokedKeys[req.KeyID] = time.Now()
+	s.revokedKeysMu.Unlock()
+
+	s.persistRevokedKeys()
+	log.Printf("[API] Key revoked: %s reason=%s", req.KeyID, req.Reason)
+	s.jsonOK(w, map[string]interface{}{"success": true, "key_id": req.KeyID})
+}
+
+func (s *Server) handleListRevokedKeys(w http.ResponseWriter, r *http.Request) {
+	s.revokedKeysMu.RLock()
+	keys := make([]map[string]interface{}, 0, len(s.revokedKeys))
+	for kid, revokedAt := range s.revokedKeys {
+		keys = append(keys, map[string]interface{}{
+			"key_id":     kid,
+			"revoked_at": revokedAt.Format(time.RFC3339),
+		})
+	}
+	s.revokedKeysMu.RUnlock()
+	s.jsonOK(w, map[string]interface{}{"revoked_keys": keys})
+}
+
+func (s *Server) handleCheckKey(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		KeyID string `json:"key_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.KeyID == "" {
+		s.jsonError(w, http.StatusBadRequest, "key_id required")
+		return
+	}
+
+	s.revokedKeysMu.RLock()
+	_, revoked := s.revokedKeys[req.KeyID]
+	s.revokedKeysMu.RUnlock()
+
+	s.jsonOK(w, map[string]interface{}{"key_id": req.KeyID, "revoked": revoked, "valid": !revoked})
+}
+
+func (s *Server) IsKeyRevoked(keyID string) bool {
+	if keyID == "" {
+		return false
+	}
+	s.revokedKeysMu.RLock()
+	_, revoked := s.revokedKeys[keyID]
+	s.revokedKeysMu.RUnlock()
+	return revoked
+}
+
+func (s *Server) persistRevokedKeys() {
+	s.revokedKeysMu.RLock()
+	data, _ := json.Marshal(s.revokedKeys)
+	s.revokedKeysMu.RUnlock()
+	os.WriteFile("/etc/whispera/revoked_keys.json", data, 0600)
+}
+
+func (s *Server) loadRevokedKeys() {
+	data, err := os.ReadFile("/etc/whispera/revoked_keys.json")
+	if err != nil {
+		return
+	}
+	s.revokedKeysMu.Lock()
+	json.Unmarshal(data, &s.revokedKeys)
+	s.revokedKeysMu.Unlock()
 }
 
 func (s *Server) handleGetSessionsAPI(w http.ResponseWriter, r *http.Request) {

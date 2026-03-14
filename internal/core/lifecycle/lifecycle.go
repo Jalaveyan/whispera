@@ -26,7 +26,6 @@ type Manager struct {
 	gracefulStop    bool
 	running         bool
 
-	// Callbacks
 	onStart    []func() error
 	onStop     []func() error
 	onReload   []func() error

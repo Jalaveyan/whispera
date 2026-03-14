@@ -1,15 +1,5 @@
 package yatelemost
 
-// yatelemost.go — VPN transport over Yandex Telemost TURN servers.
-//
-// Uses Yandex TURN (turn.webrtc.yandex.net) with credentials obtained from
-// the Telemost API.  The Telemost conference WebSocket is reused for WebRTC
-// SDP/ICE signaling between client and server.
-//
-// Both VPN peers (client and server) must have a valid Yandex Session_id.
-// They meet in the same Telemost conference identified by ConferenceURL.
-// The server creates the conference and shares the URL with the client
-// out-of-band (e.g. via config file or QR code).
 
 import (
 	"context"
@@ -41,27 +31,18 @@ const (
 	ModuleName    = "transport.yatelemost"
 	ModuleVersion = "1.0.0"
 
-	// Signaling message types (sent through Telemost conference WS).
 	sigOffer     = "vpn_offer"
 	sigAnswer    = "vpn_answer"
 	sigCandidate = "vpn_ice"
 )
 
-// Config for the Yandex Telemost transport.
 type Config struct {
-	// ServerMode: true on the VPN server, false on the VPN client.
 	ServerMode bool
 
-	// SessionID is the Yandex Session_id cookie.
-	// Obtain: log in at yandex.ru → DevTools → Cookies → Session_id.
 	SessionID string
 
-	// ConferenceURL is the Telemost join URL shared between peers.
-	// Server: leave empty — a new conference is created on Start().
-	// Client: set to the URL the server advertised.
 	ConferenceURL string
 
-	// ICEPolicy: "relay" (default, required for CIDR bypass) or "all".
 	ICEPolicy string
 
 	BufferSize int
@@ -74,14 +55,12 @@ func DefaultConfig() *Config {
 	}
 }
 
-// sigMsg is the envelope for VPN signaling messages sent over Telemost WS.
 type sigMsg struct {
 	Type      string `json:"type"`
 	SDP       string `json:"sdp,omitempty"`
 	Candidate string `json:"candidate,omitempty"`
 }
 
-// Transport implements VPN tunneling through Yandex Telemost TURN.
 type Transport struct {
 	*base.Module
 	config *Config
@@ -98,7 +77,7 @@ type Transport struct {
 	stopCh   chan struct{}
 	stopOnce sync.Once
 
-	remoteCandidatesDone int32 // atomic
+	remoteCandidatesDone int32
 }
 
 func Factory(cfg interface{}) (interfaces.Module, error) {
@@ -128,8 +107,6 @@ func New(cfg *Config) (*Transport, error) {
 	}, nil
 }
 
-// Start initialises the Telemost conference connection and prepares WebRTC.
-// On the server side it creates a new conference and logs the join URL.
 func (t *Transport) Start() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -138,7 +115,6 @@ func (t *Transport) Start() error {
 		return fmt.Errorf("yatelemost: SessionID is required")
 	}
 
-	// Step 1: create or reuse conference.
 	if t.config.ServerMode || t.config.ConferenceURL == "" {
 		log.Printf("yatelemost: creating Telemost conference...")
 		conf, err := CreateConference(ctx, t.config.SessionID)
@@ -148,11 +124,9 @@ func (t *Transport) Start() error {
 		t.conf = conf
 		log.Printf("yatelemost: conference created — share this URL with client: %s", conf.WssURL)
 	} else {
-		// Client mode: ConferenceURL is the WssURL the server shared.
 		t.conf = &TeleMostConference{WssURL: t.config.ConferenceURL}
 	}
 
-	// Step 2: fetch TURN credentials and connect signaling WS.
 	log.Printf("yatelemost: fetching TURN credentials from Telemost...")
 	iceServers, err := FetchICEServers(ctx, t.config.SessionID, t.conf)
 	if err != nil {
@@ -160,7 +134,6 @@ func (t *Transport) Start() error {
 	}
 	log.Printf("yatelemost: got %d TURN server(s) from Telemost", len(iceServers))
 
-	// Step 3: open signaling WS to Telemost conference.
 	headers := http.Header{
 		"Origin":  []string{teleMostOrigin},
 		"Cookie":  []string{"Session_id=" + t.config.SessionID},
@@ -172,15 +145,12 @@ func (t *Transport) Start() error {
 	ws.SetReadLimit(512 * 1024)
 	t.sigWS = ws
 
-	// Step 4: build WebRTC API with collected TURN servers.
 	if err := t.buildWebRTC(iceServers); err != nil {
 		return fmt.Errorf("build webrtc: %w", err)
 	}
 
-	// Step 5: start signaling goroutine.
 	go t.signalingLoop(context.Background())
 
-	// Step 6: initiate offer (server) or wait for offer (client).
 	if t.config.ServerMode {
 		if err := t.createOffer(); err != nil {
 			return fmt.Errorf("create offer: %w", err)
@@ -203,7 +173,6 @@ func (t *Transport) Stop() error {
 	return nil
 }
 
-// Dial waits for the WebRTC DataChannel to open and returns it as net.Conn.
 func (t *Transport) Dial(ctx context.Context, _ string) (net.Conn, error) {
 	select {
 	case conn := <-t.connCh:
@@ -224,7 +193,6 @@ func (t *Transport) Accept() (net.Conn, error) {
 	}
 }
 
-// buildWebRTC creates the pion WebRTC API and PeerConnection.
 func (t *Transport) buildWebRTC(iceServers []ICEServerConfig) error {
 	me := &webrtc.MediaEngine{}
 	ir := &interceptor.Registry{}
@@ -259,7 +227,6 @@ func (t *Transport) buildWebRTC(iceServers []ICEServerConfig) error {
 	}
 	t.pc = pc
 
-	// ICE candidates — send via signaling WS.
 	pc.OnICECandidate(func(c *webrtc.ICECandidate) {
 		if c == nil {
 			return
@@ -268,7 +235,6 @@ func (t *Transport) buildWebRTC(iceServers []ICEServerConfig) error {
 		SendSignal(context.Background(), t.sigWS, msg)
 	})
 
-	// DataChannel (server creates, client receives).
 	if t.config.ServerMode {
 		dc, err := pc.CreateDataChannel("vpn", nil)
 		if err != nil {
@@ -286,7 +252,6 @@ func (t *Transport) buildWebRTC(iceServers []ICEServerConfig) error {
 	return nil
 }
 
-// hookDataChannel wires the DataChannel to our net.Conn.
 func (t *Transport) hookDataChannel(dc *webrtc.DataChannel) {
 	dc.OnOpen(func() {
 		conn := newDCConn(dc, t.config.BufferSize)
@@ -297,7 +262,6 @@ func (t *Transport) hookDataChannel(dc *webrtc.DataChannel) {
 	})
 }
 
-// createOffer builds and sends the WebRTC SDP offer (server side).
 func (t *Transport) createOffer() error {
 	offer, err := t.pc.CreateOffer(nil)
 	if err != nil {
@@ -312,9 +276,6 @@ func (t *Transport) createOffer() error {
 	})
 }
 
-// signalingLoop reads signaling messages from the Telemost WS and drives the
-// WebRTC handshake.  All non-VPN messages (Telemost protocol frames) are
-// silently discarded.
 func (t *Transport) signalingLoop(ctx context.Context) {
 	for {
 		data, err := ReadSignal(ctx, t.sigWS)
@@ -329,11 +290,11 @@ func (t *Transport) signalingLoop(ctx context.Context) {
 
 		var msg sigMsg
 		if err := json.Unmarshal(data, &msg); err != nil {
-			continue // Telemost protocol frame — ignore
+			continue
 		}
 
 		switch msg.Type {
-		case sigOffer: // client receives
+		case sigOffer:
 			if err := t.pc.SetRemoteDescription(webrtc.SessionDescription{
 				Type: webrtc.SDPTypeOffer, SDP: msg.SDP,
 			}); err != nil {
@@ -351,7 +312,7 @@ func (t *Transport) signalingLoop(ctx context.Context) {
 			}
 			SendSignal(ctx, t.sigWS, sigMsg{Type: sigAnswer, SDP: answer.SDP})
 
-		case sigAnswer: // server receives
+		case sigAnswer:
 			if err := t.pc.SetRemoteDescription(webrtc.SessionDescription{
 				Type: webrtc.SDPTypeAnswer, SDP: msg.SDP,
 			}); err != nil {
@@ -366,7 +327,6 @@ func (t *Transport) signalingLoop(ctx context.Context) {
 	}
 }
 
-// dcConn wraps a WebRTC DataChannel as a net.Conn.
 type dcConn struct {
 	dc      *webrtc.DataChannel
 	readCh  chan []byte

@@ -54,7 +54,7 @@ func (cp *ConnectionPool) Get(key string) net.Conn {
 		tcpConn.SetReadDeadline(time.Now().Add(1 * time.Millisecond))
 		buf := make([]byte, 1)
 		_, err := tcpConn.Read(buf)
-		tcpConn.SetReadDeadline(time.Time{}) // Reset deadline
+		tcpConn.SetReadDeadline(time.Time{})
 
 		if err != nil && err != io.EOF {
 			if netErr, ok := err.(net.Error); !ok || !netErr.Timeout() {

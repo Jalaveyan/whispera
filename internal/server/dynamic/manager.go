@@ -28,9 +28,6 @@ func (m *Manager) SetCallbacks(start func(config.InboundConfig) error, stop func
 	m.stopCallback = stop
 }
 
-// StartInbound starts a listener for the given inbound config.
-// If the config has Ports set, a separate listener is started for each port
-// using a derived tag "tag-port".
 func (m *Manager) StartInbound(inbound config.InboundConfig) error {
 	if m.startCallback == nil {
 		return fmt.Errorf("start callback not set")
@@ -42,7 +39,7 @@ func (m *Manager) StartInbound(inbound config.InboundConfig) error {
 		return m.startCallback(inbound)
 	}
 
-	// Multi-port: start one listener per port
+	var startedTags []string
 	for _, p := range ports {
 		derived := inbound
 		derived.Port = p
@@ -52,8 +49,14 @@ func (m *Manager) StartInbound(inbound config.InboundConfig) error {
 		}
 		log.Printf("[DynamicManager] Starting inbound %s on port %d (multiport)", derived.Tag, p)
 		if err := m.startCallback(derived); err != nil {
+			for _, tag := range startedTags {
+				if m.stopCallback != nil {
+					m.stopCallback(tag)
+				}
+			}
 			return fmt.Errorf("port %d: %w", p, err)
 		}
+		startedTags = append(startedTags, derived.Tag)
 	}
 	return nil
 }

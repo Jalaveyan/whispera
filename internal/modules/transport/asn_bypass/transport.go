@@ -43,21 +43,25 @@ type TransportConfig struct {
 	KeepaliveInterval time.Duration
 	MaxRetries        int
 
-	EnableJA3Randomization bool
+	EnableJA3Randomization  bool
+	EnableTLSFragmentation bool
+	TLSFragmentSize        int
 	ConnectionBurstLimit   int
 	BurstCooldown          time.Duration
 }
 
 func DefaultTransportConfig() *TransportConfig {
 	return &TransportConfig{
-		Strategy:               StrategyTLSMasquerade,
-		TLSFingerprint:         "chrome",
-		ConnectionTimeout:      30 * time.Second,
-		KeepaliveInterval:      30 * time.Second,
-		MaxRetries:             3,
-		EnableJA3Randomization: true,
-		ConnectionBurstLimit:   5,
-		BurstCooldown:          2 * time.Second,
+		Strategy:                StrategyTLSMasquerade,
+		TLSFingerprint:          "chrome",
+		ConnectionTimeout:       30 * time.Second,
+		KeepaliveInterval:       30 * time.Second,
+		MaxRetries:              3,
+		EnableJA3Randomization:  true,
+		EnableTLSFragmentation: true,
+		TLSFragmentSize:        40,
+		ConnectionBurstLimit:    5,
+		BurstCooldown:           2 * time.Second,
 	}
 }
 
@@ -90,9 +94,11 @@ func NewTransport(cfg *TransportConfig) (*Transport, error) {
 		TLSMinVersion:          tls.VersionTLS13,
 		TLSMaxVersion:          tls.VersionTLS13,
 		EnableECH:              cfg.EnableECH,
-		EnableJA3Randomization: cfg.EnableJA3Randomization,
-		ConnectionBurstLimit:   cfg.ConnectionBurstLimit,
-		ConnectionCooldown:     cfg.BurstCooldown,
+		EnableJA3Randomization:  cfg.EnableJA3Randomization,
+		EnableTLSFragmentation: cfg.EnableTLSFragmentation,
+		TLSFragmentSize:        cfg.TLSFragmentSize,
+		ConnectionBurstLimit:    cfg.ConnectionBurstLimit,
+		ConnectionCooldown:      cfg.BurstCooldown,
 		ResidentialProxies:     cfg.ResidentialProxies,
 		ProxyRotation:          cfg.ProxyRotation,
 		FailoverTimeout:        cfg.ConnectionTimeout,

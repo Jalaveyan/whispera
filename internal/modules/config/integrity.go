@@ -13,7 +13,12 @@ import (
 	"time"
 )
 
-var integrityKey = "DEVELOPMENT-ONLY-REPLACE-IN-PRODUCTION"
+var integrityKey = func() string {
+	if key := os.Getenv("WHISPERA_INTEGRITY_KEY"); key != "" {
+		return key
+	}
+	return "DEVELOPMENT-ONLY-REPLACE-IN-PRODUCTION"
+}()
 
 const (
 	checksumFile = ".config.checksum"

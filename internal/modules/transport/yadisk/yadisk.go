@@ -1,33 +1,5 @@
 package yadisk
 
-// yadisk — VPN transport through Yandex Disk (WebDAV).
-//
-// Traffic is tunneled by writing data as files to Yandex Disk and reading
-// them on the other side.  From the firewall's perspective all traffic is
-// HTTPS to webdav.yandex.ru — always in the Russian CIDR whitelist.
-//
-// # Protocol
-//
-// Each direction has its own "slot directory" on Yandex Disk.  Each slot
-// is a sequence of numbered chunk files:
-//
-//	/whispera/{sessionID}/c2s/0000000001   ← client writes, server reads
-//	/whispera/{sessionID}/s2c/0000000001   ← server writes, client reads
-//
-// The writer PUTs a chunk file, increments the counter, and deletes the
-// previous chunk after the reader has acknowledged it via a tiny "ack" file.
-//
-// This gives ~5-10 Mbps and ~200-500 ms RTT — enough for VPN traffic but
-// not for real-time video.  Use vkwebrtc/yatelemost for higher throughput.
-//
-// # Setup
-//
-// Both client and server need a Yandex OAuth token with cloud_api:disk.write
-// and cloud_api:disk.read scopes.  Use the same token or two separate tokens
-// for each side.  Both must agree on the same SessionID string.
-//
-// Get a token at: https://oauth.yandex.ru/authorize?response_type=token&client_id=72294e85e4274cc7af49e4e8b46e6e02
-// (This client_id is for Yandex.Disk WebDAV — no app registration needed.)
 
 import (
 	"bytes"
@@ -60,19 +32,14 @@ const (
 	diskBase      = "https://cloud-api.yandex.net/v1/disk/resources"
 	pollInterval  = 50 * time.Millisecond
 	chunkTimeout  = 5 * time.Second
-	maxChunkSize  = 512 * 1024 // 512 KB per chunk
+	maxChunkSize  = 512 * 1024
 )
 
-// Config for the Yandex Disk transport.
 type Config struct {
-	// ServerMode: true on VPN server, false on client.
 	ServerMode bool
 
-	// OAuthToken is a Yandex OAuth token with disk read+write access.
 	OAuthToken string
 
-	// SessionID uniquely identifies this VPN session on Yandex Disk.
-	// Both sides must use the same value.  Use a random UUID.
 	SessionID string
 
 	BufferSize int
@@ -82,23 +49,19 @@ func DefaultConfig() *Config {
 	return &Config{BufferSize: 64 * 1024}
 }
 
-// Transport tunnels data through Yandex Disk WebDAV.
 type Transport struct {
 	*base.Module
 	config *Config
 	client *http.Client
 
-	// writeSeq is the next chunk number this side will write.
 	writeSeq uint64
-	// readSeq is the next chunk number this side expects to read.
 	readSeq uint64
 
-	// writeDir / readDir are the Yandex Disk paths for each direction.
 	writeDir string
 	readDir  string
 
-	dataIn  chan []byte // data received from remote → VPN stack
-	dataOut chan []byte // data from VPN stack → send to remote
+	dataIn  chan []byte
+	dataOut chan []byte
 
 	connOnce sync.Once
 	connCh   chan net.Conn
@@ -131,9 +94,6 @@ func New(cfg *Config) (*Transport, error) {
 		stopCh:  make(chan struct{}),
 	}
 
-	// Assign directories based on mode.
-	// c2s: client writes, server reads.
-	// s2c: server writes, client reads.
 	base := "/whispera/" + cfg.SessionID
 	if cfg.ServerMode {
 		t.readDir = base + "/c2s"
@@ -146,7 +106,6 @@ func New(cfg *Config) (*Transport, error) {
 	return t, nil
 }
 
-// Start creates the session directories and launches read/write goroutines.
 func (t *Transport) Start() error {
 	if t.config.OAuthToken == "" {
 		return fmt.Errorf("yadisk: OAuthToken is required")
@@ -158,7 +117,6 @@ func (t *Transport) Start() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	// Ensure directory tree exists.
 	for _, dir := range []string{
 		"/whispera",
 		"/whispera/" + t.config.SessionID,
@@ -169,11 +127,9 @@ func (t *Transport) Start() error {
 		}
 	}
 
-	// Launch background goroutines.
 	go t.sendLoop()
 	go t.recvLoop()
 
-	// Expose connection immediately — data flows once both sides are ready.
 	conn := &diskConn{t: t}
 	t.connCh <- conn
 
@@ -186,7 +142,6 @@ func (t *Transport) Stop() error {
 	return nil
 }
 
-// Dial returns the disk-backed net.Conn (client mode).
 func (t *Transport) Dial(ctx context.Context, _ string) (net.Conn, error) {
 	select {
 	case conn := <-t.connCh:
@@ -198,7 +153,6 @@ func (t *Transport) Dial(ctx context.Context, _ string) (net.Conn, error) {
 	}
 }
 
-// Accept returns the disk-backed net.Conn (server mode).
 func (t *Transport) Accept() (net.Conn, error) {
 	select {
 	case conn := <-t.connCh:
@@ -208,7 +162,6 @@ func (t *Transport) Accept() (net.Conn, error) {
 	}
 }
 
-// sendLoop drains dataOut and writes chunks to Yandex Disk.
 func (t *Transport) sendLoop() {
 	for {
 		select {
@@ -227,7 +180,6 @@ func (t *Transport) sendLoop() {
 	}
 }
 
-// recvLoop polls Yandex Disk for new chunks and delivers them to dataIn.
 func (t *Transport) recvLoop() {
 	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
@@ -243,11 +195,9 @@ func (t *Transport) recvLoop() {
 			data, err := t.getFile(ctx, path)
 			cancel()
 			if err != nil {
-				// Not found yet — expected, keep polling.
 				continue
 			}
 			atomic.AddUint64(&t.readSeq, 1)
-			// Delete consumed chunk (best-effort).
 			go t.deleteFile(context.Background(), path)
 
 			select {
@@ -259,13 +209,11 @@ func (t *Transport) recvLoop() {
 	}
 }
 
-// ── WebDAV helpers ────────────────────────────────────────────────────────
 
 func (t *Transport) auth(req *http.Request) {
 	req.Header.Set("Authorization", "OAuth "+t.config.OAuthToken)
 }
 
-// putFile uploads data to a WebDAV path via HTTP PUT.
 func (t *Transport) putFile(ctx context.Context, path string, data []byte) error {
 	req, err := http.NewRequestWithContext(ctx, "PUT",
 		webdavBase+path, bytes.NewReader(data))
@@ -285,7 +233,6 @@ func (t *Transport) putFile(ctx context.Context, path string, data []byte) error
 	return nil
 }
 
-// getFile downloads a WebDAV file. Returns (nil, err) if file does not exist.
 func (t *Transport) getFile(ctx context.Context, path string) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, "GET", webdavBase+path, nil)
 	if err != nil {
@@ -306,7 +253,6 @@ func (t *Transport) getFile(ctx context.Context, path string) ([]byte, error) {
 	return io.ReadAll(io.LimitReader(resp.Body, maxChunkSize))
 }
 
-// deleteFile removes a WebDAV file (best-effort, ignores errors).
 func (t *Transport) deleteFile(ctx context.Context, path string) {
 	req, _ := http.NewRequestWithContext(ctx, "DELETE", webdavBase+path, nil)
 	t.auth(req)
@@ -316,7 +262,6 @@ func (t *Transport) deleteFile(ctx context.Context, path string) {
 	}
 }
 
-// mkdir creates a collection (directory) on Yandex Disk via MKCOL.
 func (t *Transport) mkdir(ctx context.Context, path string) error {
 	req, err := http.NewRequestWithContext(ctx, "MKCOL", webdavBase+path, nil)
 	if err != nil {
@@ -328,16 +273,13 @@ func (t *Transport) mkdir(ctx context.Context, path string) error {
 		return err
 	}
 	resp.Body.Close()
-	// 201 Created or 405 Method Not Allowed (already exists) are both OK.
 	if resp.StatusCode != 201 && resp.StatusCode != 405 {
 		return fmt.Errorf("MKCOL HTTP %d", resp.StatusCode)
 	}
 	return nil
 }
 
-// ── net.Conn implementation ───────────────────────────────────────────────
 
-// diskConn exposes the Yandex Disk transport as a net.Conn.
 type diskConn struct {
 	t   *Transport
 	buf []byte
@@ -369,7 +311,6 @@ func (c *diskConn) Read(p []byte) (int, error) {
 }
 
 func (c *diskConn) Write(p []byte) (int, error) {
-	// Split into chunks if needed.
 	for len(p) > 0 {
 		end := len(p)
 		if end > maxChunkSize {

@@ -2,15 +2,26 @@
 class WhisperaAPI {
     constructor() {
         this.baseURL = window.location.origin;
-        this.token = localStorage.getItem('whispera_token');
+        this.token = sessionStorage.getItem('whispera_token');
+        this._tokenExpiry = parseInt(sessionStorage.getItem('whispera_token_expiry') || '0', 10);
+        if (this.token && this._tokenExpiry && Date.now() > this._tokenExpiry) {
+            this.token = null;
+            sessionStorage.removeItem('whispera_token');
+            sessionStorage.removeItem('whispera_token_expiry');
+        }
     }
 
-    setToken(token) {
+    setToken(token, expiresIn) {
         this.token = token;
         if (token) {
-            localStorage.setItem('whispera_token', token);
+            sessionStorage.setItem('whispera_token', token);
+            const expiry = Date.now() + (expiresIn || 1800) * 1000;
+            this._tokenExpiry = expiry;
+            sessionStorage.setItem('whispera_token_expiry', String(expiry));
         } else {
-            localStorage.removeItem('whispera_token');
+            sessionStorage.removeItem('whispera_token');
+            sessionStorage.removeItem('whispera_token_expiry');
+            this._tokenExpiry = 0;
         }
     }
 
@@ -50,22 +61,25 @@ class WhisperaAPI {
     }
 
     async login(username, password) {
-        const data = await this.request('/api/auth/login', {
+        const data = await this.request('/api/login', {
             method: 'POST',
             body: JSON.stringify({ username, password }),
         });
         if (data.token) {
-            this.setToken(data.token);
-            if (data.user && data.user.id) localStorage.setItem('whispera_user_id', data.user.id);
-            if (data.user && data.user.username) localStorage.setItem('whispera_email', data.user.username);
+            this.setToken(data.token, data.expires_in || 1800);
+            if (data.user && data.user.id) sessionStorage.setItem('whispera_user_id', data.user.id);
+            if (data.user && data.user.username) sessionStorage.setItem('whispera_email', data.user.username);
         }
         return data;
     }
 
-    logout() {
+    async logout() {
+        try {
+            await this.request('/api/logout', { method: 'POST' });
+        } catch (_) {}
         this.setToken(null);
-        localStorage.removeItem('whispera_user_id');
-        localStorage.removeItem('whispera_email');
+        sessionStorage.removeItem('whispera_user_id');
+        sessionStorage.removeItem('whispera_email');
     }
 
     async getUsers() {
@@ -275,6 +289,58 @@ class WhisperaAPI {
 
     async getBridgeCloudInit() {
         return this.request('/api/bridge-cloudinit', {
+            headers: { 'Accept': 'text/plain' }
+        });
+    }
+
+    async getWhiteBridges() {
+        return this.request('/api/bridge-white');
+    }
+
+    async getBridgeMap() {
+        return this.request('/api/bridge-map');
+    }
+
+    async connectToBridge(bridgeId) {
+        return this.request('/api/bridge-connect', {
+            method: 'POST',
+            body: JSON.stringify({ bridge_id: bridgeId })
+        });
+    }
+
+    async scanBridges() {
+        return this.request('/api/bridge-scan', { method: 'POST' });
+    }
+
+    async setAdminSSHKey(sshKey) {
+        return this.request('/api/bridge-ssh-admin', {
+            method: 'POST',
+            body: JSON.stringify({ ssh_key: sshKey })
+        });
+    }
+
+    async issueAccessKey(bridgeId, userId, oneTime = true, ttlHours = 24) {
+        return this.request('/api/bridge-access-key', {
+            method: 'POST',
+            body: JSON.stringify({ bridge_id: bridgeId, user_id: userId, one_time: oneTime, ttl_hours: ttlHours })
+        });
+    }
+
+    async revokeAccessKey(keyId) {
+        return this.request('/api/bridge-access-revoke', {
+            method: 'POST',
+            body: JSON.stringify({ key_id: keyId })
+        });
+    }
+
+    async getWhiteBridgeCloudInit(opts = {}) {
+        const params = new URLSearchParams();
+        if (opts.server) params.set('server', opts.server);
+        if (opts.country) params.set('country', opts.country);
+        if (opts.city) params.set('city', opts.city);
+        if (opts.bandwidth) params.set('bandwidth', opts.bandwidth);
+        if (opts.maxUsers) params.set('max_users', opts.maxUsers);
+        return this.request(`/api/bridge-white-cloudinit?${params}`, {
             headers: { 'Accept': 'text/plain' }
         });
     }

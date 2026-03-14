@@ -202,14 +202,10 @@ func New(cfg *Config) (*Handler, error) {
 	return h, nil
 }
 
-// SetProbeDetector attaches an active-probing detector. Must be called before Start().
 func (h *Handler) SetProbeDetector(d probeDetectorIface) {
 	h.probeDetector = d
 }
 
-// RecordDNSQuery forwards a DNS query log entry to the probe detector (if configured).
-// resolvedIPs — список IP-адресов из DNS-ответа, отправленного клиенту. Передайте nil
-// если DNS-ответ недоступен (факт запроса всё равно записывается, IP-проверка пропускается).
 func (h *Handler) RecordDNSQuery(clientAddr, hostname string, resolvedIPs []string) {
 	type dnsRecorder interface {
 		RecordDNSQuery(clientAddr, hostname string, resolvedIPs []string)
@@ -278,6 +274,10 @@ func (h *Handler) Stop() error {
 		close(h.coverTrafficStop)
 	}
 
+	if h.replayCacheCleanupStop != nil {
+		close(h.replayCacheCleanupStop)
+	}
+
 	h.mu.Lock()
 	for _, conn := range h.activeConns {
 		conn.Close()
@@ -320,7 +320,6 @@ func (h *Handler) HandleConnection(conn net.Conn) {
 		h.mu.Unlock()
 	}()
 
-	// Layer 1: check IP blocklist before touching any data.
 	if h.probeDetector != nil {
 		if allowed, reason := h.probeDetector.CheckConnection(remoteAddr, ""); !allowed {
 			log.Debug("[probe] blocked %s (blocklist): %s", remoteAddr, reason)
@@ -355,7 +354,6 @@ func (h *Handler) HandleConnection(conn net.Conn) {
 		return
 	}
 
-	// Layer 2 & 3: DNS-knock and SNI-ownership check (now that we have the SNI).
 	if h.probeDetector != nil {
 		if allowed, reason := h.probeDetector.CheckConnection(remoteAddr, sni); !allowed {
 			log.Debug("[probe] blocked %s (SNI=%s): %s", remoteAddr, sni, reason)
@@ -382,7 +380,6 @@ func (h *Handler) HandleConnection(conn net.Conn) {
 		return
 	}
 
-	// Auth failed — record it for probe detection.
 	if h.probeDetector != nil {
 		h.probeDetector.RecordAuthFailure(remoteAddr)
 	}
@@ -770,6 +767,14 @@ func isHTTP(b byte) bool {
 }
 
 func (h *Handler) handleHTTPFallback(conn net.Conn) {
+	remoteAddr := conn.RemoteAddr().String()
+	if h.probeDetector != nil {
+		h.probeDetector.RecordAuthFailure(remoteAddr)
+	}
+
+	delay := time.Duration(200+randInt(800)) * time.Millisecond
+	time.Sleep(delay)
+
 	dest := h.config.Dest
 	if dest == "" {
 		dest = "www.google.com:443"
@@ -778,13 +783,14 @@ func (h *Handler) handleHTTPFallback(conn net.Conn) {
 	if host == "" {
 		host = dest
 	}
-	resp := fmt.Sprintf("HTTP/1.1 301 Moved Permanently\r\n"+
-		"Location: https://%s/\r\n"+
-		"Content-Type: text/html\r\n"+
-		"Content-Length: 0\r\n"+
-		"Connection: close\r\n"+
-		"\r\n", host)
 
+	responses := []string{
+		fmt.Sprintf("HTTP/1.1 301 Moved Permanently\r\nLocation: https://%s/\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", host),
+		"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+		"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+		fmt.Sprintf("HTTP/1.1 302 Found\r\nLocation: https://%s/\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", host),
+	}
+	resp := responses[randInt(len(responses))]
 	conn.Write([]byte(resp))
 }
 
@@ -918,16 +924,12 @@ func (h *Handler) getCurrentSNI() string {
 }
 
 func (h *Handler) coverTrafficLoop() {
-	baseTicker := time.NewTicker(15 * time.Second)
-	defer baseTicker.Stop()
-
 	for {
+		interval := time.Duration(5+randInt(25)) * time.Second
 		select {
 		case <-h.coverTrafficStop:
 			return
-		case <-baseTicker.C:
-			jitter := time.Duration(randInt(15)) * time.Second
-			time.Sleep(jitter)
+		case <-time.After(interval):
 			h.sendCoverTraffic()
 		}
 	}
@@ -942,11 +944,17 @@ func (h *Handler) sendCoverTraffic() {
 	h.mu.RUnlock()
 
 	for _, conn := range conns {
-		size := 16 + randInt(48)
-		noise := make([]byte, size)
-		rand.Read(noise)
-		conn.SetWriteDeadline(time.Now().Add(100 * time.Millisecond))
-		conn.Write(noise)
+		payloadSize := 32 + randInt(1400)
+		record := make([]byte, 5+payloadSize)
+		record[0] = 0x17
+		record[1] = 0x03
+		record[2] = 0x03
+		record[3] = byte(payloadSize >> 8)
+		record[4] = byte(payloadSize)
+		rand.Read(record[5:])
+
+		conn.SetWriteDeadline(time.Now().Add(200 * time.Millisecond))
+		conn.Write(record)
 		conn.SetWriteDeadline(time.Time{})
 	}
 }

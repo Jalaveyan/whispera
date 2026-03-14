@@ -33,7 +33,6 @@ func (s *Server) handleGetBackup(w http.ResponseWriter, r *http.Request) {
 		"adblock":       readRawJSON(adblockDataFile),
 	}
 
-	// Include server config as plain string (it's YAML, not JSON)
 	if s.registry != nil {
 		if mod, ok := s.registry.Get("config.provider"); ok {
 			type cfgProvider interface {
@@ -85,7 +84,6 @@ func (s *Server) handleRestoreBackup(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Reload in-memory stores
 	loadUsers()
 	loadSubscriptions()
 

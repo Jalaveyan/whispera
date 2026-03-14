@@ -1,31 +1,3 @@
-// Package tgbot provides a VPN tunnel transport over Telegram Bot API messages.
-//
-// Architecture (two-bot + shared group):
-//
-//   Both sides each own one Telegram bot.  Both bots are added to a shared private
-//   supergroup.  Privacy mode MUST be disabled for both bots in @BotFather
-//   (/setprivacy → Disabled), or both bots must be promoted to group admins.
-//
-//   Client bot (MyBotToken) posts WRP messages tagged "C<session>:" to the group.
-//   Server bot (MyBotToken) posts WRP messages tagged "S<session>:" to the group.
-//   Each side polls its OWN bot's getUpdates independently — no competing offsets.
-//   Each side ignores messages it sent itself (prefix mismatch).
-//
-//   All traffic goes to api.telegram.org (globally reachable, not blocked in Russia).
-//   No own IP required on the client side.
-//
-// Setup:
-//   1. Create two Telegram bots via @BotFather, get their tokens.
-//   2. Create a private supergroup, add both bots, disable their privacy mode.
-//   3. Note the group chat_id (e.g. send /start to the group, inspect getUpdates).
-//   4. Configure both VPN sides with their own MyBotToken and the shared GroupChatID.
-//   5. Set a shared SessionID (any random string; identifies this tunnel in the group).
-//
-// WRP message format:
-//   "WRP:<dir><sessionID>:<base64url(4B_seq_BE | 1B_total | 1B_chunk | payload)>"
-//   dir = "C" (client→server) or "S" (server→client)
-//
-// Throughput: ~30 msg/s × 2000 B/msg ≈ 60 KB/s sustained.
 package tgbot
 
 import (
@@ -64,25 +36,16 @@ const (
 	tgAPIBase = "https://api.telegram.org/bot"
 
 	msgPrefix = "WRP:"
-	maxChunk  = 2000 // bytes before encoding
+	maxChunk  = 2000
 )
 
-// Config holds Telegram Bot relay settings.
 type Config struct {
-	// MyBotToken is this side's Telegram bot token (required).
-	// Used to send messages to the group AND to poll getUpdates for incoming messages.
 	MyBotToken string
 
-	// GroupChatID is the shared Telegram supergroup where both bots communicate.
 	GroupChatID int64
 
-	// SessionID uniquely identifies this tunnel within the shared group.
-	// Multiple concurrent tunnels can share the same group with different SessionIDs.
-	// If empty, a random ID is generated at startup.
 	SessionID string
 
-	// ServerMode: true = server (listens for incoming connections from the group).
-	//             false = client (dials outbound connection through the group).
 	ServerMode bool
 }
 
@@ -96,8 +59,6 @@ func (c *Config) Validate() error {
 	return nil
 }
 
-// dirPrefix returns the message direction prefix for this side.
-// Server sends "S", client sends "C".  Each side accepts only the opposite direction.
 func (c *Config) dirPrefix() string {
 	if c.ServerMode {
 		return "S"
@@ -105,7 +66,6 @@ func (c *Config) dirPrefix() string {
 	return "C"
 }
 
-// acceptPrefix is the direction prefix this side expects to receive.
 func (c *Config) acceptPrefix() string {
 	if c.ServerMode {
 		return "C"
@@ -113,13 +73,12 @@ func (c *Config) acceptPrefix() string {
 	return "S"
 }
 
-// Transport implements interfaces.Transport over Telegram Bot messages.
 type Transport struct {
 	*base.Module
 	cfg       *Config
-	sessionID string // resolved (generated if cfg.SessionID was empty)
+	sessionID string
 	hc        *http.Client
-	offset    atomic.Int64 // next getUpdates offset
+	offset    atomic.Int64
 	stopChan  chan struct{}
 	accept    chan net.Conn
 	stopped   atomic.Bool
@@ -132,7 +91,7 @@ func New(cfg *Config) (*Transport, error) {
 	sid := cfg.SessionID
 	if sid == "" {
 		b := make([]byte, 6)
-		rand.Read(b) //nolint:errcheck
+		rand.Read(b)
 		sid = base64.RawURLEncoding.EncodeToString(b)
 	}
 	t := &Transport{
@@ -181,7 +140,6 @@ func (t *Transport) Accept() (net.Conn, error) {
 	}
 }
 
-// Dial opens a client-side connection through the shared Telegram group.
 func (t *Transport) Dial(ctx context.Context, addr string) (net.Conn, error) {
 	conn := newBotConn(t)
 	ctx2, cancel := context.WithCancel(ctx)
@@ -196,10 +154,8 @@ func (t *Transport) Dial(ctx context.Context, addr string) (net.Conn, error) {
 	return conn, nil
 }
 
-// ─── Server listen loop ──────────────────────────────────────────────────────
 
 func (t *Transport) listenLoop() {
-	// conns maps a stable sender key (senderID:sessionID) to its botConn.
 	conns := make(map[string]*botConn)
 
 	for {
@@ -234,16 +190,13 @@ func (t *Transport) listenLoop() {
 	}
 }
 
-// ─── Telegram API ────────────────────────────────────────────────────────────
 
 type incomingMsg struct {
 	senderID  int64
 	sessionID string
-	text      string // full WRP message text
+	text      string
 }
 
-// getUpdates polls Telegram long-poll, advances offset, returns WRP messages
-// from the shared group chat that match this side's accept direction.
 func (t *Transport) getUpdates(timeout int) ([]incomingMsg, error) {
 	offset := t.offset.Load()
 	reqURL := fmt.Sprintf("%s%s/getUpdates?timeout=%d&offset=%d&allowed_updates=[\"message\"]",
@@ -284,7 +237,6 @@ func (t *Transport) getUpdates(timeout int) ([]incomingMsg, error) {
 
 	var msgs []incomingMsg
 	for _, upd := range result.Result {
-		// Always advance offset past processed updates.
 		if upd.UpdateID >= t.offset.Load() {
 			t.offset.Store(upd.UpdateID + 1)
 		}
@@ -294,21 +246,20 @@ func (t *Transport) getUpdates(timeout int) ([]incomingMsg, error) {
 			continue
 		}
 		if m.Chat.ID != t.cfg.GroupChatID {
-			continue // not from our group
+			continue
 		}
 		if !strings.HasPrefix(m.Text, fullPrefix) {
-			continue // wrong direction or not WRP
+			continue
 		}
 
-		// Extract sessionID from prefix: WRP:<dir><sessionID>:<data>
-		rest := m.Text[len(fullPrefix):] // "<sessionID>:<data>"
+		rest := m.Text[len(fullPrefix):]
 		colonIdx := strings.IndexByte(rest, ':')
 		if colonIdx < 0 {
 			continue
 		}
 		sid := rest[:colonIdx]
 		if sid != t.sessionID {
-			continue // different tunnel session in the same group
+			continue
 		}
 
 		msgs = append(msgs, incomingMsg{
@@ -320,7 +271,6 @@ func (t *Transport) getUpdates(timeout int) ([]incomingMsg, error) {
 	return msgs, nil
 }
 
-// sendMessage sends a WRP message to the shared group chat.
 func (t *Transport) sendMessage(text string) error {
 	params := url.Values{
 		"chat_id":              {strconv.FormatInt(t.cfg.GroupChatID, 10)},
@@ -346,9 +296,7 @@ func (t *Transport) sendMessage(text string) error {
 	return nil
 }
 
-// ─── WRP encoding ────────────────────────────────────────────────────────────
 
-// encodeMsg builds: "WRP:<dir><sessionID>:<base64url(seq|total|chunk|payload)>"
 func (t *Transport) encodeMsg(seq uint32, total, chunk int, payload []byte) string {
 	hdr := make([]byte, 6+len(payload))
 	binary.BigEndian.PutUint32(hdr[0:4], seq)
@@ -359,15 +307,12 @@ func (t *Transport) encodeMsg(seq uint32, total, chunk int, payload []byte) stri
 		base64.RawURLEncoding.EncodeToString(hdr)
 }
 
-// decodeMsg parses a WRP message (after direction+sessionID prefix).
-// Caller must pass the text with the full WRP prefix still intact.
 func decodeMsg(text string) (seq uint32, total, chunk int, payload []byte, err error) {
-	// Find the second ':' (after WRP:<dir><sid>:)
-	colonIdx := strings.IndexByte(text[len(msgPrefix)+1:], ':') // skip "WRP:X"
+	colonIdx := strings.IndexByte(text[len(msgPrefix)+1:], ':')
 	if colonIdx < 0 {
 		return 0, 0, 0, nil, fmt.Errorf("malformed WRP message")
 	}
-	dataB64 := text[len(msgPrefix)+1+colonIdx+1:] // everything after second ':'
+	dataB64 := text[len(msgPrefix)+1+colonIdx+1:]
 
 	raw, err := base64.RawURLEncoding.DecodeString(dataB64)
 	if err != nil {
@@ -383,7 +328,6 @@ func decodeMsg(text string) (seq uint32, total, chunk int, payload []byte, err e
 	return seq, total, chunk, payload, nil
 }
 
-// ─── botConn: net.Conn over Telegram messages ────────────────────────────────
 
 type botConn struct {
 	transport *Transport
@@ -519,7 +463,6 @@ func (c *botConn) deliver(text string) {
 	c.recvMu.Unlock()
 }
 
-// pollLoop runs on the client side, receiving messages via getUpdates.
 func (c *botConn) pollLoop(ctx context.Context, cancel context.CancelFunc) {
 	defer func() {
 		cancel()
@@ -569,7 +512,6 @@ type tgAddr struct{ id string }
 func (a *tgAddr) Network() string { return "tgbot" }
 func (a *tgAddr) String() string  { return a.id }
 
-// ─── Factory ─────────────────────────────────────────────────────────────────
 
 func Factory(cfg interface{}) (interfaces.Module, error) {
 	if c, ok := cfg.(*Config); ok {

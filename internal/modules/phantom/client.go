@@ -95,7 +95,6 @@ func (c *ClientAuth) GenerateSessionID() (clientRandom, sessionID []byte, err er
 
 	ephemeralPriv := make([]byte, 32)
 	if len(c.config.PrivateKey) == 32 {
-		// Use PSK as ephemeral key so the server can identify this user.
 		copy(ephemeralPriv, c.config.PrivateKey)
 	} else if _, err := rand.Read(ephemeralPriv); err != nil {
 		return nil, nil, err

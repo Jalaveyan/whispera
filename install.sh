@@ -1327,6 +1327,15 @@ NGINX
 setup_systemd() {
     log_info "Setting up SystemD services..."
 
+    if ! id -u whispera &>/dev/null; then
+        useradd --system --no-create-home --shell /usr/sbin/nologin whispera
+        log_info "Created system user 'whispera'"
+    fi
+
+    chown -R whispera:whispera "$WORK_DIR" "$CONF_PATH" "$DAT_PATH" 2>/dev/null || true
+    chmod 750 "$CONF_PATH"
+    chmod 640 "$CONF_PATH/config.yaml" 2>/dev/null || true
+
     cat > /etc/systemd/system/whispera.service <<EOF
 [Unit]
 Description=Whispera Server (Backend)
@@ -1335,13 +1344,19 @@ After=network.target network-online.target
 Requires=network-online.target
 
 [Service]
-User=root
+User=whispera
+Group=whispera
 WorkingDirectory=$WORK_DIR
 Environment=WHISPERA_MASK_LOGS=true
 ExecStart=$BIN_PATH/whispera -config $CONF_PATH/config.yaml -api :8080
 Restart=on-failure
 RestartSec=5
 LimitNOFILE=65535
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=$WORK_DIR $CONF_PATH $DAT_PATH /var/log/whispera
 
 [Install]
 WantedBy=multi-user.target
@@ -1362,7 +1377,8 @@ Description=Whispera Panel (Frontend)
 After=network.target whispera.service
 
 [Service]
-User=root
+User=whispera
+Group=whispera
 WorkingDirectory=$DAT_PATH/panel
 ExecStart=$NODE_BIN bundle/index.js
 Restart=always
@@ -1370,6 +1386,10 @@ RestartSec=3
 Environment=PORT=3000
 Environment=BACKEND_URL=http://127.0.0.1:8080
 Environment=CORS_ORIGIN=*
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=$DAT_PATH
 $PANEL_HTTPS_VARS
 
 [Install]

@@ -25,8 +25,6 @@ func deviceIDPath() string {
 	return filepath.Join(home, ".whispera", "device.id")
 }
 
-// LoadOrCreateDeviceID returns the persistent device UUID, creating one on first run.
-// The UUID is stored at ~/.whispera/device.id (Linux/macOS) or %APPDATA%\whispera\device.id (Windows).
 func LoadOrCreateDeviceID() ([16]byte, error) {
 	var id [16]byte
 	path := deviceIDPath()

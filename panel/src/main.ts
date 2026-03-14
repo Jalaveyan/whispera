@@ -26,8 +26,9 @@ async function bootstrap() {
     }),
   );
 
+  const corsOrigin = process.env.CORS_ORIGIN || 'http://localhost:3000';
   app.enableCors({
-    origin: process.env.CORS_ORIGIN || '*',
+    origin: corsOrigin.split(',').map(o => o.trim()),
     credentials: true,
   });
 
@@ -43,7 +44,8 @@ async function bootstrap() {
   });
 
   const port = process.env.PORT || 3000;
-  await app.listen(port);
+  const host = process.env.LISTEN_HOST || '127.0.0.1';
+  await app.listen(port, host);
   const proto = httpsOptions ? 'https' : 'http';
   console.log(`Whispera Panel running on ${proto}://localhost:${port}`);
 

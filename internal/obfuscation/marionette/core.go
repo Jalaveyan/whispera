@@ -154,6 +154,8 @@ func (m *Marionette) ProcessPacket(data []byte, direction string) ([]byte, time.
 		}
 	}
 
+	processed = m.applyMLPipeline(processed, direction)
+
 	return processed, behavioralDelay, nil
 }
 
@@ -287,12 +289,15 @@ func (m *Marionette) triggerAsyncAnalysis() {
 		m.Mutex.RLock()
 		active := m.Active
 		profile := m.Profiles[active]
+		locked := m.lockedProfile
 		m.Mutex.RUnlock()
 
-		m.detectDPI()
+		dpiThreat := m.detectDPI()
 		if profile != nil {
 			m.updateProfileFromRealTraffic(profile, active)
 		}
+
+		m.mlDrivenProfileSwitch(dpiThreat, active, locked)
 	}()
 }
 

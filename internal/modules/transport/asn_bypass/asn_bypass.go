@@ -117,6 +117,8 @@ type Config struct {
 	ECHConfigURL string
 
 	EnableJA3Randomization bool
+	EnableTLSFragmentation bool
+	TLSFragmentSize        int
 	ConnectionBurstLimit   int
 	ConnectionCooldown     time.Duration
 
@@ -130,11 +132,13 @@ func DefaultConfig() *Config {
 		TLSFingerprint:         "chrome",
 		TLSMinVersion:          tls.VersionTLS13,
 		TLSMaxVersion:          tls.VersionTLS13,
-		EnableJA3Randomization: true,
-		ConnectionBurstLimit:   5,
-		ConnectionCooldown:     2 * time.Second,
-		FallbackStrategies:     []Strategy{StrategyDomainFronting, StrategyWebSocket},
-		FailoverTimeout:        30 * time.Second,
+		EnableJA3Randomization:  true,
+		EnableTLSFragmentation: true,
+		TLSFragmentSize:        40,
+		ConnectionBurstLimit:    5,
+		ConnectionCooldown:      2 * time.Second,
+		FallbackStrategies:      []Strategy{StrategyDomainFronting, StrategyWebSocket},
+		FailoverTimeout:         30 * time.Second,
 	}
 }
 
@@ -403,7 +407,12 @@ func (d *Dialer) dialTLSMasquerade(ctx context.Context, network, addr string) (n
 
 	fmt.Printf("[ASN-BYPASS] ClientHello generated (%d bytes), sending to server...\n", len(clientHello))
 
-	if _, err := tcpConn.Write(clientHello); err != nil {
+	if d.config.EnableTLSFragmentation && len(clientHello) > 5 {
+		if err := d.writeFragmentedTLS(tcpConn, clientHello); err != nil {
+			tcpConn.Close()
+			return nil, fmt.Errorf("write fragmented client hello failed: %w", err)
+		}
+	} else if _, err := tcpConn.Write(clientHello); err != nil {
 		fmt.Printf("[ASN-BYPASS] Write ClientHello failed: %v\n", err)
 		tcpConn.Close()
 		return nil, fmt.Errorf("write client hello failed: %w", err)
@@ -586,7 +595,88 @@ func (d *Dialer) getUTLSFingerprint() *utls.ClientHelloID {
 	return &utls.HelloChrome_Auto
 }
 
+func (d *Dialer) writeFragmentedTLS(conn net.Conn, data []byte) error {
+	fragSize := d.config.TLSFragmentSize
+	if fragSize <= 0 || fragSize > 64 {
+		fragSize = 40
+	}
+
+	if len(data) < 6 || data[0] != 0x16 {
+		_, err := conn.Write(data)
+		return err
+	}
+
+	contentType := data[0]
+	majorVer := data[1]
+	minorVer := data[2]
+	payload := data[5:]
+
+	for len(payload) > 0 {
+		chunk := payload
+		if len(chunk) > fragSize {
+			chunk = payload[:fragSize]
+		}
+		payload = payload[len(chunk):]
+
+		record := make([]byte, 5+len(chunk))
+		record[0] = contentType
+		record[1] = majorVer
+		record[2] = minorVer
+		record[3] = byte(len(chunk) >> 8)
+		record[4] = byte(len(chunk))
+		copy(record[5:], chunk)
+
+		if _, err := conn.Write(record); err != nil {
+			return err
+		}
+
+		if len(payload) > 0 {
+			jitter := time.Duration(rand.Intn(10)+1) * time.Millisecond
+			time.Sleep(jitter)
+		}
+	}
+	return nil
+}
+
 func (d *Dialer) randomizeJA3(conn *utls.UConn) error {
+	extensions := conn.Extensions
+	if len(extensions) <= 2 {
+		return conn.BuildHandshakeState()
+	}
+
+	var sni utls.TLSExtension
+	var psk utls.TLSExtension
+	sniIdx := -1
+	pskIdx := -1
+	shuffleable := make([]utls.TLSExtension, 0, len(extensions))
+
+	for i, ext := range extensions {
+		switch ext.(type) {
+		case *utls.SNIExtension:
+			sni = ext
+			sniIdx = i
+		case *utls.FakePreSharedKeyExtension, *utls.UtlsPreSharedKeyExtension:
+			psk = ext
+			pskIdx = i
+		default:
+			shuffleable = append(shuffleable, ext)
+		}
+	}
+
+	rand.Shuffle(len(shuffleable), func(i, j int) {
+		shuffleable[i], shuffleable[j] = shuffleable[j], shuffleable[i]
+	})
+
+	result := make([]utls.TLSExtension, 0, len(extensions))
+	if sniIdx >= 0 {
+		result = append(result, sni)
+	}
+	result = append(result, shuffleable...)
+	if pskIdx >= 0 {
+		result = append(result, psk)
+	}
+	conn.Extensions = result
+
 	if err := conn.BuildHandshakeState(); err != nil {
 		return err
 	}

@@ -64,6 +64,37 @@ func (mls *UnifiedMLSystem) ProcessTraffic(data []byte, context *types.UnifiedTr
 	return processed, nil
 }
 
+func (mls *UnifiedMLSystem) PredictTraffic(data []byte, protocol, direction string) (*types.MLPredictionResponse, error) {
+	if mls.mlClient == nil {
+		return nil, fmt.Errorf("ml client not initialized")
+	}
+	return mls.mlClient.PredictTraffic(data, protocol, direction)
+}
+
+func (mls *UnifiedMLSystem) CollectSample(data []byte, protocol, direction string, pred *types.MLPredictionResponse) {
+	if mls.dataCollector == nil || mls.mlClient == nil {
+		return
+	}
+	sample := TrafficSample{
+		Timestamp: time.Now(),
+		Protocol:  protocol,
+		Direction: direction,
+		Size:      len(data),
+		Entropy:   mls.mlClient.calculateEntropy(data),
+	}
+	if pred != nil && len(pred.Predictions) > 0 {
+		p := pred.Predictions[0]
+		sample.TrafficClass = p.ClassID
+		sample.DPIDetected = p.DPIType > 0
+		sample.DPIType = p.DPIType
+		sample.IsAnomaly = p.IsAnomaly
+		sample.AnomalyScore = p.AnomalyScore
+		sample.PredictedClass = p.ClassID
+		sample.Confidence = p.Confidence
+	}
+	mls.dataCollector.CollectSample(sample)
+}
+
 func (mls *UnifiedMLSystem) GetStats() *types.MLStats { return mls.stats }
 
 func (mls *UnifiedMLSystem) HealthCheck() error { return mls.mlClient.HealthCheck() }

@@ -580,3 +580,46 @@ type VPNStats struct {
 	
 	ActiveSessions int
 }
+
+type ControlPlane interface {
+	Module
+
+	RegisterBridge(ctx context.Context, info BridgeRegistration) (string, error)
+
+	DeregisterBridge(ctx context.Context, bridgeID string) error
+
+	GetBridgeConfig(ctx context.Context, bridgeID string) (map[string]interface{}, error)
+
+	PushConfig(ctx context.Context, bridgeID string, config map[string]interface{}) error
+
+	IssueBridgeToken(ctx context.Context, bridgeID string) (string, error)
+
+	RevokeBridgeToken(ctx context.Context, bridgeID string) error
+
+	ListBridges(ctx context.Context) ([]BridgeStatus, error)
+
+	DeliverUpdate(ctx context.Context, version string, binaryURL string, checksum string) error
+
+	CollectMetrics(ctx context.Context, bridgeID string, metrics map[string]interface{}) error
+}
+
+type BridgeRegistration struct {
+	Address   string
+	Type      string
+	Provider  string
+	Region    string
+	PublicKey string
+	Token     string
+}
+
+type BridgeStatus struct {
+	ID        string
+	Address   string
+	Type      string
+	IsAlive   bool
+	Latency   int
+	Load      float64
+	CurUsers  int
+	Version   string
+	LastCheck time.Time
+}

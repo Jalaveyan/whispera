@@ -1,23 +1,5 @@
 package okwebrtc
 
-// okwebrtc — VPN transport through OK.ru WebRTC calling infrastructure.
-//
-// OK.ru (Odnoklassniki) video calls use the same calls.okcdn.ru backend as
-// VK calls.  The difference from vkwebrtc:
-//   - Conferences are created via the OK.ru API (api.ok.ru), not VK.
-//   - Auth uses an OK.ru access token, not a VK token.
-//   - TURN credentials are fetched via the same 6-step anonymous flow.
-//
-// This gives an independent channel through the same VK/OK infrastructure
-// that does not require a VK account.  OK.ru and VK share IP ranges, so
-// both are in the Russian CIDR whitelist.
-//
-// # Obtaining an OK.ru access token
-//
-// Register an app at https://ok.ru/devaccess, then use the OAuth flow:
-//   POST https://api.ok.ru/oauth/token.do
-//   grant_type=password&client_id=...&client_secret=...&username=...&password=...
-// Or use the device flow / browser redirect.
 
 import (
 	"bytes"
@@ -54,12 +36,10 @@ const (
 	ModuleName    = "transport.okwebrtc"
 	ModuleVersion = "1.0.0"
 
-	// OK.ru API.
 	okAPIBase = "https://api.ok.ru/fb.do"
 	okCDNBase = "https://calls.okcdn.ru/fb.do"
 	okAppKey  = "CGMMEJLGDIHBABABA"
 
-	// RTP/VP8 parameters (same as vkwebrtc).
 	payloadTypeVP8 = 96
 	clockRate      = 90000
 	maxPayload     = 1200
@@ -69,32 +49,23 @@ const (
 	vp8Cont  byte = 0x00
 )
 
-// Config for the OK.ru WebRTC transport.
 type Config struct {
 	ServerMode bool
 
-	// OKToken is an OK.ru OAuth access token.
 	OKToken string
 
-	// OKAppID is the OK.ru application ID (from dev portal).
 	OKAppID string
 
-	// OKAppSecretKey is the OK.ru application secret key.
 	OKAppSecretKey string
 
-	// SignalingMode: "websocket" (default) — use a WebSocket signaling server.
 	SignalingMode string
 
-	// SignalingURL: WebSocket URL for signaling (e.g. behind Yandex API Gateway).
 	SignalingURL string
 
-	// ICEPolicy: "relay" (default) or "all".
 	ICEPolicy string
 
-	// NumTracks: parallel VP8 tracks (default 3, ~15 Mbps via OK.ru TURN).
 	NumTracks int
 
-	// TLSCert/TLSKey for WebSocket server TLS (server mode).
 	TLSCert, TLSKey string
 
 	BufferSize int
@@ -109,21 +80,18 @@ func DefaultConfig() *Config {
 	}
 }
 
-// ICEServerConfig holds a TURN server entry.
 type ICEServerConfig struct {
 	URLs       []string
 	Username   string
 	Credential string
 }
 
-// okcdnTurnServer is the JSON struct from vchat.joinConversationByLink.
 type okcdnTurnServer struct {
 	Username   string   `json:"username"`
 	Credential string   `json:"credential"`
 	URLs       []string `json:"urls"`
 }
 
-// trackWriter holds per-track RTP state for VP8 multi-track sending.
 type trackWriter struct {
 	track *webrtc.TrackLocalStaticRTP
 	mu    sync.Mutex
@@ -132,7 +100,6 @@ type trackWriter struct {
 	ssrc  uint32
 }
 
-// Transport is the OK.ru WebRTC VPN transport.
 type Transport struct {
 	*base.Module
 	config  *Config
@@ -148,7 +115,7 @@ type Transport struct {
 
 	tracksReceived int32
 	dataIn, dataOut chan []byte
-	lastSentNs      int64 // atomic
+	lastSentNs      int64
 
 	ready     chan struct{}
 	readyOnce sync.Once
@@ -156,7 +123,6 @@ type Transport struct {
 	stopOnce  sync.Once
 }
 
-// sigMsg is the WebSocket signaling envelope.
 type sigMsg struct {
 	Type      string `json:"type"`
 	SDP       string `json:"sdp,omitempty"`
@@ -192,12 +158,10 @@ func New(cfg *Config) (*Transport, error) {
 	}, nil
 }
 
-// Start fetches TURN credentials from OK.ru and builds the WebRTC session.
 func (t *Transport) Start() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	// Fetch TURN credentials from calls.okcdn.ru.
 	log.Printf("okwebrtc: fetching TURN credentials from OK.ru...")
 	iceServers, err := t.fetchTURNCredentials(ctx)
 	if err != nil {
@@ -209,14 +173,12 @@ func (t *Transport) Start() error {
 		return fmt.Errorf("build peer connection: %w", err)
 	}
 
-	// Start signaling.
 	if t.config.ServerMode {
 		go t.startWSServer()
 	} else {
 		go t.connectWSClient()
 	}
 
-	// Start send loops.
 	numTracks := t.config.NumTracks
 	for i := 0; i < numTracks; i++ {
 		go t.videoSendLoop(i)
@@ -245,7 +207,6 @@ func (t *Transport) Stop() error {
 	return nil
 }
 
-// Dial waits for the WebRTC connection to be ready and returns a net.Conn.
 func (t *Transport) Dial(ctx context.Context, _ string) (net.Conn, error) {
 	select {
 	case <-t.ready:
@@ -257,7 +218,6 @@ func (t *Transport) Dial(ctx context.Context, _ string) (net.Conn, error) {
 	return &okConn{t: t}, nil
 }
 
-// Accept is the server-side equivalent of Dial.
 func (t *Transport) Accept() (net.Conn, error) {
 	select {
 	case <-t.ready:
@@ -267,11 +227,7 @@ func (t *Transport) Accept() (net.Conn, error) {
 	return &okConn{t: t}, nil
 }
 
-// fetchTURNCredentials obtains TURN credentials using the anonymous VK/OK flow.
-// This replicates the 6-step flow from vkwebrtc/turn.go but triggered via
-// an OK.ru conference instead of a VK call.
 func (t *Transport) fetchTURNCredentials(ctx context.Context) ([]ICEServerConfig, error) {
-	// Step 1-4: anonymous token flow (same as VK — VK and OK.ru share infrastructure).
 	tok1, err := okGetAnonToken(ctx, t.client, "", "")
 	if err != nil {
 		return nil, fmt.Errorf("step1: %w", err)
@@ -285,26 +241,22 @@ func (t *Transport) fetchTURNCredentials(ctx context.Context) ([]ICEServerConfig
 		return nil, fmt.Errorf("step3: %w", err)
 	}
 
-	// Step 4: create an OK.ru conference to get a join link.
 	joinLink, err := t.createOKConference(ctx, tok3)
 	if err != nil {
 		return nil, fmt.Errorf("create conference: %w", err)
 	}
 	log.Printf("okwebrtc: OK.ru conference join_link: %s", joinLink)
 
-	// Step 4b: get anonymous call token.
 	callTok, err := okGetAnonymousCallToken(ctx, t.client, tok3, joinLink)
 	if err != nil {
 		return nil, fmt.Errorf("step4b: %w", err)
 	}
 
-	// Step 5: auth to calls.okcdn.ru.
 	sessionKey, err := okcdnAnonLogin(ctx, t.client)
 	if err != nil {
 		return nil, fmt.Errorf("step5: %w", err)
 	}
 
-	// Step 6: join to get TURN.
 	hash := extractHash(joinLink)
 	servers, err := okcdnJoin(ctx, t.client, sessionKey, callTok, hash)
 	if err != nil {
@@ -315,7 +267,6 @@ func (t *Transport) fetchTURNCredentials(ctx context.Context) ([]ICEServerConfig
 	return servers, nil
 }
 
-// createOKConference creates a new OK.ru video conference and returns the join link.
 func (t *Transport) createOKConference(ctx context.Context, anonToken string) (string, error) {
 	params := url.Values{
 		"method":          {"vchat.createConference"},
@@ -364,7 +315,6 @@ func (t *Transport) createOKConference(ctx context.Context, anonToken string) (s
 	return link, nil
 }
 
-// buildPeerConnection creates the pion WebRTC API + PeerConnection with VP8 tracks.
 func (t *Transport) buildPeerConnection(iceServers []ICEServerConfig) error {
 	me := &webrtc.MediaEngine{}
 	if err := me.RegisterCodec(webrtc.RTPCodecParameters{
@@ -425,7 +375,6 @@ func (t *Transport) buildPeerConnection(iceServers []ICEServerConfig) error {
 		go t.readTrack(track)
 	})
 
-	// Add N VP8 tracks.
 	numTracks := t.config.NumTracks
 	t.writers = make([]*trackWriter, numTracks)
 	for i := 0; i < numTracks; i++ {
@@ -450,7 +399,6 @@ func (t *Transport) buildPeerConnection(iceServers []ICEServerConfig) error {
 	return nil
 }
 
-// readTrack reads from a remote VP8 track and reconstructs VPN packets.
 func (t *Transport) readTrack(track *webrtc.TrackRemote) {
 	n := atomic.AddInt32(&t.tracksReceived, 1)
 	if n == int32(t.config.NumTracks) {
@@ -490,7 +438,6 @@ func (t *Transport) readTrack(track *webrtc.TrackRemote) {
 	}
 }
 
-// videoSendLoop sends VPN data as VP8 RTP through track index i.
 func (t *Transport) videoSendLoop(i int) {
 	w := t.writers[i]
 	ticker := time.NewTicker(time.Second / fps)
@@ -505,7 +452,7 @@ func (t *Transport) videoSendLoop(i int) {
 			w.sendFrame(data)
 		case <-ticker.C:
 			if time.Duration(time.Now().UnixNano()-atomic.LoadInt64(&t.lastSentNs)) >= time.Second/fps {
-				w.sendFrame([]byte{0x00}) // filler
+				w.sendFrame([]byte{0x00})
 			}
 		}
 	}
@@ -553,7 +500,6 @@ func (w *trackWriter) sendFrame(data []byte) {
 	}
 }
 
-// WebSocket signaling — server side.
 func (t *Transport) startWSServer() {
 	addr := t.config.SignalingURL
 	if addr == "" {
@@ -578,7 +524,6 @@ func (t *Transport) startWSServer() {
 	}
 }
 
-// WebSocket signaling — client side.
 func (t *Transport) connectWSClient() {
 	ctx := context.Background()
 	ws, _, err := websocket.Dial(ctx, t.config.SignalingURL, nil)
@@ -590,7 +535,6 @@ func (t *Transport) connectWSClient() {
 	t.sigWS = ws
 	t.sigMu.Unlock()
 
-	// Client sends offer.
 	offer, err := t.pc.CreateOffer(nil)
 	if err == nil {
 		t.pc.SetLocalDescription(offer)
@@ -625,7 +569,6 @@ func (t *Transport) runSigLoop(ctx context.Context, ws *websocket.Conn, isServer
 	}
 }
 
-// okConn implements net.Conn over the VP8 VP8 track data channel.
 type okConn struct {
 	t   *Transport
 	buf []byte
@@ -674,7 +617,6 @@ func (c *okConn) SetWriteDeadline(t time.Time) error { return nil }
 func (c *okConn) LocalAddr() net.Addr                { return &net.TCPAddr{} }
 func (c *okConn) RemoteAddr() net.Addr               { return &net.TCPAddr{} }
 
-// ── calls.okcdn.ru anonymous credential helpers ───────────────────────────
 
 const (
 	vkAnonClientID     = "6287487"

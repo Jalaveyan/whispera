@@ -38,12 +38,14 @@ func (t *TrustManager) CalculateTrustLevel(b *BridgeInfo) int {
 	score := 0
 	switch b.Type {
 	case BridgeOperator:
-		score = 100 
+		score = 100
 		return score
-	case BridgeCommunity:
-		score = 30 
+	case BridgeWhite:
+		score = 85
 	case BridgeUser:
-		score = 60 
+		score = 60
+	case BridgeCommunity:
+		score = 30
 	}
 
 	if b.IsAlive {

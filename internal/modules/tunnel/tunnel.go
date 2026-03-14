@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"math/big"
+	mrand "math/rand"
 	"net"
 	"runtime/debug"
 	"strings"
@@ -56,6 +57,26 @@ func safeGo(name string, fn func()) {
 		}()
 		fn()
 	}()
+}
+
+func (m *Manager) safeGoLimited(name string, fn func()) bool {
+	wrapped := func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Error("PANIC in %s: %v\n%s", name, r, debug.Stack())
+			}
+		}()
+		fn()
+	}
+	if m.goroutineLimiter != nil {
+		if !m.goroutineLimiter.Go(wrapped) {
+			log.Warn("goroutine limit reached, dropping %s", name)
+			return false
+		}
+		return true
+	}
+	go wrapped()
+	return true
 }
 
 const (
@@ -261,6 +282,8 @@ type Manager struct {
 	cbFailures    int
 	cbLastFailure time.Time
 	cbState       string
+
+	goroutineLimiter *base.GoroutineLimiter
 }
 
 func (m *Manager) getMuxConfig() *mux.Config {
@@ -283,15 +306,16 @@ func New(cfg *Config) (*Manager, error) {
 	}
 
 	m := &Manager{
-		Module:      base.NewModule(ModuleName, ModuleVersion, []string{"handshake.handler"}),
-		config:      cfg,
-		state:       StateDisconnected,
-		streamConns: make(map[uint16]*managedConn),
-		readCh:      make(chan []byte, 4096),
-		streamChs:   make(map[uint16]chan []byte),
+		Module:           base.NewModule(ModuleName, ModuleVersion, []string{"handshake.handler"}),
+		config:           cfg,
+		state:            StateDisconnected,
+		streamConns:      make(map[uint16]*managedConn),
+		readCh:           make(chan []byte, 4096),
+		streamChs:        make(map[uint16]chan []byte),
+		goroutineLimiter: base.NewGoroutineLimiter(1024),
 	}
 
-	if cfg.EnableASNBypass {
+	if cfg.EnableASNBypass || cfg.EnablePhantom {
 		frontDomain := cfg.DomainFrontHost
 		enableSNIMask := false
 
@@ -306,9 +330,11 @@ func New(cfg *Config) (*Manager, error) {
 			FrontDomain:            frontDomain,
 			EnableSNIMask:          enableSNIMask,
 			ResidentialProxies:     cfg.ResidentialProxies,
-			EnableJA3Randomization: cfg.EnableJA3Randomize,
-			ConnectionBurstLimit:   5,
-			ConnectionCooldown:     2 * time.Second,
+			EnableJA3Randomization:  cfg.EnableJA3Randomize,
+			EnableTLSFragmentation: true,
+			TLSFragmentSize:        40,
+			ConnectionBurstLimit:    5,
+			ConnectionCooldown:      2 * time.Second,
 			FailoverTimeout:        cfg.ConnectionTimeout,
 			FallbackStrategies:     []asnbypass.Strategy{asnbypass.StrategyTLSMasquerade, asnbypass.StrategyDomainFronting},
 		}
@@ -806,7 +832,7 @@ func (m *Manager) buildCandidates() []dialCandidate {
 		}
 	}
 
-	if m.asnBypassDialer != nil && m.config.EnableASNBypass {
+	if m.asnBypassDialer != nil && (m.config.EnableASNBypass || m.config.EnablePhantom) {
 		cc = append(cc, dialCandidate{"asn_bypass", true, m.dialASNBypass})
 	}
 
@@ -1371,8 +1397,9 @@ func (m *Manager) Reconnect(ctx context.Context) error {
 		}
 
 		m.circuitBreakerFail()
-		time.Sleep(delay)
-		delay = time.Duration(float64(delay) * 1.5)
+		jitter := time.Duration(mrand.Int63n(int64(delay) / 4))
+		time.Sleep(delay + jitter)
+		delay = time.Duration(float64(delay) * 2)
 		if delay > m.config.ReconnectMaxDelay {
 			delay = m.config.ReconnectMaxDelay
 		}
@@ -2321,7 +2348,19 @@ func generateRandomShortId() string {
 }
 
 func (m *Manager) getReconnectDelay() time.Duration {
-	return 100 * time.Millisecond
+	attempts := atomic.LoadUint32(&m.reconnectAttempts)
+	if attempts == 0 {
+		return m.config.ReconnectInterval
+	}
+	delay := m.config.ReconnectInterval
+	for i := uint32(0); i < attempts && i < 10; i++ {
+		delay = time.Duration(float64(delay) * 2)
+	}
+	if delay > m.config.ReconnectMaxDelay {
+		delay = m.config.ReconnectMaxDelay
+	}
+	jitter := time.Duration(mrand.Int63n(int64(delay) / 4))
+	return delay + jitter
 }
 
 func probeLatency(ctx context.Context, addr string, timeout time.Duration) (time.Duration, error) {
@@ -2441,5 +2480,25 @@ func (m *Manager) performRekey() {
 		log.Warn("[REKEY] Failed to send rekey frame: %v", err)
 		return
 	}
-	log.Info("[REKEY] Sent rekey frame (seed=%x...)", seed[:4])
+	log.Info("[REKEY] Sent rekey frame, initiating transport rotation (seed=%x...)", seed[:4])
+
+	go func() {
+		time.Sleep(500 * time.Millisecond)
+		m.rotateTransport()
+	}()
+}
+
+func (m *Manager) rotateTransport() {
+	m.connMu.RLock()
+	poolSize := len(m.activePool)
+	m.connMu.RUnlock()
+
+	if poolSize == 0 {
+		return
+	}
+
+	log.Info("[REKEY] Rotating %d transport connections for PFS", poolSize)
+
+	m.setState(StateReconnecting)
+	m.Reconnect(context.Background())
 }

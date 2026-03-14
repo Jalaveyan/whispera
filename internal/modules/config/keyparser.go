@@ -6,11 +6,14 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+	"time"
 )
 
 type ConnectionKey struct {
 	Version    int    `json:"v"`
 	Name       string `json:"name,omitempty"`
+	KeyID      string `json:"kid,omitempty"`
+	ExpiresAt  int64  `json:"exp,omitempty"`
 	Server     string `json:"server"`
 	ServerTCP  string `json:"server_tcp,omitempty"`
 	ServerWS   string `json:"server_ws,omitempty"`
@@ -35,6 +38,10 @@ type ConnectionKey struct {
 	RussianService string `json:"russian_service,omitempty"`
 
 	TransportConfig map[string]interface{} `json:"transport_config,omitempty"`
+}
+
+func (ck *ConnectionKey) IsExpired() bool {
+	return ck.ExpiresAt > 0 && time.Now().Unix() > ck.ExpiresAt
 }
 
 func ParseConnectionKey(key string) (*ConnectionKey, error) {
@@ -106,6 +113,19 @@ func ParseConnectionKey(key string) (*ConnectionKey, error) {
 			ck.RussianService = val
 		}
 
+		if val := q.Get("kid"); val != "" {
+			ck.KeyID = val
+		}
+		if val := q.Get("exp"); val != "" {
+			var exp int64
+			fmt.Sscanf(val, "%d", &exp)
+			ck.ExpiresAt = exp
+		}
+
+		if ck.IsExpired() {
+			return nil, fmt.Errorf("connection key expired")
+		}
+
 		if val := q.Get("cfg"); val != "" {
 			decoded, err := base64.RawURLEncoding.DecodeString(val)
 			if err == nil {
@@ -136,6 +156,10 @@ func ParseConnectionKey(key string) (*ConnectionKey, error) {
 	var ck ConnectionKey
 	if err := json.Unmarshal(data, &ck); err != nil {
 		return nil, fmt.Errorf("invalid key format: %w", err)
+	}
+
+	if ck.IsExpired() {
+		return nil, fmt.Errorf("connection key expired")
 	}
 
 	if ck.Server == "" && ck.ServerTCP == "" {
@@ -225,7 +249,7 @@ func (ck *ConnectionKey) GetPrimaryServer() string {
 
 func GenerateConnectionKey(cfg *ClientConfig, name string) (string, error) {
 	ck := ConnectionKey{
-		Version:     1,
+		Version:     2,
 		Name:        name,
 		Server:      cfg.Server,
 		ServerTCP:   cfg.ServerTCP,
@@ -302,6 +326,13 @@ func GenerateConnectionKeyURL(cfg *ClientConfig, opts *KeyGenOptions) string {
 		params.Set("russian", cfg.RussianService)
 	}
 
+	if opts.KeyID != "" {
+		params.Set("kid", opts.KeyID)
+	}
+	if opts.ExpiresAt > 0 {
+		params.Set("exp", fmt.Sprintf("%d", opts.ExpiresAt))
+	}
+
 	if len(opts.TransportConfig) > 0 {
 		cfgData, err := json.Marshal(opts.TransportConfig)
 		if err == nil {
@@ -314,6 +345,8 @@ func GenerateConnectionKeyURL(cfg *ClientConfig, opts *KeyGenOptions) string {
 
 type KeyGenOptions struct {
 	Name              string
+	KeyID             string
+	ExpiresAt         int64
 	ObfsProfile       string
 	ObfsPreset        string
 	Transport         string

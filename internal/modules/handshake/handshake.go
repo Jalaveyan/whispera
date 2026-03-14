@@ -3,6 +3,8 @@ package handshake
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"net"
 	"sync"
@@ -464,8 +466,13 @@ func (h *Handler) SetRateLimiter(rate float64, burst int) {
 	h.rateLimiter.SetRate(rate, burst)
 }
 
+func (h *Handler) replayKey(data []byte) string {
+	hash := sha256.Sum256(data)
+	return hex.EncodeToString(hash[:])
+}
+
 func (h *Handler) isReplay(data []byte) bool {
-	key := string(data[:min(32, len(data))])
+	key := h.replayKey(data)
 
 	h.replayMu.RLock()
 	_, exists := h.replayCache[key]
@@ -473,8 +480,9 @@ func (h *Handler) isReplay(data []byte) bool {
 
 	return exists
 }
+
 func (h *Handler) markAsProcessed(data []byte) {
-	key := string(data[:min(32, len(data))])
+	key := h.replayKey(data)
 
 	h.replayMu.Lock()
 	h.replayCache[key] = time.Now()
@@ -514,7 +522,7 @@ func (h *Handler) cleanup() {
 
 	h.replayMu.Lock()
 	for key, timestamp := range h.replayCache {
-		if now.Sub(timestamp) > 5*time.Minute {
+		if now.Sub(timestamp) > 30*time.Minute {
 			delete(h.replayCache, key)
 		}
 	}

@@ -1,0 +1,20 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git --no-pager diff HEAD internal/modules/phantom/)",
+      "Bash(find /c/Whispera-test/whisp/src -name *.vue -o -name *.ts -o -name *.tsx)",
+      "Bash(find /c/Whispera-test/panel/src -name *.interceptor.ts)",
+      "Bash(cargo check:*)",
+      "Bash(find /c/Whispera-test -name \"*.go\" -path \"*/transport/*\" -exec grep -l \"net.Listen\" {})",
+      "Bash(find /c/Whispera-test/panel -name *.tsx -o -name *.vue -o -name *.jsx)",
+      "Bash(find /c/Whispera-test/panel/public -name *.js -o -name *.html)",
+      "Bash(find /c/Whispera-test -name config*.yaml -o -name config*.yml)",
+      "Bash(go build:*)",
+      "Bash(xargs grep:*)",
+      "Bash(grep -r \"hardcoded\\\\|TODO\\\\|FIXME\" c:Whispera-testinternalauth c:Whispera-testinternalmodulescrypto c:Whispera-testinternalmodulesphantom --include=*.go)",
+      "Bash(wc -l /c/Whispera-test/internal/obfuscation/marionette/*.go /c/Whispera-test/internal/obfuscation/fte/*.go /c/Whispera-test/internal/obfuscation/ml/*.go /c/Whispera-test/internal/obfuscation/russian/*.go)",
+      "Bash(find /c/Whispera-test -name *.service -o -name Makefile -o -name .env*)",
+      "Bash(find /c/Whispera-test -name docker-compose*.yml -o -name kubernetes* -o -name helm*)"
+    ]
+  }
+}

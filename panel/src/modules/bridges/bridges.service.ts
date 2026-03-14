@@ -122,4 +122,31 @@ export class BridgesService {
         );
         return response.data;
     }
+
+    async getBridgeMap(token: string): Promise<any> {
+        const response = await firstValueFrom(
+            this.httpService.get(`${this.backendUrl}/api/bridge-map`, {
+                headers: { Authorization: `Bearer ${token}` },
+            }),
+        );
+        return response.data;
+    }
+
+    async connectToBridge(token: string, bridgeId: string): Promise<any> {
+        const response = await firstValueFrom(
+            this.httpService.post(`${this.backendUrl}/api/bridge-connect`, { bridge_id: bridgeId }, {
+                headers: { Authorization: `Bearer ${token}` },
+            }),
+        );
+        return response.data;
+    }
+
+    async scanBridges(token: string): Promise<any> {
+        const response = await firstValueFrom(
+            this.httpService.post(`${this.backendUrl}/api/bridge-scan`, {}, {
+                headers: { Authorization: `Bearer ${token}` },
+            }),
+        );
+        return response.data;
+    }
 }

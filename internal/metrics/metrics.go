@@ -34,7 +34,6 @@ func (cv *CounterVec) WithLabelValues(labels ...string) *Counter {
 	return c
 }
 
-// Global metrics
 var (
 	PacketsRx            = &Counter{}
 	PacketsTx            = &Counter{}
@@ -45,7 +44,6 @@ var (
 	BytesRxByTransport   = NewCounterVec()
 	BytesTxByTransport   = NewCounterVec()
 
-	// XHTTP metrics
 	XHTTPStreamsCreated   = &Counter{}
 	XHTTPSessionsCreated  = &Counter{}
 	XHTTPSessionsActive   = &Gauge{}

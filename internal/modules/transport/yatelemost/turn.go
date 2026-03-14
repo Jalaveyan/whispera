@@ -1,22 +1,5 @@
 package yatelemost
 
-// turn.go — Yandex Telemost TURN credential acquisition.
-//
-// Yandex Telemost (telemost.yandex.ru) is a WebRTC conferencing service that
-// uses Yandex TURN servers (turn.webrtc.yandex.net).  These IPs are always
-// in the Russian IP CIDR whitelist.
-//
-// Credential flow (reverse-engineered from Turnel / Yandex web client):
-//  1. POST cloud-api.yandex.ru/telemost_front/v2/telemost/conferences
-//     → conference metadata including a WSS signaling URL
-//  2. Dial the WSS URL (with Session_id cookie for auth)
-//  3. Send HelloRequest (participant metadata + SDK capabilities)
-//  4. Read WSSResponse containing rtcConfiguration.iceServers
-//  5. Filter for turn:/turns: URLs (UDP only), extract credentials
-//
-// Session_id is a Yandex auth cookie. Obtain it by:
-//   - Log in at yandex.ru
-//   - Open browser DevTools → Application → Cookies → yandex.ru → Session_id
 
 import (
 	"context"
@@ -35,7 +18,6 @@ const (
 	teleMostOrigin        = "https://telemost.yandex.ru"
 )
 
-// TeleMostConference holds the data returned by the conference creation endpoint.
 type TeleMostConference struct {
 	WssURL        string `json:"wss"`
 	RoomID        string `json:"roomId"`
@@ -45,7 +27,6 @@ type TeleMostConference struct {
 	} `json:"credentials"`
 }
 
-// helloRequest is the first message sent to the Telemost WSS to join.
 type helloRequest struct {
 	ID          string          `json:"id"`
 	Participant participantInfo `json:"participantInfo"`
@@ -67,8 +48,6 @@ type sdkInfo struct {
 	Version string `json:"version"`
 }
 
-// wssResponse is the top-level Telemost WSS message envelope.
-// Fields not relevant to ICE are ignored.
 type wssResponse struct {
 	Type            string          `json:"type"`
 	RtcConfiguration *rtcConfig     `json:"rtcConfiguration"`
@@ -79,21 +58,17 @@ type rtcConfig struct {
 }
 
 type iceServerEntry struct {
-	URLs       interface{} `json:"urls"` // string or []string
+	URLs       interface{} `json:"urls"`
 	Username   string      `json:"username"`
 	Credential string      `json:"credential"`
 }
 
-// ICEServerConfig is the common type returned by both telemost and vkwebrtc packages.
-// Re-declared here so the package is self-contained.
 type ICEServerConfig struct {
 	URLs       []string
 	Username   string
 	Credential string
 }
 
-// CreateConference creates a new Telemost conference and returns its metadata.
-// sessionID is the Yandex Session_id cookie value.
 func CreateConference(ctx context.Context, sessionID string) (*TeleMostConference, error) {
 	client := &http.Client{Timeout: 10 * time.Second}
 
@@ -129,9 +104,6 @@ func CreateConference(ctx context.Context, sessionID string) (*TeleMostConferenc
 	return &conf, nil
 }
 
-// FetchICEServers connects to the Telemost conference WSS and reads the
-// rtcConfiguration.iceServers from the server's HelloResponse.
-// sessionID is the Yandex Session_id cookie value.
 func FetchICEServers(ctx context.Context, sessionID string, conf *TeleMostConference) ([]ICEServerConfig, error) {
 	headers := http.Header{
 		"Origin":     []string{teleMostOrigin},
@@ -146,7 +118,6 @@ func FetchICEServers(ctx context.Context, sessionID string, conf *TeleMostConfer
 	defer ws.Close(websocket.StatusNormalClosure, "")
 	ws.SetReadLimit(512 * 1024)
 
-	// Send HelloRequest.
 	hello := helloRequest{
 		ID: generateID(),
 		Participant: participantInfo{
@@ -165,7 +136,6 @@ func FetchICEServers(ctx context.Context, sessionID string, conf *TeleMostConfer
 		return nil, fmt.Errorf("send hello: %w", err)
 	}
 
-	// Read messages until we receive iceServers.
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		msgCtx, cancel := context.WithDeadline(ctx, deadline)
@@ -177,7 +147,7 @@ func FetchICEServers(ctx context.Context, sessionID string, conf *TeleMostConfer
 
 		var msg wssResponse
 		if err := json.Unmarshal(data, &msg); err != nil {
-			continue // unknown frame, skip
+			continue
 		}
 		if msg.RtcConfiguration == nil || len(msg.RtcConfiguration.ICEServers) == 0 {
 			continue
@@ -189,8 +159,6 @@ func FetchICEServers(ctx context.Context, sessionID string, conf *TeleMostConfer
 	return nil, fmt.Errorf("timeout waiting for rtcConfiguration from Telemost")
 }
 
-// extractTURN converts raw iceServerEntry list to ICEServerConfig,
-// keeping only UDP TURN servers.
 func extractTURN(entries []iceServerEntry) []ICEServerConfig {
 	var out []ICEServerConfig
 	for _, e := range entries {
@@ -206,7 +174,6 @@ func extractTURN(entries []iceServerEntry) []ICEServerConfig {
 			}
 		}
 
-		// Filter: keep turn:/turns: UDP only.
 		var filtered []string
 		for _, u := range urls {
 			lower := strings.ToLower(u)
@@ -231,14 +198,10 @@ func extractTURN(entries []iceServerEntry) []ICEServerConfig {
 	return out
 }
 
-// generateID returns a simple unique identifier for the HelloRequest.
 func generateID() string {
 	return fmt.Sprintf("whispera-%d", time.Now().UnixNano())
 }
 
-// SendSignal sends a JSON-encoded SDP or ICE message through the Telemost
-// conference WebSocket (used as a signaling side-channel).
-// Both VPN client and server must be connected to the same conference.
 func SendSignal(ctx context.Context, ws *websocket.Conn, msg interface{}) error {
 	data, err := json.Marshal(msg)
 	if err != nil {
@@ -247,7 +210,6 @@ func SendSignal(ctx context.Context, ws *websocket.Conn, msg interface{}) error 
 	return ws.Write(ctx, websocket.MessageText, data)
 }
 
-// ReadSignal reads a raw JSON message from the Telemost conference WebSocket.
 func ReadSignal(ctx context.Context, ws *websocket.Conn) ([]byte, error) {
 	_, data, err := ws.Read(ctx)
 	return data, err

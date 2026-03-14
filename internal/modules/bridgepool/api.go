@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"time"
 )
 
 type APIHandler struct {
@@ -43,10 +44,13 @@ func (h *APIHandler) HandleGetBridges(w http.ResponseWriter, r *http.Request) {
 	bridges := h.registry.GetAliveBridges()
 
 	type publicBridge struct {
-		ID       string `json:"id"`
-		Address  string `json:"address"`
-		Provider string `json:"provider"`
-		Latency  int    `json:"latency_ms"`
+		ID       string     `json:"id"`
+		Address  string     `json:"address"`
+		Type     BridgeType `json:"type"`
+		Provider string     `json:"provider"`
+		Country  string     `json:"country,omitempty"`
+		City     string     `json:"city,omitempty"`
+		Latency  int        `json:"latency_ms"`
 	}
 
 	result := make([]publicBridge, len(bridges))
@@ -54,7 +58,10 @@ func (h *APIHandler) HandleGetBridges(w http.ResponseWriter, r *http.Request) {
 		result[i] = publicBridge{
 			ID:       b.ID,
 			Address:  b.Address,
+			Type:     b.Type,
 			Provider: b.Provider,
+			Country:  b.Country,
+			City:     b.City,
 			Latency:  b.Latency,
 		}
 	}
@@ -71,11 +78,18 @@ func (h *APIHandler) HandleGetBridgesAdmin(w http.ResponseWriter, r *http.Reques
 
 func (h *APIHandler) HandleAddBridge(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Address   string `json:"address"`
-		Type      string `json:"type"`
-		Provider  string `json:"provider"`
-		Region    string `json:"region"`
-		PublicKey string `json:"public_key"`
+		Address   string  `json:"address"`
+		Type      string  `json:"type"`
+		Provider  string  `json:"provider"`
+		Region    string  `json:"region"`
+		PublicKey string  `json:"public_key"`
+		Country   string  `json:"country"`
+		City      string  `json:"city"`
+		Lat       float64 `json:"lat"`
+		Lon       float64 `json:"lon"`
+		Bandwidth int     `json:"bandwidth_mbps"`
+		SSHPubKey string  `json:"ssh_pub_key"`
+		MaxUsers  int     `json:"max_users"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -94,6 +108,8 @@ func (h *APIHandler) HandleAddBridge(w http.ResponseWriter, r *http.Request) {
 		bridgeType = BridgeCommunity
 	case "user":
 		bridgeType = BridgeUser
+	case "white":
+		bridgeType = BridgeWhite
 	}
 
 	info := &BridgeInfo{
@@ -102,6 +118,13 @@ func (h *APIHandler) HandleAddBridge(w http.ResponseWriter, r *http.Request) {
 		Provider:  req.Provider,
 		Region:    req.Region,
 		PublicKey: req.PublicKey,
+		Country:   req.Country,
+		City:      req.City,
+		Lat:       req.Lat,
+		Lon:       req.Lon,
+		Bandwidth: req.Bandwidth,
+		SSHPubKey: req.SSHPubKey,
+		MaxUsers:  req.MaxUsers,
 	}
 
 	if err := h.registry.RegisterBridge(info); err != nil {
@@ -219,6 +242,8 @@ func (h *APIHandler) HandleRegisterBridge(w http.ResponseWriter, r *http.Request
 		bridgeType = BridgeOperator
 	case "user":
 		bridgeType = BridgeUser
+	case "white":
+		bridgeType = BridgeWhite
 	}
 
 	info := &BridgeInfo{
@@ -275,13 +300,11 @@ func (h *APIHandler) HandleGetCloudInit(w http.ResponseWriter, r *http.Request) 
 		h.registrationToken = GenerateRegistrationToken()
 	}
 
-	// Prefer explicit ?server= param, then X-Real-IP / X-Forwarded-For, then Host
 	serverAddr := r.URL.Query().Get("server")
 	if serverAddr == "" {
 		if ip := r.Header.Get("X-Real-IP"); ip != "" {
 			serverAddr = ip + ":8081"
 		} else if ip := r.Header.Get("X-Forwarded-For"); ip != "" {
-			// X-Forwarded-For may be comma-separated; take first
 			if idx := strings.Index(ip, ","); idx != -1 {
 				ip = strings.TrimSpace(ip[:idx])
 			}
@@ -329,5 +352,364 @@ chmod +x /tmp/install-bridge.sh
 
 	w.Header().Set("Content-Type", "text/plain")
 	w.Header().Set("Content-Disposition", "attachment; filename=cloud-init-bridge.sh")
+	w.Write([]byte(cloudInit))
+}
+
+func (h *APIHandler) HandleGetWhiteBridges(w http.ResponseWriter, r *http.Request) {
+	bridges := h.registry.GetWhiteBridges()
+
+	type whiteBridge struct {
+		ID        string  `json:"id"`
+		Address   string  `json:"address"`
+		Country   string  `json:"country"`
+		City      string  `json:"city"`
+		Lat       float64 `json:"lat"`
+		Lon       float64 `json:"lon"`
+		Latency   int     `json:"latency_ms"`
+		Bandwidth int     `json:"bandwidth_mbps"`
+		Load      float64 `json:"load"`
+		MaxUsers  int     `json:"max_users"`
+		CurUsers  int     `json:"cur_users"`
+	}
+
+	result := make([]whiteBridge, len(bridges))
+	for i, b := range bridges {
+		result[i] = whiteBridge{
+			ID:        b.ID,
+			Address:   b.Address,
+			Country:   b.Country,
+			City:      b.City,
+			Lat:       b.Lat,
+			Lon:       b.Lon,
+			Latency:   b.Latency,
+			Bandwidth: b.Bandwidth,
+			Load:      b.Load,
+			MaxUsers:  b.MaxUsers,
+			CurUsers:  b.CurUsers,
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(result)
+}
+
+func (h *APIHandler) HandleGetBridgeMap(w http.ResponseWriter, r *http.Request) {
+	mapData := h.registry.GetBridgeMap()
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(mapData)
+}
+
+func (h *APIHandler) HandleBridgeConnect(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		BridgeID string `json:"bridge_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+	if req.BridgeID == "" {
+		http.Error(w, "bridge_id required", http.StatusBadRequest)
+		return
+	}
+
+	data, err := h.registry.GetBridgeForConnect(req.BridgeID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success":    true,
+		"connection": data,
+	})
+}
+
+func (h *APIHandler) HandleBridgeScan(w http.ResponseWriter, r *http.Request) {
+	results := h.registry.ScanAllBridges()
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success": true,
+		"results": results,
+		"scanned": len(results),
+	})
+}
+
+func (h *APIHandler) HandleBridgeHeartbeat(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		ID       string  `json:"id"`
+		Token    string  `json:"token"`
+		Load     float64 `json:"load"`
+		CurUsers int     `json:"cur_users"`
+		Version  string  `json:"version"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	if !h.validateToken(req.Token) {
+		http.Error(w, "Invalid token", http.StatusUnauthorized)
+		return
+	}
+
+	bridge, err := h.registry.GetBridge(req.ID)
+	if err != nil {
+		http.Error(w, "Bridge not found", http.StatusNotFound)
+		return
+	}
+
+	h.registry.UpdateBridgeStatus(req.ID, true, bridge.Latency)
+	h.registry.UpdateBridgeLoad(req.ID, req.Load, req.CurUsers)
+
+	h.registry.mu.Lock()
+	if b, exists := h.registry.bridges[req.ID]; exists && req.Version != "" {
+		b.Version = req.Version
+	}
+	h.registry.mu.Unlock()
+
+	adminKey := h.registry.GetAdminSSHKey()
+	accessKeys := h.registry.GetAccessKeysForBridge(req.ID)
+
+	authorizedKeys := make([]string, 0)
+	if adminKey != "" {
+		authorizedKeys = append(authorizedKeys, adminKey)
+	}
+	for _, ak := range accessKeys {
+		if !ak.Used || !ak.OneTime {
+			authorizedKeys = append(authorizedKeys, ak.SSHKey)
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success":         true,
+		"authorized_keys": authorizedKeys,
+	})
+}
+
+func (h *APIHandler) HandleSetAdminSSHKey(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		SSHKey string `json:"ssh_key"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	if req.SSHKey == "" {
+		http.Error(w, "SSH key is required", http.StatusBadRequest)
+		return
+	}
+
+	h.registry.SetAdminSSHKey(req.SSHKey)
+	log.Printf("[BridgePool] Admin SSH key updated")
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success": true,
+	})
+}
+
+func (h *APIHandler) HandleIssueAccessKey(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		BridgeID string `json:"bridge_id"`
+		UserID   string `json:"user_id"`
+		OneTime  bool   `json:"one_time"`
+		TTLHours int    `json:"ttl_hours"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	if req.BridgeID == "" || req.UserID == "" {
+		http.Error(w, "bridge_id and user_id required", http.StatusBadRequest)
+		return
+	}
+
+	ttl := 24 * time.Hour
+	if req.TTLHours > 0 {
+		ttl = time.Duration(req.TTLHours) * time.Hour
+	}
+
+	ak, err := h.registry.IssueAccessKey(req.BridgeID, req.UserID, req.OneTime, ttl)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	log.Printf("[BridgePool] Access key issued: %s for bridge %s (user: %s, one_time: %v)",
+		ak.ID, req.BridgeID, req.UserID, req.OneTime)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success":    true,
+		"key_id":     ak.ID,
+		"ssh_key":    ak.SSHKey,
+		"expires_at": ak.ExpiresAt,
+		"one_time":   ak.OneTime,
+	})
+}
+
+func (h *APIHandler) HandleValidateAccessKey(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		KeyID string `json:"key_id"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	ak, err := h.registry.ValidateAccessKey(req.KeyID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusForbidden)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success":   true,
+		"bridge_id": ak.BridgeID,
+		"ssh_key":   ak.SSHKey,
+	})
+}
+
+func (h *APIHandler) HandleRevokeAccessKey(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		KeyID string `json:"key_id"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	if err := h.registry.RevokeAccessKey(req.KeyID); err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+
+	log.Printf("[BridgePool] Access key revoked: %s", req.KeyID)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success": true,
+	})
+}
+
+func (h *APIHandler) HandleGetWhiteCloudInit(w http.ResponseWriter, r *http.Request) {
+	if h.registrationToken == "" {
+		h.registrationToken = GenerateRegistrationToken()
+	}
+
+	serverAddr := r.URL.Query().Get("server")
+	if serverAddr == "" {
+		if ip := r.Header.Get("X-Real-IP"); ip != "" {
+			serverAddr = ip + ":8081"
+		} else if ip := r.Header.Get("X-Forwarded-For"); ip != "" {
+			if idx := strings.Index(ip, ","); idx != -1 {
+				ip = strings.TrimSpace(ip[:idx])
+			}
+			serverAddr = ip + ":8081"
+		} else {
+			serverAddr = r.Host
+		}
+	}
+	if serverAddr == "" {
+		serverAddr = "YOUR_SERVER_IP:8081"
+	}
+
+	country := r.URL.Query().Get("country")
+	city := r.URL.Query().Get("city")
+	bandwidth := r.URL.Query().Get("bandwidth")
+	if bandwidth == "" {
+		bandwidth = "100"
+	}
+	maxUsers := r.URL.Query().Get("max_users")
+	if maxUsers == "" {
+		maxUsers = "50"
+	}
+
+	cloudInit := `#!/bin/bash
+set -e
+
+SERVER="` + serverAddr + `"
+TOKEN="` + h.registrationToken + `"
+COUNTRY="` + country + `"
+CITY="` + city + `"
+BANDWIDTH="` + bandwidth + `"
+MAX_USERS="` + maxUsers + `"
+
+apt-get update -qq && apt-get install -y curl jq openssh-server 2>/dev/null || true
+
+SSH_KEY=$(cat /etc/ssh/ssh_host_ed25519_key.pub 2>/dev/null || ssh-keygen -t ed25519 -f /etc/ssh/ssh_host_ed25519_key -N "" -q && cat /etc/ssh/ssh_host_ed25519_key.pub)
+
+sed -i 's/#\?PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config
+sed -i 's/#\?PubkeyAuthentication.*/PubkeyAuthentication yes/' /etc/ssh/sshd_config
+systemctl restart sshd 2>/dev/null || service ssh restart 2>/dev/null || true
+
+MY_IP=$(curl -4 -s ifconfig.me || curl -4 -s icanhazip.com)
+MY_PORT=8443
+
+PAYLOAD=$(jq -n \
+  --arg address "${MY_IP}:${MY_PORT}" \
+  --arg type "white" \
+  --arg token "${TOKEN}" \
+  --arg ssh_pub_key "${SSH_KEY}" \
+  --arg country "${COUNTRY}" \
+  --arg city "${CITY}" \
+  --argjson bandwidth_mbps "${BANDWIDTH}" \
+  --argjson max_users "${MAX_USERS}" \
+  '{address: $address, type: $type, token: $token, ssh_pub_key: $ssh_pub_key, country: $country, city: $city, bandwidth_mbps: ($bandwidth_mbps|tonumber), max_users: ($max_users|tonumber)}')
+
+RESULT=$(curl -s -X POST "https://${SERVER}/api/bridge-register" \
+  -H "Content-Type: application/json" \
+  -d "${PAYLOAD}" --insecure)
+
+BRIDGE_ID=$(echo "${RESULT}" | jq -r '.id // empty')
+if [ -z "${BRIDGE_ID}" ]; then
+  echo "Registration failed: ${RESULT}"
+  exit 1
+fi
+
+mkdir -p /etc/whispera
+echo "${BRIDGE_ID}" > /etc/whispera/bridge-id
+echo "${TOKEN}" > /etc/whispera/bridge-token
+echo "${SERVER}" > /etc/whispera/bridge-server
+
+cat > /usr/local/bin/whispera-bridge-heartbeat <<'HBEOF'
+#!/bin/bash
+BRIDGE_ID=$(cat /etc/whispera/bridge-id)
+TOKEN=$(cat /etc/whispera/bridge-token)
+SERVER=$(cat /etc/whispera/bridge-server)
+LOAD=$(awk '{print $1}' /proc/loadavg)
+USERS=$(who | wc -l)
+VERSION=$(whispera --version 2>/dev/null || echo "unknown")
+curl -s -X POST "https://${SERVER}/api/bridge-heartbeat" \
+  -H "Content-Type: application/json" \
+  -d "{\"id\":\"${BRIDGE_ID}\",\"token\":\"${TOKEN}\",\"load\":${LOAD},\"cur_users\":${USERS},\"version\":\"${VERSION}\"}" \
+  --insecure | jq -r '.authorized_keys[]?' > /tmp/whispera_keys 2>/dev/null
+if [ -s /tmp/whispera_keys ]; then
+  mkdir -p /root/.ssh
+  cp /tmp/whispera_keys /root/.ssh/authorized_keys
+  chmod 600 /root/.ssh/authorized_keys
+fi
+rm -f /tmp/whispera_keys
+HBEOF
+chmod +x /usr/local/bin/whispera-bridge-heartbeat
+
+(crontab -l 2>/dev/null; echo "*/5 * * * * /usr/local/bin/whispera-bridge-heartbeat") | sort -u | crontab -
+
+echo "White bridge registered: ${BRIDGE_ID}"
+echo "Server: ${SERVER}"
+`
+
+	w.Header().Set("Content-Type", "text/plain")
+	w.Header().Set("Content-Disposition", "attachment; filename=install-white-bridge.sh")
 	w.Write([]byte(cloudInit))
 }

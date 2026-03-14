@@ -20,6 +20,7 @@ import (
 	"golang.org/x/crypto/curve25519"
 
 	"whispera/internal/cache"
+	"whispera/internal/core/base"
 	"whispera/internal/core/interfaces"
 	"whispera/internal/core/lifecycle"
 	"whispera/internal/db"
@@ -687,6 +688,10 @@ func main() {
 		ShutdownTimeout: 30_000_000_000,
 		GracefulStop:    true,
 	})
+
+	memWatchdog := base.NewMemoryWatchdog(512, 1024, 30*time.Second)
+	memWatchdog.Start()
+	manager.OnShutdown(func() { memWatchdog.Stop() })
 
 	if err := createModules(manager); err != nil {
 		log.Fatalf("Failed to create modules: %v", err)

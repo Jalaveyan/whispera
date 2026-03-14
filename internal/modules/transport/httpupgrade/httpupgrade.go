@@ -87,7 +87,6 @@ func (t *Transport) Accept() (net.Conn, error) {
 	atomic.AddUint64(&t.totalConns, 1)
 	atomic.AddInt64(&t.activeConns, 1)
 
-	// Server: read HTTP Upgrade request, respond 101
 	wrapped, err := t.serverHandshake(conn)
 	if err != nil {
 		conn.Close()

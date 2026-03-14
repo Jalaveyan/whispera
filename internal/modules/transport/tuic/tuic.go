@@ -44,7 +44,6 @@ type Config struct {
 	SNI               string
 	CongestionControl string
 
-	// Server-mode fields
 	ServerMode bool
 	TLSCert    string
 	TLSKey     string
@@ -73,10 +72,8 @@ type Transport struct {
 	*base.Module
 	config *Config
 
-	// client mode
 	conn *quic.Conn
 
-	// server mode
 	listener *quic.Listener
 	acceptCh chan net.Conn
 
@@ -101,7 +98,6 @@ func New(cfg *Config) (*Transport, error) {
 
 func (t *Transport) Type() interfaces.TransportType { return interfaces.TransportTUIC }
 
-// ── Server mode ──────────────────────────────────────────────────────────────
 
 func (t *Transport) Listen(addr string) error {
 	tlsCfg, err := t.buildServerTLSConfig()
@@ -148,14 +144,13 @@ func (t *Transport) handleQUICConn(ctx context.Context, conn *quic.Conn) {
 }
 
 func (t *Transport) handleQUICStream(stream *quic.Stream) {
-	// Consume TUIC CONNECT header: [UUID(16)] [addr_len(1)] [addr] [port(2)]
-	hdr := make([]byte, 17) // 16 UUID + 1 addr_len
+	hdr := make([]byte, 17)
 	if _, err := io.ReadFull(stream, hdr); err != nil {
 		stream.Close()
 		return
 	}
 	addrLen := int(hdr[16])
-	tail := make([]byte, addrLen+2) // addr bytes + 2 port bytes
+	tail := make([]byte, addrLen+2)
 	if _, err := io.ReadFull(stream, tail); err != nil {
 		stream.Close()
 		return
@@ -239,7 +234,6 @@ func generateSelfSignedCert(hostname string) (tls.Certificate, error) {
 	return tls.X509KeyPair(certPEM, keyPEM)
 }
 
-// ── Client mode ──────────────────────────────────────────────────────────────
 
 func (t *Transport) getConn(ctx context.Context) (*quic.Conn, error) {
 	if t.conn != nil {
@@ -283,8 +277,6 @@ func (t *Transport) Dial(ctx context.Context, addr string) (net.Conn, error) {
 		return nil, fmt.Errorf("tuic: open stream: %w", err)
 	}
 
-	// Send TUIC CONNECT request
-	// Format: [UUID(16)] [addr_len(1)] [addr] [port(2)]
 	host, portStr, err := net.SplitHostPort(addr)
 	if err != nil {
 		stream.Close()
@@ -331,7 +323,6 @@ func (t *Transport) HealthCheck() interfaces.HealthStatus {
 	return s
 }
 
-// ── Connection wrapper ───────────────────────────────────────────────────────
 
 type tuicConn struct {
 	stream *quic.Stream

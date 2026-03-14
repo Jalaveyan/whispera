@@ -127,6 +127,10 @@
                     <i class="fas fa-network-wired"></i>
                     <span data-i18n="nav.bridges">Мосты</span>
                 </li>
+                <li class="nav-item" data-page="bridge-map">
+                    <i class="fas fa-globe-americas"></i>
+                    <span data-i18n="nav.bridge_map">Карта мостов</span>
+                </li>
                 <li class="nav-item" data-page="subscriptions">
                     <i class="fas fa-rss"></i>
                     <span data-i18n="nav.subscriptions">Подписки</span>
@@ -510,6 +514,70 @@
                             <p style="color:var(--md-sys-color-on-surface-variant);font-size:0.82em;margin-bottom:6px;" data-i18n="bridges.token.curl_hint">Или зарегистрируйте мост вручную через curl:</p>
                             <pre id="bridge-curl-cmd" style="background:rgba(0,0,0,0.3);padding:10px 14px;border-radius:6px;font-size:0.78em;overflow-x:auto;white-space:pre;margin:0;color:#7ef7c8;"></pre>
                         </div>
+                    </div>
+                </div>
+            </section>
+
+            <section id="page-bridge-map" class="page">
+                <div class="page-header" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;">
+                    <h2><i class="fas fa-globe-americas" style="margin-right:8px;"></i><span data-i18n="nav.bridge_map">Карта мостов</span></h2>
+                    <div style="display:flex;gap:8px;align-items:center;">
+                        <button id="bridge-map-scan-btn" class="btn btn-secondary btn-sm">
+                            <i class="fas fa-satellite-dish"></i> Сканировать
+                        </button>
+                        <button id="bridge-map-refresh-btn" class="btn btn-secondary btn-sm">
+                            <i class="fas fa-sync-alt"></i> Обновить
+                        </button>
+                    </div>
+                </div>
+
+                <div class="stats-grid" style="margin-bottom:20px;">
+                    <div class="stat-card">
+                        <div class="stat-label">Всего на карте</div>
+                        <div class="stat-value" id="map-total">—</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-label" style="color:#4ade80;">Доступно</div>
+                        <div class="stat-value" id="map-alive" style="color:#4ade80;">—</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-label" style="color:#a5b4fc;">White</div>
+                        <div class="stat-value" id="map-white" style="color:#a5b4fc;">—</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-label">Стран</div>
+                        <div class="stat-value" id="map-countries">—</div>
+                    </div>
+                </div>
+
+                <div class="card" style="margin-bottom:20px;">
+                    <div class="card-body" style="padding:0;position:relative;min-height:500px;height:500px;overflow:hidden;border-radius:12px;background:#0a0e1a;">
+                        <canvas id="bridge-map-canvas" style="width:100%;height:100%;display:block;"></canvas>
+                        <div id="bridge-map-tooltip" style="display:none;position:absolute;background:rgba(10,14,26,0.95);border:1px solid rgba(0,229,255,0.3);border-radius:8px;padding:12px 16px;font-size:0.85em;pointer-events:none;z-index:100;backdrop-filter:blur(8px);"></div>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="card-header">
+                        <div class="card-title"><i class="fas fa-list"></i> Доступные мосты</div>
+                    </div>
+                    <div class="card-body" style="padding:0;overflow-x:auto;">
+                        <table class="data-table" id="bridge-map-table">
+                            <thead>
+                                <tr>
+                                    <th style="width:36px;"></th>
+                                    <th>Регион</th>
+                                    <th>Тип</th>
+                                    <th>Задержка</th>
+                                    <th>Нагрузка</th>
+                                    <th>Пользователи</th>
+                                    <th style="width:140px;"></th>
+                                </tr>
+                            </thead>
+                            <tbody id="bridge-map-tbody">
+                                <tr><td colspan="7" style="text-align:center;color:#555;padding:32px;">Загрузка...</td></tr>
+                            </tbody>
+                        </table>
                     </div>
                 </div>
             </section>
@@ -1233,8 +1301,8 @@
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.2/gsap.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
-    <script src="/js/api.js"></script>
-    <script src="/js/app.js"></script>
+    <script src="/js/api.js?v=2"></script>
+    <script src="/js/app.js?v=2"></script>
 </body>
 
 </html>

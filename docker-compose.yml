@@ -31,7 +31,7 @@ services:
     environment:
       - PORT=3000
       - BACKEND_URL=http://server:8080
-      - CORS_ORIGIN=*
+      - CORS_ORIGIN=${CORS_ORIGIN:-http://localhost:3000}
     depends_on:
       - server
     networks:
@@ -42,9 +42,9 @@ services:
     container_name: whispera-postgres
     restart: unless-stopped
     environment:
-      POSTGRES_USER: whispera
-      POSTGRES_PASSWORD: ${PG_PASSWORD:-changeme}
-      POSTGRES_DB: whispera
+      POSTGRES_USER: ${PG_USER:-whispera}
+      POSTGRES_PASSWORD: ${PG_PASSWORD:?Set PG_PASSWORD in .env}
+      POSTGRES_DB: ${PG_DB:-whispera}
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
@@ -59,7 +59,7 @@ services:
     image: redis:7-alpine
     container_name: whispera-redis
     restart: unless-stopped
-    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
+    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru --requirepass ${REDIS_PASSWORD:-}
     volumes:
       - redis-data:/data
     healthcheck:

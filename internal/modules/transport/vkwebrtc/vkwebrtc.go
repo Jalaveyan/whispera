@@ -37,73 +37,49 @@ const (
 	ModuleName    = "transport.vkwebrtc"
 	ModuleVersion = "1.0.0"
 
-	// RTP/VP8 constants.
 	rtpPayloadTypeVP8 = 96
-	rtpClockRate      = 90000 // 90 kHz, standard for video
+	rtpClockRate      = 90000
 	fps               = 30
 	maxRTPPayload     = 1200
 
-	vp8Start byte = 0x10 // S=1, PID=0
-	vp8Cont  byte = 0x00 // S=0, PID=0
+	vp8Start byte = 0x10
+	vp8Cont  byte = 0x00
 
 	defaultNumTracks = 3
 
-	// signalingPath is used in WebSocket mode.
 	signalingPath = "/signal"
 
-	// Signaling modes.
-	SignalingVK        = "vk"        // VK LongPoll/Messages — traffic stays on VK IPs (CIDR bypass)
-	SignalingWebSocket = "websocket" // own WebSocket server  — development/testing only
+	SignalingVK        = "vk"
+	SignalingWebSocket = "websocket"
 )
 
 var frameInterval = time.Second / fps
 
-// sigMsg is the JSON envelope for both signaling channels.
 type sigMsg struct {
 	Type      string `json:"type"`
 	SDP       string `json:"sdp,omitempty"`
 	Candidate string `json:"candidate,omitempty"`
 }
 
-// ICEServerConfig wraps a TURN/STUN server with optional credentials.
 type ICEServerConfig struct {
 	URLs       []string
 	Username   string
 	Credential string
 }
 
-// Config holds all tunable parameters.
-//
-// For a CIDR-whitelist bypass:
-//   - SignalingMode    = "vk"    (signaling goes through vk.com — whitelisted)
-//   - ICEPolicy        = "relay" (all media goes through VK TURN — whitelisted)
-//   - VKToken/VKGroupID/VKPeerID must be set
-//   - TURN credentials are fetched automatically via calls.start + VK call WS.
-//     If that fails, set TURNSharedSecret (discovered via traffic capture) as
-//     a fallback, or populate ICEServers with credentials manually.
-//
-// For local testing:
-//   - SignalingMode = "websocket"
-//   - ICEPolicy    = "all"
 type Config struct {
 	ServerMode    bool
-	NumTracks     int    // parallel VP8 tracks; default 3
-	SignalingMode string // "vk" | "websocket"
-	ICEPolicy     string // "all" (default) | "relay" (force TURN, for CIDR bypass)
+	NumTracks     int
+	SignalingMode string
+	ICEPolicy     string
 	ICEServers    []ICEServerConfig
 
-	// VK signaling mode fields.
-	VKToken   string // VK group access token
-	VKGroupID int64  // VK group ID
-	VKPeerID  int64  // peer_id of the other side (user or peer)
+	VKToken   string
+	VKGroupID int64
+	VKPeerID  int64
 
-	// TURNSharedSecret is VK's coturn static-auth-secret, used as a fallback
-	// when the VK call WS handshake doesn't return credentials.
-	// Discover it via: mitmproxy capture of VK iOS/Android call traffic,
-	// or by decompiling the VK APK (search for "turn.vk.com" usage).
 	TURNSharedSecret string
 
-	// WebSocket signaling mode fields (server mode only).
 	TLSCert string
 	TLSKey  string
 
@@ -114,7 +90,7 @@ func DefaultConfig() *Config {
 	return &Config{
 		NumTracks:     defaultNumTracks,
 		SignalingMode: SignalingVK,
-		ICEPolicy:     "relay", // default: relay-only so all traffic stays on VK IPs
+		ICEPolicy:     "relay",
 		ICEServers: []ICEServerConfig{
 			{
 				URLs:       []string{"stun:stun.vk.com:3478"},
@@ -123,15 +99,14 @@ func DefaultConfig() *Config {
 			},
 			{
 				URLs:       []string{"turn:turn.vk.com:3478"},
-				Username:   "",   // set these from VK TURN credential API
-				Credential: "",   // or obtain via VK Video API reverse-engineering
+				Username:   "",
+				Credential: "",
 			},
 		},
 		BufferSize: 65536,
 	}
 }
 
-// trackWriter owns the RTP state for one VP8 video track.
 type trackWriter struct {
 	track *webrtc.TrackLocalStaticRTP
 	mu    sync.Mutex
@@ -233,30 +208,26 @@ func (w *trackWriter) sendFiller() {
 	w.seq++
 }
 
-// Transport tunnels VPN data through N parallel VP8 SRTP streams, all relayed
-// through VK TURN servers so the traffic appears to originate from VK IP ranges.
-// This is the core mechanism for bypassing IP CIDR whitelists that permit VK.
 type Transport struct {
 	*base.Module
 	config     *Config
 	writers    []*trackWriter
 	client     *http.Client
-	vkCallID   string // active call ID, used to ForceFinish on Stop()
+	vkCallID   string
 
 	api            *webrtc.API
 	peerConnection *webrtc.PeerConnection
 
-	lastDataSentNs int64 // atomic
+	lastDataSentNs int64
 
 	dataIn  chan []byte
 	dataOut chan []byte
 
-	// WebSocket signaling state (SignalingWebSocket mode).
 	sigMu   sync.Mutex
 	sigConn *websocket.Conn
 	httpSrv *http.Server
 
-	tracksReceived int32 // atomic countdown
+	tracksReceived int32
 	readyOnce      sync.Once
 	ready          chan struct{}
 
@@ -293,12 +264,7 @@ func New(cfg *Config) (*Transport, error) {
 	}, nil
 }
 
-// tryFetchTURNCredentials attempts to populate TURN credentials in t.config.ICEServers
-// using VK's calls API + call WebSocket handshake.
-// On failure it logs a warning and falls back to HMAC generation (if TURNSharedSecret is set).
-// The caller must handle the case where no credentials are available.
 func (t *Transport) tryFetchTURNCredentials() {
-	// Step 1: create a VK call session to get a join_link.
 	session, err := StartVKCall(t.client, t.config.VKToken, t.config.VKGroupID)
 	if err != nil {
 		log.Printf("TURN creds: calls.start failed: %v", err)
@@ -308,7 +274,6 @@ func (t *Transport) tryFetchTURNCredentials() {
 	t.vkCallID = session.CallID
 	log.Printf("VK call session %s, join_link: %s", session.CallID, session.JoinLink)
 
-	// Step 2: connect to VK's call WebSocket and extract ICE servers.
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -319,13 +284,10 @@ func (t *Transport) tryFetchTURNCredentials() {
 		return
 	}
 
-	// Merge the received servers into config, replacing any that share a URL.
 	t.mergeICEServers(servers)
 	log.Printf("TURN creds: fetched from VK call WS (%d servers)", len(servers))
 }
 
-// tryHMACFallback generates credentials using the coturn HMAC mechanism if
-// TURNSharedSecret is configured.
 func (t *Transport) tryHMACFallback() {
 	if t.config.TURNSharedSecret == "" {
 		log.Printf("TURN creds: no TURNSharedSecret configured; relay-only ICE will likely fail")
@@ -347,8 +309,6 @@ func (t *Transport) tryHMACFallback() {
 	}})
 }
 
-// mergeICEServers merges new server configs into t.config.ICEServers,
-// adding credentials to existing entries that match by URL or appending new ones.
 func (t *Transport) mergeICEServers(incoming []ICEServerConfig) {
 	for _, inc := range incoming {
 		merged := false
@@ -369,8 +329,6 @@ func (t *Transport) mergeICEServers(incoming []ICEServerConfig) {
 	}
 }
 
-// Start initialises the WebRTC peer connection with the configured ICE policy.
-// Actual signaling starts in Listen (server) or Dial (client).
 func (t *Transport) Start() error {
 	if err := t.Module.Start(); err != nil {
 		return err
@@ -391,13 +349,10 @@ func (t *Transport) Start() error {
 		webrtc.WithSettingEngine(webrtc.SettingEngine{}),
 	)
 
-	// In VK mode, try to fetch TURN credentials automatically before building
-	// the ICE server list.  This ensures relay-only ICE actually works.
 	if t.config.SignalingMode == SignalingVK && t.config.ICEPolicy == "relay" {
 		t.tryFetchTURNCredentials()
 	}
 
-	// Build ICE server list with optional per-server credentials.
 	iceServers := make([]webrtc.ICEServer, 0, len(t.config.ICEServers))
 	for _, s := range t.config.ICEServers {
 		srv := webrtc.ICEServer{URLs: s.URLs}
@@ -409,9 +364,6 @@ func (t *Transport) Start() error {
 		iceServers = append(iceServers, srv)
 	}
 
-	// ICETransportPolicyRelay: ALL media is relayed through TURN.
-	// Critical for CIDR whitelist bypass — ensures every packet goes through
-	// VK TURN (a whitelisted IP range) instead of direct P2P (blocked IP).
 	icePolicy := webrtc.ICETransportPolicyAll
 	if t.config.ICEPolicy == "relay" {
 		icePolicy = webrtc.ICETransportPolicyRelay
@@ -427,7 +379,6 @@ func (t *Transport) Start() error {
 	}
 	t.peerConnection = pc
 
-	// Register N VP8 tracks as sendrecv transceivers (simulcast appearance).
 	for _, w := range t.writers {
 		if _, err := pc.AddTransceiverFromTrack(w.track, webrtc.RTPTransceiverInit{
 			Direction: webrtc.RTPTransceiverDirectionSendrecv,
@@ -469,9 +420,7 @@ func (t *Transport) Start() error {
 	return nil
 }
 
-// ── Signaling dispatch ───────────────────────────────────────────────────────
 
-// dispatchSignal routes a signaling message to the configured channel.
 func (t *Transport) dispatchSignal(msg sigMsg) {
 	switch t.config.SignalingMode {
 	case SignalingVK:
@@ -481,7 +430,6 @@ func (t *Transport) dispatchSignal(msg sigMsg) {
 	}
 }
 
-// handleSignalMsg processes an inbound signaling message on either channel.
 func (t *Transport) handleSignalMsg(msg sigMsg) {
 	switch msg.Type {
 	case "offer":
@@ -521,12 +469,6 @@ func (t *Transport) handleSignalMsg(msg sigMsg) {
 	}
 }
 
-// ── VK signaling (CIDR bypass mode) ─────────────────────────────────────────
-//
-// All signaling messages are sent as VK Messages to the configured peer and
-// received via VK Groups LongPoll API.  Both endpoints are on vk.com (a
-// whitelisted domain/IP range), so the connection setup never touches a
-// non-whitelisted IP.
 
 func (t *Transport) Listen(_ string) error {
 	if t.config.SignalingMode == SignalingVK {
@@ -540,7 +482,6 @@ func (t *Transport) Dial(ctx context.Context, addr string) (net.Conn, error) {
 	switch t.config.SignalingMode {
 	case SignalingVK:
 		go t.vkSignalingLoop()
-		// Send the initial offer via VK Messages.
 		offer, err := t.peerConnection.CreateOffer(nil)
 		if err != nil {
 			return nil, fmt.Errorf("create offer: %w", err)
@@ -551,7 +492,6 @@ func (t *Transport) Dial(ctx context.Context, addr string) (net.Conn, error) {
 		offerBytes, _ := json.Marshal(offer)
 		t.vkSendSignal(sigMsg{Type: "offer", SDP: string(offerBytes)})
 	default:
-		// WebSocket mode: addr is the signaling URL.
 		ws, _, err := websocket.Dial(ctx, addr, nil)
 		if err != nil {
 			return nil, fmt.Errorf("signaling dial %s: %w", addr, err)
@@ -589,8 +529,6 @@ func (t *Transport) Accept() (net.Conn, error) {
 	}
 }
 
-// vkSignalingLoop receives signaling messages via VK Groups LongPoll API.
-// Traffic flows:  client → api.vk.com (whitelisted) → LongPoll → here.
 func (t *Transport) vkSignalingLoop() {
 	server, key, ts := t.vkGetLPServer()
 
@@ -686,8 +624,6 @@ func (t *Transport) vkPollLP(server, key string, ts *int64) {
 	}
 }
 
-// vkSendSignal sends a signaling message as a VK Message to the configured peer.
-// The HTTP call goes to api.vk.com — a whitelisted IP — so it passes the firewall.
 func (t *Transport) vkSendSignal(msg sigMsg) {
 	data, _ := json.Marshal(msg)
 	text := "WEBRTC:" + string(data)
@@ -704,7 +640,6 @@ func (t *Transport) vkSendSignal(msg sigMsg) {
 	resp.Body.Close()
 }
 
-// ── WebSocket signaling (dev/testing mode) ───────────────────────────────────
 
 func (t *Transport) wsListen() error {
 	mux := http.NewServeMux()
@@ -791,10 +726,8 @@ func (t *Transport) wsSendSignal(msg sigMsg) {
 	wsjson.Write(ctx, conn, msg)
 }
 
-// ── Video send / receive ─────────────────────────────────────────────────────
 
 func (t *Transport) videoSendLoop() {
-	// N parallel data senders — all consume from the same dataOut channel.
 	for _, w := range t.writers {
 		w := w
 		go func() {
@@ -812,7 +745,6 @@ func (t *Transport) videoSendLoop() {
 		}()
 	}
 
-	// Filler ticker: keepalive on all tracks when the tunnel is idle.
 	ticker := time.NewTicker(frameInterval)
 	defer ticker.Stop()
 	for {
@@ -877,7 +809,6 @@ func (t *Transport) receiveTrack(track *webrtc.TrackRemote) {
 	}
 }
 
-// ── Transport interface ──────────────────────────────────────────────────────
 
 func (t *Transport) Stop() error {
 	t.stopOnce.Do(func() { close(t.stopChan) })
@@ -889,7 +820,6 @@ func (t *Transport) Stop() error {
 	if t.peerConnection != nil {
 		t.peerConnection.Close()
 	}
-	// Tell VK the call is over so it doesn't linger in their system.
 	if t.vkCallID != "" {
 		ForceFinishCall(t.client, t.config.VKToken, t.vkCallID)
 	}
@@ -899,7 +829,6 @@ func (t *Transport) Stop() error {
 func (t *Transport) Type() interfaces.TransportType { return interfaces.TransportVKVideo }
 func (t *Transport) Close() error                   { return t.Stop() }
 
-// ── net.Conn implementation ──────────────────────────────────────────────────
 
 type vkWebRTCConn struct {
 	transport *Transport
@@ -949,7 +878,6 @@ func (c *vkWebRTCConn) SetDeadline(_ time.Time) error      { return nil }
 func (c *vkWebRTCConn) SetReadDeadline(_ time.Time) error  { return nil }
 func (c *vkWebRTCConn) SetWriteDeadline(_ time.Time) error { return nil }
 
-// ── Factory ──────────────────────────────────────────────────────────────────
 
 func Factory(cfg interface{}) (interfaces.Module, error) {
 	var config *Config

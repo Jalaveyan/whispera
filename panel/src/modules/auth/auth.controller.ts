@@ -25,11 +25,18 @@ export class AuthController {
     async login(@Body() dto: LoginDto, @Res() res: Response) {
         try {
             const result = await this.authService.login(dto.username, dto.password);
-            res.cookie('token', result.token, { httpOnly: true, sameSite: 'strict' });
+            const maxAge = (result.expires_in || 1800) * 1000;
+            res.cookie('token', result.token, {
+                httpOnly: true,
+                sameSite: 'strict',
+                maxAge,
+                secure: false,
+            });
             return res.json({
                 success: true,
                 token: result.token,
-                user: result.user
+                expires_in: result.expires_in || 1800,
+                user: result.user,
             });
         } catch (err) {
             if (err?.response?.status === 429) {

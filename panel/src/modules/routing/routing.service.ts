@@ -5,7 +5,7 @@ import { firstValueFrom } from 'rxjs';
 
 export interface RoutingRule {
     id: string;
-    type: string; // domain, ip, geoip, geosite
+    type: string;
     condition: string;
     outbound: string;
     priority: number;

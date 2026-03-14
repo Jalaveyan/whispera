@@ -27,15 +27,9 @@ const (
 	ModuleVersion = "1.0.0"
 )
 
-// Domain fronting: TLS SNI points to a CDN domain (frontDomain),
-// but the HTTP Host header points to the actual server (targetDomain).
-// CDN forwards traffic to the target without inspecting Host in TLS layer.
 type Config struct {
-	// FrontDomain is the CDN domain used in TLS SNI (e.g. allowed.cdn.com)
 	FrontDomain string
-	// TargetDomain is the actual server host sent in HTTP Host header
 	TargetDomain string
-	// Path for HTTP CONNECT or GET request
 	Path string
 }
 
@@ -85,7 +79,6 @@ func (t *Transport) Accept() (net.Conn, error) { return nil, fmt.Errorf("domainf
 func (t *Transport) Close() error              { return nil }
 
 func (t *Transport) Dial(ctx context.Context, addr string) (net.Conn, error) {
-	// Connect TCP to frontDomain:443
 	frontAddr := net.JoinHostPort(t.config.FrontDomain, "443")
 	d := &net.Dialer{Timeout: 10 * time.Second}
 	rawConn, err := d.DialContext(ctx, "tcp", frontAddr)
@@ -93,7 +86,6 @@ func (t *Transport) Dial(ctx context.Context, addr string) (net.Conn, error) {
 		return nil, fmt.Errorf("domainfront: dial %s: %w", frontAddr, err)
 	}
 
-	// TLS with SNI = frontDomain
 	tlsConn := tls.Client(rawConn, &tls.Config{
 		ServerName: t.config.FrontDomain,
 	})
@@ -102,8 +94,6 @@ func (t *Transport) Dial(ctx context.Context, addr string) (net.Conn, error) {
 		return nil, fmt.Errorf("domainfront: tls handshake: %w", err)
 	}
 
-	// HTTP CONNECT with Host = targetDomain
-	// This tells the CDN where to forward the traffic
 	req := fmt.Sprintf(
 		"CONNECT %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: Mozilla/5.0\r\n\r\n",
 		addr, t.config.TargetDomain,
