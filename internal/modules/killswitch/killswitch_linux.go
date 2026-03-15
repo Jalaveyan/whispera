@@ -1,6 +1,7 @@
 package killswitch
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"os/exec"
@@ -25,7 +26,7 @@ func (l *LinuxKillSwitch) Name() string {
 }
 
 func (l *LinuxKillSwitch) IsSupported() bool {
-	cmd := exec.Command("iptables", "-L", "-n")
+	cmd := exec.CommandContext(context.Background(), "iptables", "-L", "-n")
 	err := cmd.Run()
 	return err == nil
 }
@@ -39,7 +40,7 @@ func (l *LinuxKillSwitch) Enable(vpnServerIP net.IP, vpnPort int, allowLAN, allo
 	if err := l.createChain(); err != nil {
 		return fmt.Errorf("failed to create chain: %w", err)
 	}
-	l.runIPTables("-F", chainName)
+	_ = l.runIPTables("-F", chainName)
 	if err := l.runIPTables("-A", chainName, "-i", "lo", "-j", "ACCEPT"); err != nil {
 		return fmt.Errorf("failed to allow loopback: %w", err)
 	}
@@ -91,8 +92,8 @@ func (l *LinuxKillSwitch) Enable(vpnServerIP net.IP, vpnPort int, allowLAN, allo
 	}
 	tunInterfaces := []string{"tun0", "tun1", "tap0", "tap1", "wg0", "wg1"}
 	for _, iface := range tunInterfaces {
-		l.runIPTables("-A", chainName, "-i", iface, "-j", "ACCEPT")
-		l.runIPTables("-A", chainName, "-o", iface, "-j", "ACCEPT")
+		_ = l.runIPTables("-A", chainName, "-i", iface, "-j", "ACCEPT")
+		_ = l.runIPTables("-A", chainName, "-o", iface, "-j", "ACCEPT")
 	}
 	if err := l.runIPTables("-A", chainName, "-j", "DROP"); err != nil {
 		return fmt.Errorf("failed to add drop rule: %w", err)
@@ -115,11 +116,11 @@ func (l *LinuxKillSwitch) Enable(vpnServerIP net.IP, vpnPort int, allowLAN, allo
 func (l *LinuxKillSwitch) Disable() error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.runIPTables("-D", "INPUT", "-j", chainName)
-	l.runIPTables("-D", "OUTPUT", "-j", chainName)
-	l.runIPTables("-D", "FORWARD", "-j", chainName)
-	l.runIPTables("-F", chainName)
-	l.runIPTables("-X", chainName)
+	_ = l.runIPTables("-D", "INPUT", "-j", chainName)
+	_ = l.runIPTables("-D", "OUTPUT", "-j", chainName)
+	_ = l.runIPTables("-D", "FORWARD", "-j", chainName)
+	_ = l.runIPTables("-F", chainName)
+	_ = l.runIPTables("-X", chainName)
 
 	l.rulesActive = false
 	log.Info("Linux iptables kill switch rules removed")
@@ -138,7 +139,7 @@ func (l *LinuxKillSwitch) Cleanup() error {
 	return l.Disable()
 }
 func (l *LinuxKillSwitch) runIPTables(args ...string) error {
-	cmd := exec.Command("iptables", args...)
+	cmd := exec.CommandContext(context.Background(), "iptables", args...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("iptables %s failed: %v, output: %s", strings.Join(args, " "), err, string(output))
@@ -147,7 +148,7 @@ func (l *LinuxKillSwitch) runIPTables(args ...string) error {
 }
 
 func (l *LinuxKillSwitch) createChain() error {
-	cmd := exec.Command("iptables", "-L", chainName, "-n")
+	cmd := exec.CommandContext(context.Background(), "iptables", "-L", chainName, "-n")
 	if err := cmd.Run(); err != nil {
 		if err := l.runIPTables("-N", chainName); err != nil {
 			return err
@@ -156,7 +157,7 @@ func (l *LinuxKillSwitch) createChain() error {
 	return nil
 }
 func (l *LinuxKillSwitch) saveCurrentRules() error {
-	cmd := exec.Command("iptables-save")
+	cmd := exec.CommandContext(context.Background(), "iptables-save")
 	output, err := cmd.Output()
 	if err != nil {
 		return err
@@ -169,7 +170,7 @@ func (l *LinuxKillSwitch) restoreRules() error {
 		return nil
 	}
 
-	cmd := exec.Command("iptables-restore")
+	cmd := exec.CommandContext(context.Background(), "iptables-restore")
 	cmd.Stdin = strings.NewReader(l.savedRules)
 	return cmd.Run()
 }
