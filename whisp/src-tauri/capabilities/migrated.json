@@ -1,0 +1,33 @@
+{
+  "identifier": "migrated",
+  "description": "permissions that were migrated from v1",
+  "local": true,
+  "windows": [
+    "main"
+  ],
+  "permissions": [
+    "core:default",
+    {
+      "identifier": "shell:allow-execute",
+      "allow": [
+        {
+          "args": false,
+          "cmd": "",
+          "name": "binaries/mihomo",
+          "sidecar": true
+        },
+        {
+          "args": false,
+          "cmd": "",
+          "name": "binaries/whispera-go-client",
+          "sidecar": true
+        }
+      ]
+    },
+    "shell:allow-open",
+    "clipboard-manager:allow-read-text",
+    "clipboard-manager:allow-write-text",
+    "clipboard-manager:default",
+    "shell:default"
+  ]
+}
