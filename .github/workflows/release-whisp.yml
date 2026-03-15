@@ -23,7 +23,7 @@ jobs:
 
       - name: Install PyInstaller + API deps
         run: |
-          pip install pyinstaller fastapi uvicorn pydantic numpy scikit-learn joblib scipy python-multipart
+          pip install pyinstaller fastapi uvicorn pydantic numpy scikit-learn joblib scipy python-multipart cryptography
           pip install onnxruntime skl2onnx --quiet
           pip install tensorflow-cpu --quiet || echo "TensorFlow not available, using heuristics only"
 
