@@ -27,6 +27,18 @@ refresh_config() {
     fi
 }
 
+_enable_ml_in_config() {
+    local cfg="${CONF_PATH}/config.yaml"
+    [[ -f "$cfg" ]] || return
+    if grep -q "^ml:" "$cfg"; then
+        sed -i '/^ml:/,/^[^ ]/{s/enabled: false/enabled: true/}' "$cfg"
+    else
+        printf '\nml:\n  enabled: true\n  server_url: "https://127.0.0.1:8000"\n  token_file: ""\n' >> "$cfg"
+    fi
+    refresh_config "$cfg"
+    log_success "ML enabled in config.yaml"
+}
+
 get_public_ip() {
     local IP=$(curl -s https://api.ipify.org -m 5 2>/dev/null)
     if [[ -z "$IP" ]]; then
@@ -975,7 +987,7 @@ ENVEOF
 
             $PYTHON_BIN -m pip install --quiet \
                 fastapi uvicorn pydantic python-multipart \
-                numpy "scikit-learn>=1.6.1,<1.7.0" scipy joblib 2>/dev/null || true
+                numpy "scikit-learn>=1.6.1,<1.7.0" scipy joblib cryptography 2>/dev/null || true
 
             if [[ "$ML_PROFILE" == "full" ]]; then
                 $PYTHON_BIN -m pip install --quiet tensorflow-cpu 2>/dev/null || \
@@ -1022,9 +1034,12 @@ WantedBy=multi-user.target
 EOF
         systemctl daemon-reload
         systemctl enable whispera-ml >/dev/null 2>&1
-        systemctl restart whispera-ml 2>/dev/null && \
-            log_info "ML service started (profile: $ML_PROFILE)" || \
+        if systemctl restart whispera-ml 2>/dev/null; then
+            log_info "ML service started (profile: $ML_PROFILE)"
+            _enable_ml_in_config
+        else
             log_warn "ML service failed to start (check: journalctl -u whispera-ml)"
+        fi
     fi
 
     if [[ -f "$CONF_PATH/config.yaml" ]]; then

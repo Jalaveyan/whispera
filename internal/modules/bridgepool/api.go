@@ -61,7 +61,12 @@ func mlRankBridges(bridges []*BridgeInfo) map[string]float64 {
 		}
 	}
 	body, _ := json.Marshal(items)
-	resp, err := mlHTTPClient.Post(mlBaseURL()+"/rank/bridges", "application/json", bytes.NewReader(body))
+	req, err := http.NewRequest(http.MethodPost, mlBaseURL()+"/rank/bridges", bytes.NewReader(body))
+	if err != nil {
+		return nil
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := mlHTTPClient.Do(req)
 	if err != nil {
 		return nil
 	}

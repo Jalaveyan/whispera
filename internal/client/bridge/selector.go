@@ -94,7 +94,7 @@ func NewSelectorWithURL(discoveryURL string) *Selector {
 }
 
 // StartRefresh launches a background goroutine that re-fetches the bridge list
-// every Config.RefreshInterval. It stops when ctx is cancelled.
+// every Config.RefreshInterval. It stops when ctx is canceled.
 func (s *Selector) StartRefresh(ctx context.Context) {
 	if s.config.RefreshInterval <= 0 || s.config.DiscoveryURL == "" {
 		return

@@ -244,7 +244,12 @@ func (s *Selector) queryMLTransport(dest string) (transport string, dpiRisk stri
 		"server_host": dest,
 		"server_port": 443,
 	})
-	resp, err := s.mlHTTP.Post(s.mlBaseURL+"/recommend/transport", "application/json", bytes.NewReader(body))
+	req, err := http.NewRequest(http.MethodPost, s.mlBaseURL+"/recommend/transport", bytes.NewReader(body))
+	if err != nil {
+		return "", ""
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := s.mlHTTP.Do(req)
 	if err != nil {
 		return "", ""
 	}

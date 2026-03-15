@@ -14,7 +14,10 @@
 
 
 # Tauri / Frontend
-whisp/
+whisp/node_modules/
+whisp/src-tauri/target/
+whisp/src-tauri/binaries/
+whisp/dist/
 
 # Build output
 build/

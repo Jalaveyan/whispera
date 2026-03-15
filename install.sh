@@ -1271,6 +1271,11 @@ database:
 cache:
   redis_url: "redis://127.0.0.1:6379"
 
+ml:
+  enabled: false
+  server_url: "https://127.0.0.1:8000"
+  token_file: ""
+
 EOF
     
     log_success "Config saved to $CONF_PATH/config.yaml"
@@ -1480,7 +1485,7 @@ EOF
         # Базовые зависимости (нужны всегда)
         $PYTHON_BIN -m pip install --quiet \
             fastapi uvicorn pydantic python-multipart \
-            numpy "scikit-learn>=1.6.1,<1.7.0" scipy joblib 2>/dev/null || \
+            numpy "scikit-learn>=1.6.1,<1.7.0" scipy joblib cryptography 2>/dev/null || \
             log_warn "Some base ML deps failed to install"
 
         # ML inference backend
@@ -1549,10 +1554,24 @@ EOF
     if [[ -f /etc/systemd/system/whispera-ml.service ]]; then
         if systemctl restart whispera-ml 2>/dev/null; then
             log_success "ML service started"
+            _enable_ml_in_config
         else
             log_warn "ML service not started (install fastapi+uvicorn manually: pip3 install fastapi uvicorn)"
         fi
     fi
+}
+
+# Прописывает ml.enabled=true в config.yaml после успешного запуска ML сервиса
+_enable_ml_in_config() {
+    local cfg="${CONF_PATH}/config.yaml"
+    [[ -f "$cfg" ]] || return
+    if grep -q "^ml:" "$cfg"; then
+        sed -i '/^ml:/,/^[^ ]/{s/enabled: false/enabled: true/}' "$cfg"
+    else
+        printf '\nml:\n  enabled: true\n  server_url: "https://127.0.0.1:8000"\n  token_file: ""\n' >> "$cfg"
+    fi
+    refresh_config "$cfg"
+    log_success "ML enabled in config.yaml"
 }
 
 setup_network() {
