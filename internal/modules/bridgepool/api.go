@@ -28,7 +28,7 @@ func mlBaseURL() string {
 
 // mlRankBridges calls POST /rank/bridges on the ML server and returns a map[bridgeID]mlScore.
 // Returns nil on any error (caller uses original order).
-func mlRankBridges(bridges []*Bridge) map[string]float64 {
+func mlRankBridges(bridges []*BridgeInfo) map[string]float64 {
 	type payload struct {
 		ID            string  `json:"id"`
 		Lat           float64 `json:"lat"`
@@ -55,7 +55,7 @@ func mlRankBridges(bridges []*Bridge) map[string]float64 {
 			LatencyMs:     float64(b.Latency),
 			Load:          b.Load,
 			BandwidthMbps: float64(b.Bandwidth),
-			CurUsers:      b.CurrentUsers,
+			CurUsers:      b.CurUsers,
 			MaxUsers:      b.MaxUsers,
 			Type:          string(b.Type),
 		}

@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """
 Whispera ML Engine — обучение моделей + экспорт в ONNX.
 
@@ -12,6 +13,8 @@ Whispera ML Engine — обучение моделей + экспорт в ONNX.
 """
 
 import os, sys, json, time
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
 import numpy as np
 from pathlib import Path
 
