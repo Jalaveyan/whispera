@@ -165,20 +165,17 @@ async fn connect(app: tauri::AppHandle, state: tauri::State<'_, AppState>) -> Re
 
         if !host.is_empty() {
             let ml_c = ml_client();
-            match Some(ml_request(&ml_c, reqwest::Method::POST, &ml_url("/recommend/transport"))
+            match ml_request(&ml_c, reqwest::Method::POST, &ml_url("/recommend/transport"))
                 .timeout(Duration::from_secs(3))
                 .json(&serde_json::json!({ "server_host": host, "server_port": 8443 }))
-                .send())
+                .send()
+                .await
             {
-                Some(fut) => match fut.await {
-                    Ok(resp) => {
-                        if let Ok(json) = resp.json::<serde_json::Value>().await {
-                            json["transport"].as_str().unwrap_or("").to_string()
-                        } else { String::new() }
-                    }
-                    Err(_) => String::new(),
-                },
-                None => String::new(),
+                Ok(resp) => resp.json::<serde_json::Value>().await
+                    .ok()
+                    .and_then(|j| j["transport"].as_str().map(|s| s.to_string()))
+                    .unwrap_or_default(),
+                Err(_) => String::new(),
             }
         } else {
             String::new()
@@ -256,19 +253,17 @@ async fn connect_ml(
     let host = server.split(':').next().unwrap_or(&server).to_string();
     let port: u16 = server.split(':').nth(1).and_then(|p| p.parse().ok()).unwrap_or(8443);
     let ml_c2 = ml_client();
-    let ml_transport = match Some(ml_request(&ml_c2, reqwest::Method::POST, &ml_url("/recommend/transport"))
+    let ml_transport = match ml_request(&ml_c2, reqwest::Method::POST, &ml_url("/recommend/transport"))
         .timeout(Duration::from_secs(3))
         .json(&serde_json::json!({ "server_host": host, "server_port": port }))
-        .send())
+        .send()
+        .await
     {
-        Some(fut) => match fut.await {
-            Ok(resp) => resp.json::<serde_json::Value>().await
-                .ok()
-                .and_then(|j| j["transport"].as_str().map(|s| s.to_string()))
-                .unwrap_or_default(),
-            Err(_) => String::new(),
-        },
-        None => String::new(),
+        Ok(resp) => resp.json::<serde_json::Value>().await
+            .ok()
+            .and_then(|j| j["transport"].as_str().map(|s| s.to_string()))
+            .unwrap_or_default(),
+        Err(_) => String::new(),
     };
 
     let path = settings_path(&app);
@@ -607,7 +602,7 @@ fn ml_client() -> reqwest::Client {
     reqwest::Client::builder()
         .danger_accept_invalid_certs(true)
         .build()
-        .unwrap_or_default()
+        .unwrap_or_else(|_| reqwest::Client::new())
 }
 
 fn ml_url(path: &str) -> String {
@@ -771,7 +766,7 @@ fn main() {
                 let state: tauri::State<AppState> = app.state();
                 if let Ok(mut ml) = state.ml_server.lock() {
                     ml.start().ok();
-                }
+                };
             }
             Ok(())
         })
