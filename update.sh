@@ -366,6 +366,7 @@ setup_autoupdate() {
     
     cat > /etc/cron.daily/whispera-update <<EOF
 cd $WORK_DIR
+git config --global --add safe.directory $WORK_DIR 2>/dev/null || true
 git pull origin $BRANCH --quiet
 export PATH=\$PATH:/usr/local/go/bin
 go build -trimpath -ldflags "-w -s" -o whispera-server ./cmd/server 2>/dev/null
@@ -739,6 +740,7 @@ do_update() {
 
     if [[ -d ".git" ]]; then
         log_info "Updating source code..."
+        git config --global --add safe.directory "$(pwd)" 2>/dev/null || true
         git fetch origin $BRANCH --quiet
         git reset --hard origin/$BRANCH --quiet
     fi
@@ -782,6 +784,7 @@ do_update() {
         if [[ -d "$WORK_DIR/.git" ]]; then
             log_info "Pulling from GitHub..."
             cd "$WORK_DIR"
+            git config --global --add safe.directory "$WORK_DIR" 2>/dev/null || true
             git fetch origin $BRANCH --quiet
             git reset --hard origin/$BRANCH --quiet
         fi
