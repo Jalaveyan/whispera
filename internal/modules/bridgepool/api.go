@@ -35,16 +35,16 @@ func lookupGeo(addr string) geoInfo {
 	if err != nil {
 		host = addr
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
 	if net.ParseIP(host) == nil {
-		addrs, err := net.LookupHost(host)
+		addrs, err := net.DefaultResolver.LookupHost(ctx, host)
 		if err != nil || len(addrs) == 0 {
 			return geoInfo{}
 		}
 		host = addrs[0]
 	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
 		fmt.Sprintf("https://ipinfo.io/%s/json", host), nil)
