@@ -55,10 +55,17 @@ func ufwPath() string {
 
 func runUFW(args ...string) ([]byte, error) {
 	ufw := ufwPath()
-	if sudo, err := exec.LookPath("sudo"); err == nil {
+	// Try directly first — works when process has CAP_NET_ADMIN (AmbientCapabilities in systemd unit).
+	// sudo is blocked when NoNewPrivileges=true is set in the service.
+	out, err := exec.CommandContext(context.Background(), ufw, args...).CombinedOutput()
+	if err == nil {
+		return out, nil
+	}
+	// Fall back to sudo for setups without ambient capabilities.
+	if sudo, serr := exec.LookPath("sudo"); serr == nil {
 		return exec.CommandContext(context.Background(), sudo, append([]string{ufw}, args...)...).CombinedOutput()
 	}
-	return exec.CommandContext(context.Background(), ufw, args...).CombinedOutput()
+	return out, err
 }
 
 func getFirewallStatus() (*FirewallStatus, error) {

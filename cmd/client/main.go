@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"flag"
+	"io"
 	stdlog "log"
 	"net"
 	"os"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"whispera/internal/auth"
+	"whispera/internal/client/bridge"
 	"whispera/internal/core/lifecycle"
 	"whispera/internal/logger"
 
@@ -44,12 +46,79 @@ var (
 	enableKillSwitch = flag.Bool("kill-switch", false, "Enable kill switch to prevent traffic leaks")
 	allowLAN         = flag.Bool("allow-lan", true, "Allow LAN traffic when kill switch is enabled")
 	phantomKey       = flag.String("phantom-key", "", "Phantom Server Public Key (hex) for REALITY authentication")
+	userKey          = flag.String("user-key", "", "User private key (base64) for ML-mode auth — sets PSK without a full connection key")
 	noInternalTun    = flag.Bool("no-tun", true, "Disable internal TUN (use external like Mihomo)")
 	russianService   = flag.String("russian-service", "", "Enable Russian Service masquerading (e.g. vk_video)")
 	vkToken          = flag.String("vk-token", "", "VK User Access Token for WebRTC Tunneling")
 	serverList       = flag.String("servers", "", "Comma-separated server addresses for latency-based routing")
 	rekeyInterval    = flag.Duration("rekey", 10*time.Minute, "Session rekeying interval (0 = disabled)")
 )
+
+// mlDefaultDataDir возвращает каталог данных Whispera по тем же правилам, что и ml_api_server.py.
+// Windows → %APPDATA%\Whispera
+// Linux   → ~/.config/whispera  (или $XDG_CONFIG_HOME/whispera)
+// macOS   → ~/Library/Application Support/Whispera
+// При запуске рядом с ml_api_server.exe (production) — папка data/ рядом с бинарём.
+func mlDefaultDataDir() string {
+	// Production: если рядом с нашим бинарём лежит data/api_token — используем его.
+	if exe, err := os.Executable(); err == nil {
+		exeDir := strings.TrimSuffix(exe, "/"+strings.Split(exe, "/")[len(strings.Split(exe, "/"))-1])
+		if fi, err := os.Stat(exeDir + "/data/api_token"); err == nil && !fi.IsDir() {
+			return exeDir + "/data"
+		}
+	}
+	// Платформенный каталог конфига — совпадает с _default_data_dir() в ml_api_server.py.
+	switch {
+	case strings.EqualFold(os.Getenv("OS"), "Windows_NT") || os.PathSeparator == '\\':
+		if appdata := os.Getenv("APPDATA"); appdata != "" {
+			return appdata + `\Whispera`
+		}
+	default:
+		if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
+			return xdg + "/whispera"
+		}
+		if home, err := os.UserHomeDir(); err == nil {
+			return home + "/.config/whispera"
+		}
+	}
+	return "data"
+}
+
+// resolveMLToken возвращает API-токен для ml_api_server.
+// Приоритет: cfg.MLToken (из connection key / config) → cfg.MLTokenFile → автопоиск по тем же
+// путям, что использует ml_api_server.py при сохранении токена.
+func resolveMLToken(cfg *config.ClientConfig) string {
+	if cfg.MLServerURL == "" {
+		return ""
+	}
+	if cfg.MLToken != "" {
+		return cfg.MLToken
+	}
+
+	candidates := []string{}
+	if cfg.MLTokenFile != "" {
+		candidates = append(candidates, cfg.MLTokenFile)
+	}
+	// Тот же путь, что пишет ml_api_server.py: <data_dir>/api_token
+	candidates = append(candidates, mlDefaultDataDir()+string(os.PathSeparator)+"api_token")
+
+	for _, p := range candidates {
+		f, err := os.Open(p)
+		if err != nil {
+			continue
+		}
+		b, err := io.ReadAll(f)
+		f.Close()
+		if err == nil {
+			if tok := strings.TrimSpace(string(b)); tok != "" {
+				stdlog.Printf("ML API token loaded from %s", p)
+				return tok
+			}
+		}
+	}
+	stdlog.Printf("WARNING: MLServerURL set but no API token found — requests may be rejected (401)")
+	return ""
+}
 
 func main() {
 	debug.SetGCPercent(200)
@@ -96,6 +165,16 @@ func main() {
 
 	if *connKey == "" && *serverAddr != "" {
 		cfg.Server = *serverAddr
+	}
+
+	// ML mode: -user-key sets phantom PSK without requiring a full connection key
+	if *userKey != "" {
+		if cfg.Phantom == nil {
+			cfg.Phantom = &config.ClientPhantomConfig{}
+		}
+		cfg.Phantom.Enabled = true
+		cfg.Phantom.PSK = *userKey
+		stdlog.Printf("ML mode: user-key PSK set, phantom auth enabled")
 	}
 
 	if cfg.Server == "" && cfg.ServerTCP == "" {
@@ -172,6 +251,27 @@ func main() {
 	serverAddress := cfg.Server
 	if *transport == "tcp" && cfg.ServerTCP != "" {
 		serverAddress = cfg.ServerTCP
+	}
+
+	// Bridge discovery: if the connection key embeds a discovery URL, fetch the
+	// bridge list, pick the fastest reachable one, and use it as the server address.
+	if cfg.BridgeDiscoveryURL != "" {
+		bridgeSel := bridge.NewSelectorWithURL(cfg.BridgeDiscoveryURL)
+		fetchCtx, fetchCancel := context.WithTimeout(ctx, 10*time.Second)
+		if err := bridgeSel.FetchBridges(fetchCtx); err != nil {
+			stdlog.Printf("Bridge discovery failed (%v) — connecting directly to %s", err, serverAddress)
+		} else {
+			bridgeSel.TestAllBridges(fetchCtx)
+			if best := bridgeSel.SelectBest(); best != nil {
+				stdlog.Printf("Bridge selected: %s (%s, %dms)", best.ID, best.Address, best.Latency)
+				serverAddress = best.Address
+			} else {
+				stdlog.Printf("No reachable bridges — connecting directly to %s", serverAddress)
+			}
+		}
+		fetchCancel()
+		// Start background refresh so newly registered bridges are discovered automatically
+		bridgeSel.StartRefresh(ctx)
 	}
 	asnBypassEnabled := *asnBypass
 	asnBypassFingerprint := *tlsFingerprint
@@ -258,6 +358,8 @@ func main() {
 		ServerList:          srvList,
 		RekeyInterval:       *rekeyInterval,
 		TransportConfig:     cfg.TransportConfig,
+		MLServerURL:         cfg.MLServerURL,
+		MLToken:             resolveMLToken(cfg),
 	})
 
 	if asnBypassEnabled {

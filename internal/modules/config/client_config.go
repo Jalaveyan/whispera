@@ -99,9 +99,29 @@ type ClientConfig struct {
 
 	Transport string `yaml:"transport,omitempty" json:"transport,omitempty"`
 
+	// BridgeDiscoveryURL points to the server's /api/bridge-list endpoint.
+	// When non-empty the client fetches available bridges and picks the fastest one
+	// instead of connecting directly to Server.
+	BridgeDiscoveryURL string `yaml:"bridge_discovery_url,omitempty" json:"bridge_discovery_url,omitempty"`
+
 	RussianService string `yaml:"russian_service,omitempty" json:"russian_service,omitempty"`
 
 	TransportConfig map[string]interface{} `yaml:"transport_config,omitempty" json:"transport_config,omitempty"`
+
+	// MLServerURL включает ML-режим автоматического выбора транспорта.
+	// Клиент будет запрашивать рекомендацию у ml_api_server перед каждым
+	// подключением и отправлять фидбек после результата.
+	// Пример: "https://127.0.0.1:8000"
+	MLServerURL string `yaml:"ml_server_url,omitempty" json:"ml_server_url,omitempty"`
+
+	// MLToken — API-токен для авторизации запросов к ml_api_server.
+	// Берётся из файла data/api_token рядом с ml_api_server.py.
+	// Можно указать вручную или передать через параметр ?ml_token= в connection key.
+	MLToken string `yaml:"ml_token,omitempty" json:"ml_token,omitempty"`
+
+	// MLTokenFile — путь к файлу с API-токеном (альтернатива MLToken).
+	// Если задан, содержимое файла читается при старте и используется как токен.
+	MLTokenFile string `yaml:"ml_token_file,omitempty" json:"ml_token_file,omitempty"`
 }
 
 type ClientRoutingConfig struct {

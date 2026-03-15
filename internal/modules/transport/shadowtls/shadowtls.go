@@ -249,6 +249,35 @@ func (t *Transport) Dial(ctx context.Context, addr string) (net.Conn, error) {
 	return newShadowTLSConn(tlsConn, t), nil
 }
 
+// DialConn performs a ShadowTLS handshake over an already-open conn.
+// Implements interfaces.DialableTransport — allows stacking ShadowTLS
+// on top of Meek, WebSocket, or any other inner transport.
+func (t *Transport) DialConn(ctx context.Context, conn net.Conn, _ string) (net.Conn, error) {
+	sni := t.config.SNI
+	if sni == "" {
+		sni = "www.apple.com"
+	}
+
+	tlsConn := utls.UClient(conn, &utls.Config{
+		ServerName:         sni,
+		InsecureSkipVerify: false,
+	}, utls.HelloChrome_Auto)
+
+	if err := tlsConn.HandshakeContext(ctx); err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("shadowtls DialConn handshake: %w", err)
+	}
+
+	state := tlsConn.ConnectionState()
+	if !t.verifyServerRandom(state.TLSUnique) {
+		log.Warn("shadowtls: server HMAC verification failed on stacked conn")
+	}
+
+	atomic.AddUint64(&t.totalConns, 1)
+	atomic.AddInt64(&t.activeConns, 1)
+	return newShadowTLSConn(tlsConn, t), nil
+}
+
 func (t *Transport) verifyServerRandom(data []byte) bool {
 	if len(data) < hmacLen {
 		return false

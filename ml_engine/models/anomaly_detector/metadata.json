@@ -1,0 +1,10 @@
+{
+  "model": "RandomForestClassifier (binary: normal=0, anomaly=1)",
+  "classes": {
+    "0": "normal",
+    "1": "anomaly"
+  },
+  "feature_dim": 100,
+  "accuracy": 1.0,
+  "trained_at": "2026-03-15T20:12:39"
+}

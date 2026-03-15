@@ -1,6 +1,7 @@
 package bridgepool
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/subtle"
@@ -10,9 +11,74 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"os"
+	"sort"
 	"strings"
 	"time"
 )
+
+var mlHTTPClient = &http.Client{Timeout: 2 * time.Second}
+
+func mlBaseURL() string {
+	if u := os.Getenv("WHISPERA_ML_SERVER"); u != "" {
+		return u
+	}
+	return "http://127.0.0.1:8000"
+}
+
+// mlRankBridges calls POST /rank/bridges on the ML server and returns a map[bridgeID]mlScore.
+// Returns nil on any error (caller uses original order).
+func mlRankBridges(bridges []*Bridge) map[string]float64 {
+	type payload struct {
+		ID            string  `json:"id"`
+		Lat           float64 `json:"lat"`
+		Lon           float64 `json:"lon"`
+		Country       string  `json:"country"`
+		City          string  `json:"city"`
+		Alive         bool    `json:"alive"`
+		LatencyMs     float64 `json:"latency_ms"`
+		Load          float64 `json:"load"`
+		BandwidthMbps float64 `json:"bandwidth_mbps"`
+		CurUsers      int     `json:"cur_users"`
+		MaxUsers      int     `json:"max_users"`
+		Type          string  `json:"type"`
+	}
+	items := make([]payload, len(bridges))
+	for i, b := range bridges {
+		items[i] = payload{
+			ID:            b.ID,
+			Lat:           b.Lat,
+			Lon:           b.Lon,
+			Country:       b.Country,
+			City:          b.City,
+			Alive:         true,
+			LatencyMs:     float64(b.Latency),
+			Load:          b.Load,
+			BandwidthMbps: float64(b.Bandwidth),
+			CurUsers:      b.CurrentUsers,
+			MaxUsers:      b.MaxUsers,
+			Type:          string(b.Type),
+		}
+	}
+	body, _ := json.Marshal(items)
+	resp, err := mlHTTPClient.Post(mlBaseURL()+"/rank/bridges", "application/json", bytes.NewReader(body))
+	if err != nil {
+		return nil
+	}
+	defer resp.Body.Close()
+	var ranked []struct {
+		ID      string  `json:"id"`
+		MLScore float64 `json:"ml_score"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&ranked); err != nil {
+		return nil
+	}
+	scores := make(map[string]float64, len(ranked))
+	for _, r := range ranked {
+		scores[r.ID] = r.MLScore
+	}
+	return scores
+}
 
 type APIHandler struct {
 	registry          *Registry
@@ -105,6 +171,14 @@ func (h *APIHandler) validateToken(token string) bool {
 func (h *APIHandler) HandleGetBridges(w http.ResponseWriter, r *http.Request) {
 	bridges := h.registry.GetAliveBridges()
 
+	// ML-rank bridges when available; falls back to original order silently
+	mlScores := mlRankBridges(bridges)
+	if mlScores != nil {
+		sort.Slice(bridges, func(i, j int) bool {
+			return mlScores[bridges[i].ID] > mlScores[bridges[j].ID]
+		})
+	}
+
 	type publicBridge struct {
 		ID       string     `json:"id"`
 		Address  string     `json:"address"`
@@ -113,6 +187,7 @@ func (h *APIHandler) HandleGetBridges(w http.ResponseWriter, r *http.Request) {
 		Country  string     `json:"country,omitempty"`
 		City     string     `json:"city,omitempty"`
 		Latency  int        `json:"latency_ms"`
+		MLScore  float64    `json:"ml_score,omitempty"`
 	}
 
 	result := make([]publicBridge, len(bridges))
@@ -125,6 +200,7 @@ func (h *APIHandler) HandleGetBridges(w http.ResponseWriter, r *http.Request) {
 			Country:  b.Country,
 			City:     b.City,
 			Latency:  b.Latency,
+			MLScore:  mlScores[b.ID],
 		}
 	}
 

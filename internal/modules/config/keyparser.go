@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/url"
 	"strings"
 	"time"
@@ -38,6 +39,13 @@ type ConnectionKey struct {
 	RussianService string `json:"russian_service,omitempty"`
 
 	TransportConfig map[string]interface{} `json:"transport_config,omitempty"`
+
+	// MLServerURL задаёт адрес ml_api_server для ML-режима выбора транспорта.
+	// Если задан, клиент игнорирует Transport из ключа и спрашивает нейросеть.
+	MLServerURL string `json:"ml_server_url,omitempty"`
+
+	// MLToken — API-токен для авторизации запросов к ml_api_server.
+	MLToken string `json:"ml_token,omitempty"`
 }
 
 func (ck *ConnectionKey) IsExpired() bool {
@@ -111,6 +119,13 @@ func ParseConnectionKey(key string) (*ConnectionKey, error) {
 			ck.RussianService = val
 		} else if val := q.Get("rs"); val != "" {
 			ck.RussianService = val
+		}
+
+		if val := q.Get("ml"); val != "" {
+			ck.MLServerURL = val
+		}
+		if val := q.Get("ml_token"); val != "" {
+			ck.MLToken = val
 		}
 
 		if val := q.Get("kid"); val != "" {
@@ -191,6 +206,8 @@ func (ck *ConnectionKey) ToClientConfig() *ClientConfig {
 		RussianService:  ck.RussianService,
 		TransportConfig: ck.TransportConfig,
 		Transport:       ck.Transport,
+		MLServerURL:     ck.MLServerURL,
+		MLToken:         ck.MLToken,
 	}
 
 	switch ck.Transport {
@@ -208,6 +225,16 @@ func (ck *ConnectionKey) ToClientConfig() *ClientConfig {
 			ServerPublicKey: ck.ServerPub,
 			PSK:             ck.PSK,
 		}
+	}
+
+	// Derive bridge discovery URL from the server address.
+	// Server is "host:port" — bridge list is served by nginx at https://host/api/bridge-list.
+	if srv := ck.GetPrimaryServer(); srv != "" {
+		host, _, err := net.SplitHostPort(srv)
+		if err != nil {
+			host = srv
+		}
+		cfg.BridgeDiscoveryURL = "https://" + host + "/api/bridge-list"
 	}
 
 	if ck.EnableASNBypass {
@@ -324,6 +351,10 @@ func GenerateConnectionKeyURL(cfg *ClientConfig, opts *KeyGenOptions) string {
 
 	if cfg.RussianService != "" {
 		params.Set("russian", cfg.RussianService)
+	}
+
+	if cfg.MLServerURL != "" {
+		params.Set("ml", cfg.MLServerURL)
 	}
 
 	if opts.KeyID != "" {

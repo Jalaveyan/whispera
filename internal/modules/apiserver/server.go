@@ -294,6 +294,9 @@ func (s *Server) registerDefaultRoutes() {
 	s.Handle("GET /api/bridge-white-cloudinit", s.bridgeHandler.HandleGetWhiteCloudInit)
 	s.Handle("POST /api/bridge-connect", s.bridgeHandler.HandleBridgeConnect)
 	s.Handle("POST /api/bridge-scan", s.bridgeHandler.HandleBridgeScan)
+
+	s.Handle("GET /api/ml/config", s.handleMLConfig)
+	s.Handle("POST /api/ml/token/rotate", s.handleMLTokenRotate)
 }
 
 func (s *Server) Init(ctx context.Context, cfg interfaces.ModuleConfig) error {
@@ -1894,6 +1897,20 @@ func (s *Server) handleGenerateConnectionKey(w http.ResponseWriter, r *http.Requ
 
 	keyID := generateKeyID()
 
+	mlURL, mlToken := "", ""
+	if s.registry != nil {
+		if mod, ok := s.registry.Get("config.provider"); ok {
+			type cfgProvider interface{ GetConfig() *config.ServerConfig }
+			if p, ok := mod.(cfgProvider); ok && p.GetConfig() != nil {
+				mlCfg := p.GetConfig().ML
+				if mlCfg.Enabled && mlCfg.ServerURL != "" {
+					mlURL = mlCfg.ServerURL
+					mlToken = readMLToken(mlCfg.TokenFile)
+				}
+			}
+		}
+	}
+
 	ck := config.ConnectionKey{
 		Version:         2,
 		KeyID:           keyID,
@@ -1911,6 +1928,8 @@ func (s *Server) handleGenerateConnectionKey(w http.ResponseWriter, r *http.Requ
 		TLSFingerprint:  tlsFP,
 		RussianService:  req.RussianService,
 		TransportConfig: req.TransportConfig,
+		MLServerURL:     mlURL,
+		MLToken:         mlToken,
 	}
 	ckData, err := json.Marshal(ck)
 	if err != nil {
@@ -2684,5 +2703,93 @@ func (s *Server) handleUpdateCheck(w http.ResponseWriter, r *http.Request) {
 		"current_version": ModuleVersion,
 		"update_enabled":  true,
 		"message":         "use manifest endpoint for update checks",
+	})
+}
+
+
+func mlTokenFilePath(tokenFile string) string {
+	if tokenFile != "" {
+		return tokenFile
+	}
+	switch runtime.GOOS {
+	case "windows":
+		if appdata := os.Getenv("APPDATA"); appdata != "" {
+			return appdata + `\Whispera\api_token`
+		}
+	case "darwin":
+		if home, err := os.UserHomeDir(); err == nil {
+			return home + "/Library/Application Support/Whispera/api_token"
+		}
+	default:
+		if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
+			return xdg + "/whispera/api_token"
+		}
+		if home, err := os.UserHomeDir(); err == nil {
+			return home + "/.config/whispera/api_token"
+		}
+	}
+	return "data/api_token"
+}
+
+func readMLToken(tokenFile string) string {
+	path := mlTokenFilePath(tokenFile)
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(b))
+}
+
+func (s *Server) handleMLConfig(w http.ResponseWriter, r *http.Request) {
+	mlCfg := config.MLConfig{}
+	if s.registry != nil {
+		if mod, ok := s.registry.Get("config.provider"); ok {
+			type cfgProvider interface{ GetConfig() *config.ServerConfig }
+			if p, ok := mod.(cfgProvider); ok && p.GetConfig() != nil {
+				mlCfg = p.GetConfig().ML
+			}
+		}
+	}
+
+	token := readMLToken(mlCfg.TokenFile)
+	tokenFile := mlTokenFilePath(mlCfg.TokenFile)
+
+	s.jsonOK(w, map[string]interface{}{
+		"enabled":     mlCfg.Enabled,
+		"server_url":  mlCfg.ServerURL,
+		"token":       token,
+		"token_file":  tokenFile,
+		"token_set":   token != "",
+	})
+}
+
+func (s *Server) handleMLTokenRotate(w http.ResponseWriter, r *http.Request) {
+	mlCfg := config.MLConfig{}
+	if s.registry != nil {
+		if mod, ok := s.registry.Get("config.provider"); ok {
+			type cfgProvider interface{ GetConfig() *config.ServerConfig }
+			if p, ok := mod.(cfgProvider); ok && p.GetConfig() != nil {
+				mlCfg = p.GetConfig().ML
+			}
+		}
+	}
+
+	tokenBytes := make([]byte, 32)
+	if _, err := rand.Read(tokenBytes); err != nil {
+		s.jsonError(w, http.StatusInternalServerError, "failed to generate token")
+		return
+	}
+	newToken := hex.EncodeToString(tokenBytes)
+
+	path := mlTokenFilePath(mlCfg.TokenFile)
+	if err := os.MkdirAll(strings.TrimSuffix(path, "/api_token"), 0755); err == nil {
+		_ = os.WriteFile(path, []byte(newToken), 0600)
+	}
+
+	s.jsonOK(w, map[string]interface{}{
+		"success":    true,
+		"token":      newToken,
+		"token_file": path,
+		"note":       "restart ml_api_server to apply new token",
 	})
 }

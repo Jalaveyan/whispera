@@ -14,12 +14,12 @@ import (
 )
 
 type Config struct {
-	MaxFrameSize         int           // unused by yamux (uses its own framing)
-	MaxReceiveBuffer     int           // unused by yamux
-	MaxStreamBuffer      int           // maps to yamux MaxStreamWindowSize (max 16MB)
-	KeepAliveInterval    time.Duration // maps to yamux KeepAliveInterval
-	KeepAliveTimeout     time.Duration // maps to yamux ConnectionWriteTimeout
-	MaxConcurrentStreams int           // maps to yamux AcceptBacklog
+	MaxFrameSize         int
+	MaxReceiveBuffer     int
+	MaxStreamBuffer      int
+	KeepAliveInterval    time.Duration
+	KeepAliveTimeout     time.Duration
+	MaxConcurrentStreams int
 }
 
 func DefaultConfig() *Config {
@@ -35,7 +35,7 @@ func DefaultConfig() *Config {
 
 func (c *Config) toYamuxConfig() *yamux.Config {
 	cfg := yamux.DefaultConfig()
-	cfg.LogOutput = io.Discard // silence yamux internal logs
+	cfg.LogOutput = io.Discard
 
 	if c.KeepAliveInterval > 0 {
 		cfg.KeepAliveInterval = c.KeepAliveInterval
@@ -45,7 +45,7 @@ func (c *Config) toYamuxConfig() *yamux.Config {
 	}
 	if c.MaxStreamBuffer > 0 {
 		maxWin := uint32(c.MaxStreamBuffer)
-		const yamuxMax = 256 * 1024 * 1024 // 256MB hard cap
+		const yamuxMax = 256 * 1024 * 1024
 		if maxWin > yamuxMax {
 			maxWin = yamuxMax
 		}
@@ -234,7 +234,7 @@ func (s *Session) RemoteAddr() net.Addr {
 }
 
 type muxStream struct {
-	net.Conn // *yamux.Stream implements net.Conn
+	net.Conn
 	session  *Session
 	closed   int32
 }

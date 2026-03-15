@@ -82,26 +82,39 @@ const (
 	TransportTGBot        TransportType = "tgbot"
 	TransportCDNWorker    TransportType = "cdnworker"
 	TransportMTProto     TransportType = "mtproto"
+
+	// Комбо-транспорты (стекирование)
+	TransportSSMeek          TransportType = "shadowsocks+meek"
+	TransportSSObfs4         TransportType = "shadowsocks+obfs4"
+	TransportObfs4Meek       TransportType = "obfs4+meek"
+	TransportShadowTLSMeek   TransportType = "shadowtls+meek"
+	TransportSSWebSocket     TransportType = "shadowsocks+websocket"
+	TransportVKWebRTCPhantom TransportType = "vkwebrtc+phantom"
 )
 
 
 type Transport interface {
 	Module
 
-	
 	Listen(addr string) error
 
-	
 	Dial(ctx context.Context, addr string) (net.Conn, error)
 
-	
 	Accept() (net.Conn, error)
 
-	
 	Type() TransportType
 
-	
 	Close() error
+}
+
+// DialableTransport — расширение Transport для стекирования.
+// Транспорты, поддерживающие работу поверх уже открытого соединения,
+// реализуют этот интерфейс. Используется ChainedTransport.
+type DialableTransport interface {
+	Transport
+	// DialConn выполняет handshake поверх уже установленного conn
+	// вместо самостоятельного открытия TCP-соединения.
+	DialConn(ctx context.Context, conn net.Conn, addr string) (net.Conn, error)
 }
 
 

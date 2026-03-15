@@ -197,4 +197,35 @@ export class SystemService {
             return { healthy: false, error: err.message };
         }
     }
+
+    async getMLConfig(token: string): Promise<any> {
+        try {
+            const response = await firstValueFrom(
+                this.httpService.get(`${this.backendUrl}/api/ml/config`, {
+                    headers: { Authorization: `Bearer ${token}` },
+                    timeout: this.requestTimeout,
+                }).pipe(
+                    timeout(this.requestTimeout),
+                    catchError(err => {
+                        this.logger.warn(`ML config fetch failed: ${err.message}`);
+                        return of({ data: { enabled: false, server_url: '', token_set: false } });
+                    }),
+                ),
+            );
+            return response.data;
+        } catch (err) {
+            this.logger.error(`ML config error: ${err.message}`);
+            return { enabled: false, server_url: '', token_set: false };
+        }
+    }
+
+    async rotateMLToken(token: string): Promise<any> {
+        const response = await firstValueFrom(
+            this.httpService.post(`${this.backendUrl}/api/ml/token/rotate`, {}, {
+                headers: { Authorization: `Bearer ${token}` },
+                timeout: this.requestTimeout,
+            }).pipe(timeout(this.requestTimeout)),
+        );
+        return response.data;
+    }
 }

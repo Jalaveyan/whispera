@@ -700,7 +700,7 @@ show_extras_menu() {
         echo -e "${BLUE}╔${SEP}╗${PLAIN}"
         _row "          WHISPERA MANAGEMENT MENU"
         echo -e "${BLUE}╠${SEP}╣${PLAIN}"
-        _row "  Web Panel:  https://${SRV_IP}:3000/  (or 127.0.0.1:3000 locally)"
+        _row "  Web Panel:  https://${SRV_IP}:3000/"
         _row "  Config:     /etc/whispera/config.yaml"
         echo -e "${BLUE}╠${SEP}╣${PLAIN}"
         _row "  BRIDGE MANAGEMENT"
@@ -1394,6 +1394,7 @@ setup_systemd() {
     log_info "Configured sudo access for UFW"
 
     mkdir -p "$LOG_PATH"
+    mkdir -p "$DAT_PATH/panel/public/uploads"
     chown -R whispera:whispera "$WORK_DIR" "$CONF_PATH" "$DAT_PATH" "$LOG_PATH" 2>/dev/null || true
     chmod 750 "$CONF_PATH"
     chmod 640 "$CONF_PATH/config.yaml" 2>/dev/null || true
@@ -1414,11 +1415,10 @@ ExecStart=$BIN_PATH/whispera -config $CONF_PATH/config.yaml -api :8080
 Restart=on-failure
 RestartSec=5
 LimitNOFILE=65535
-AmbientCapabilities=CAP_NET_BIND_SERVICE CAP_NET_ADMIN
-NoNewPrivileges=true
+AmbientCapabilities=CAP_NET_BIND_SERVICE CAP_NET_ADMIN CAP_NET_RAW
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=$WORK_DIR $CONF_PATH $DAT_PATH /var/log/whispera
+ReadWritePaths=$WORK_DIR $CONF_PATH $DAT_PATH /var/log/whispera /etc/ufw /lib/ufw /var/lib/ufw /run/ufw
 StandardOutput=append:/var/log/whispera/whispera.log
 StandardError=append:/var/log/whispera/whispera.log
 
@@ -1456,9 +1456,86 @@ $PANEL_HTTPS_VARS
 WantedBy=multi-user.target
 EOF
 
+    # ── ML service — адаптивная установка под ресурсы сервера ───────────────
+    local ML_SCRIPT="$WORK_DIR/internal/obfuscation/ml/ml_api_server.py"
+    local PYTHON_BIN
+    PYTHON_BIN=$(command -v python3 || command -v python || echo "")
+    if [[ -n "$PYTHON_BIN" && -f "$ML_SCRIPT" ]]; then
+
+        # Определяем ресурсы сервера
+        local SRV_CORES SRV_RAMMB ML_PROFILE MEM_LIMIT RETRAIN_THRESH
+        SRV_CORES=$(nproc 2>/dev/null || grep -c ^processor /proc/cpuinfo 2>/dev/null || echo 1)
+        SRV_RAMMB=$(grep MemTotal /proc/meminfo 2>/dev/null | awk '{print int($2/1024)}' || echo 1024)
+
+        if   [[ $SRV_CORES -le 1 || $SRV_RAMMB -lt 2048 ]]; then
+            ML_PROFILE="minimal";  MEM_LIMIT="256M"; RETRAIN_THRESH="200"
+        elif [[ $SRV_CORES -ge 8 && $SRV_RAMMB -ge 8192 ]]; then
+            ML_PROFILE="full";     MEM_LIMIT="1G";   RETRAIN_THRESH="1000"
+        else
+            ML_PROFILE="standard"; MEM_LIMIT="512M"; RETRAIN_THRESH="500"
+        fi
+
+        log_info "Server: ${SRV_CORES} core(s), ${SRV_RAMMB} MB RAM → ML profile: $ML_PROFILE"
+
+        # Базовые зависимости (нужны всегда)
+        $PYTHON_BIN -m pip install --quiet \
+            fastapi uvicorn pydantic python-multipart \
+            numpy "scikit-learn>=1.6.1,<1.7.0" scipy joblib 2>/dev/null || \
+            log_warn "Some base ML deps failed to install"
+
+        # ML inference backend
+        if [[ "$ML_PROFILE" == "full" ]]; then
+            # Мощный сервер: пробуем tensorflow-cpu (~600 MB)
+            log_info "Installing tensorflow-cpu (full profile, may take a few minutes)..."
+            $PYTHON_BIN -m pip install --quiet tensorflow-cpu 2>/dev/null || {
+                log_warn "tensorflow-cpu failed — falling back to onnxruntime"
+                $PYTHON_BIN -m pip install --quiet onnxruntime skl2onnx 2>/dev/null || true
+            }
+        else
+            # Minimal/Standard: onnxruntime CPU (~60 MB, Python 3.9+)
+            $PYTHON_BIN -m pip install --quiet onnxruntime skl2onnx 2>/dev/null || \
+                log_warn "onnxruntime install failed — ML will use heuristics"
+        fi
+
+        # Обучаем ONNX-модели (нужны skl2onnx + sklearn)
+        local TRAIN_SCRIPT="$WORK_DIR/ml_engine/train_onnx_models.py"
+        if [[ -f "$TRAIN_SCRIPT" ]]; then
+            log_info "Training ML models (profile: $ML_PROFILE)..."
+            WHISPERA_ML_PROFILE="$ML_PROFILE" \
+                $PYTHON_BIN "$TRAIN_SCRIPT" 2>/dev/null && \
+                log_success "ML models trained" || \
+                log_warn "ML model training failed — heuristics will be used"
+        fi
+
+        cat > /etc/systemd/system/whispera-ml.service <<EOF
+[Unit]
+Description=Whispera ML Server
+After=network.target whispera.service
+PartOf=whispera.service
+
+[Service]
+User=whispera
+Group=whispera
+WorkingDirectory=$WORK_DIR/internal/obfuscation/ml
+ExecStart=$PYTHON_BIN $ML_SCRIPT
+Restart=on-failure
+RestartSec=10
+Environment=WHISPERA_ML_PORT=8000
+Environment=PYTHONPATH=$WORK_DIR/ml_engine
+Environment=WHISPERA_ML_PROFILE=$ML_PROFILE
+Environment=WHISPERA_ML_RETRAIN_THRESHOLD=$RETRAIN_THRESH
+MemoryMax=$MEM_LIMIT
+MemorySwapMax=0
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    fi
+
     systemctl daemon-reload
     systemctl enable whispera >/dev/null 2>&1
     systemctl enable whispera-panel >/dev/null 2>&1
+    [[ -f /etc/systemd/system/whispera-ml.service ]] && systemctl enable whispera-ml >/dev/null 2>&1
 
     systemctl restart whispera
     log_success "Whispera service started"
@@ -1467,6 +1544,14 @@ EOF
         log_success "Panel service started"
     else
         log_warn "Panel service not started (panel may not be installed yet — run option 18 later)"
+    fi
+
+    if [[ -f /etc/systemd/system/whispera-ml.service ]]; then
+        if systemctl restart whispera-ml 2>/dev/null; then
+            log_success "ML service started"
+        else
+            log_warn "ML service not started (install fastapi+uvicorn manually: pip3 install fastapi uvicorn)"
+        fi
     fi
 }
 

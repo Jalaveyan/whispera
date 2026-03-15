@@ -224,6 +224,21 @@ func (t *Transport) serverHandshake(conn net.Conn) (net.Conn, error) {
 	return newObfs4Conn(conn, key[:], false), nil
 }
 
+// DialConn выполняет Obfs4 handshake поверх уже открытого conn.
+// Реализует interfaces.DialableTransport — позволяет стекировать
+// Obfs4 поверх Meek, WebSocket и других inner-транспортов.
+func (t *Transport) DialConn(ctx context.Context, conn net.Conn, _ string) (net.Conn, error) {
+	atomic.AddUint64(&t.totalConns, 1)
+	atomic.AddInt64(&t.activeConns, 1)
+	wrapped, err := t.clientHandshake(conn)
+	if err != nil {
+		atomic.AddInt64(&t.activeConns, -1)
+		conn.Close()
+		return nil, fmt.Errorf("obfs4 DialConn handshake: %w", err)
+	}
+	return wrapped, nil
+}
+
 func (t *Transport) Close() error {
 	t.mu.Lock()
 	defer t.mu.Unlock()

@@ -36,8 +36,6 @@ type Config struct {
 	DoTPort    int
 	ServerName string
 
-	// DialContext routes DNS connections through a proxy/tunnel.
-	// If nil, direct system dial is used (potential leak for UDP/DoT types).
 	DialContext func(ctx context.Context, network, address string) (net.Conn, error)
 }
 

@@ -2,14 +2,18 @@ package tunnel
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/tls"
 	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	"io"
 	"math/big"
 	mrand "math/rand"
 	"net"
+	"net/http"
 	"runtime/debug"
 	"strings"
 	"sync"
@@ -47,6 +51,15 @@ import (
 )
 
 var log = logger.Module("tunnel")
+
+// mlHTTPClient используется только для запросов к локальному ml_api_server.
+// InsecureSkipVerify=true — допустимо, т.к. сервер слушает на 127.0.0.1
+// и самоподписанный сертификат не даёт защиты от внешних атак.
+var mlHTTPClient = &http.Client{
+	Transport: &http.Transport{
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec
+	},
+}
 
 func safeGo(name string, fn func()) {
 	go func() {
@@ -160,6 +173,17 @@ type Config struct {
 	// CustomDialFn overrides the default transport dial when set.
 	// Used for multi-hop: dial the next hop through an existing tunnel stream.
 	CustomDialFn func(ctx context.Context) (net.Conn, error)
+
+	// MLServerURL включает ML-режим выбора транспорта.
+	// Если задан, клиент запрашивает рекомендацию у ml_api_server перед каждым
+	// подключением и отправляет фидбек после завершения. Формат: "https://127.0.0.1:8000"
+	// Пустая строка — ML отключён, транспорт берётся из Transport как обычно.
+	MLServerURL string
+
+	// MLToken — API-токен для авторизации запросов к ml_api_server.
+	// Хранится в data/api_token рядом с ml_api_server.py и читается при старте клиента.
+	// Отправляется заголовком: Authorization: Bearer <token>
+	MLToken string
 }
 
 func DefaultConfig() *Config {
@@ -238,11 +262,16 @@ type Manager struct {
 
 	streamIdx         uint32
 	reconnectAttempts uint32
+	reconnecting      int32 // atomic: 1 пока идёт Reconnect, 0 в остальное время
 	bytesUp           uint64
 	bytesDown         uint64
 	lastKeepalive     time.Time
 	lastPong          time.Time
 	connectedAt       time.Time
+
+	// reconnectDone закрывается когда текущий Reconnect завершился (успешно или нет).
+	// Пересоздаётся при каждом новом запуске Reconnect под connMu.
+	reconnectDone chan struct{}
 
 	onStateChange func(TunnelState)
 
@@ -294,7 +323,10 @@ func New(cfg *Config) (*Manager, error) {
 		readCh:           make(chan []byte, 4096),
 		streamChs:        make(map[uint16]chan []byte),
 		goroutineLimiter: base.NewGoroutineLimiter(1024),
+		reconnectDone:    make(chan struct{}),
 	}
+	// Закрываем начальный канал сразу — не идёт никакой reconnect
+	close(m.reconnectDone)
 
 	if cfg.EnableASNBypass || cfg.EnablePhantom {
 		frontDomain := cfg.DomainFrontHost
@@ -484,6 +516,15 @@ func (m *Manager) Connect(ctx context.Context) error {
 		if best := m.pickFastestServer(ctx); best != "" {
 			m.config.ServerAddrTCP = best
 			m.config.ServerAddr = best
+		}
+	}
+
+	// ML-режим: если задан MLServerURL — запрашиваем рекомендацию транспорта.
+	// Применяем только если transport пустой, "auto", или это первая попытка
+	// (не fallback из Reconnect — там своя логика).
+	if m.config.MLServerURL != "" {
+		if rec, conf := m.mlRecommendTransport(ctx); rec != "" && conf >= 0.55 {
+			m.config.Transport = rec
 		}
 	}
 
@@ -1326,6 +1367,32 @@ func (m *Manager) Disconnect() {
 }
 
 func (m *Manager) Reconnect(ctx context.Context) error {
+	// Только один Reconnect может идти одновременно.
+	// Если уже запущен — ждём его завершения и возвращаем успех,
+	// чтобы вызывающий не думал что соединения нет.
+	if !atomic.CompareAndSwapInt32(&m.reconnecting, 0, 1) {
+		m.connMu.RLock()
+		done := m.reconnectDone
+		m.connMu.RUnlock()
+		select {
+		case <-done:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		return nil
+	}
+
+	// Создаём новый канал-уведомитель до сброса флага.
+	newDone := make(chan struct{})
+	m.connMu.Lock()
+	m.reconnectDone = newDone
+	m.connMu.Unlock()
+
+	defer func() {
+		close(newDone)
+		atomic.StoreInt32(&m.reconnecting, 0)
+	}()
+
 	if !m.circuitBreakerAllow() {
 		log.Warn("Circuit breaker OPEN - skipping reconnect attempt")
 		return fmt.Errorf("circuit breaker open")
@@ -1335,12 +1402,22 @@ func (m *Manager) Reconnect(ctx context.Context) error {
 	delay := m.config.ReconnectInterval
 	attempts := 0
 
+	// Transport fallback: если задан конкретный транспорт и он N раз подряд
+	// не смог переподключиться — переходим в режим "auto" (race всех кандидатов).
+	// После успеха восстанавливаем оригинальный транспорт.
+	const fallbackAfterAttempts = 3
+	originalTransport := m.config.Transport
+	transportFallbackActivated := false
+
 	for {
 		attempts++
 		atomic.StoreUint32(&m.reconnectAttempts, uint32(attempts))
 
 		select {
 		case <-ctx.Done():
+			if transportFallbackActivated {
+				m.config.Transport = originalTransport
+			}
 			return ctx.Err()
 		default:
 		}
@@ -1349,19 +1426,50 @@ func (m *Manager) Reconnect(ctx context.Context) error {
 			err := fmt.Errorf("max reconnect attempts exceeded")
 			m.circuitBreakerFail()
 			m.setError(err)
+			if transportFallbackActivated {
+				m.config.Transport = originalTransport
+			}
 			return err
 		}
 
+		// Активируем transport fallback после N провалов на одном транспорте
+		if attempts == fallbackAfterAttempts+1 &&
+			originalTransport != "" && originalTransport != "auto" &&
+			!transportFallbackActivated {
+			transportFallbackActivated = true
+			m.config.Transport = "auto"
+			log.Warn("Transport fallback: %d failures on '%s', switching to auto (racing all transports)",
+				fallbackAfterAttempts, originalTransport)
+		}
+
 		m.Disconnect()
+		dialStart := time.Now()
+		usedTransport := m.config.Transport
 		err := m.Connect(ctx)
+		dialLatency := float64(time.Since(dialStart).Milliseconds())
 		if err == nil {
+			m.mlSendFeedback(usedTransport, true, dialLatency)
 			m.circuitBreakerSuccess()
+			if transportFallbackActivated {
+				// Восстанавливаем исходный транспорт для следующего reconnect
+				m.config.Transport = originalTransport
+				log.Info("Transport fallback: connection restored, reverting to '%s'", originalTransport)
+			}
 			return nil
 		}
 
+		m.mlSendFeedback(usedTransport, false, dialLatency)
+		log.Warn("Reconnect attempt %d failed (transport=%s): %v", attempts, m.config.Transport, err)
 		m.circuitBreakerFail()
 		jitter := time.Duration(mrand.Int63n(int64(delay) / 4))
-		time.Sleep(delay + jitter)
+		select {
+		case <-ctx.Done():
+			if transportFallbackActivated {
+				m.config.Transport = originalTransport
+			}
+			return ctx.Err()
+		case <-time.After(delay + jitter):
+		}
 		delay = time.Duration(float64(delay) * 2)
 		if delay > m.config.ReconnectMaxDelay {
 			delay = m.config.ReconnectMaxDelay
@@ -1781,6 +1889,33 @@ func (m *Manager) Recycle(buf []byte) {
 }
 
 func (m *Manager) OpenStream(ctx context.Context, proto byte, addr string, port uint16) (net.Conn, error) {
+	// Если пул пуст и идёт переподключение — ждём его завершения.
+	// Это позволяет DNS-запросам и новым TCP-соединениям не падать
+	// во время кратковременного разрыва.
+	for {
+		m.connMu.RLock()
+		pool := m.activePool
+		done := m.reconnectDone
+		m.connMu.RUnlock()
+
+		if len(pool) > 0 {
+			break
+		}
+
+		// Пул ещё пуст; проверяем — есть ли активный reconnect
+		if atomic.LoadInt32(&m.reconnecting) == 0 {
+			return nil, fmt.Errorf("not connected")
+		}
+
+		// Ждём либо завершения reconnect, либо отмены контекста
+		select {
+		case <-done:
+			// reconnect завершился — проверяем пул снова
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+
 	m.connMu.RLock()
 	pool := m.activePool
 	m.connMu.RUnlock()
@@ -2269,7 +2404,9 @@ func (m *Manager) sendKeepalive() {
 		log.Warn("Keepalive send failed: %v", err)
 	} else {
 		m.lastKeepalive = time.Now()
-		m.lastPong = time.Now()
+		// Намеренно НЕ обновляем lastPong здесь — он обновляется только
+		// при получении данных/pong от сервера в readLoop.
+		// Иначе детектор тишины (silentDuration > 60s) никогда не срабатывает.
 	}
 }
 
@@ -2322,6 +2459,105 @@ func (m *Manager) getReconnectDelay() time.Duration {
 	}
 	jitter := time.Duration(mrand.Int63n(int64(delay) / 4))
 	return delay + jitter
+}
+
+// mlRecommendTransport запрашивает у ml_api_server рекомендацию транспорта.
+// Возвращает имя транспорта и confidence. При любой ошибке возвращает ("", 0) —
+// вызывающий продолжает с текущим config.Transport.
+func (m *Manager) mlRecommendTransport(ctx context.Context) (transport string, confidence float64) {
+	if m.config.MLServerURL == "" {
+		return "", 0
+	}
+
+	host, port, _ := net.SplitHostPort(m.config.ServerAddr)
+	if host == "" {
+		host = m.config.ServerAddr
+		port = "443"
+	}
+
+	body, _ := json.Marshal(map[string]interface{}{
+		"server_host": host,
+		"server_port": func() int {
+			p := 443
+			fmt.Sscanf(port, "%d", &p)
+			return p
+		}(),
+	})
+
+	reqCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost,
+		m.config.MLServerURL+"/recommend/transport", bytes.NewReader(body))
+	if err != nil {
+		return "", 0
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if m.config.MLToken != "" {
+		req.Header.Set("Authorization", "Bearer "+m.config.MLToken)
+	}
+
+	resp, err := mlHTTPClient.Do(req)
+	if err != nil {
+		log.Warn("ML transport recommendation unavailable: %v — using config transport", err)
+		return "", 0
+	}
+	defer resp.Body.Close()
+
+	var result struct {
+		Transport  string  `json:"transport"`
+		Confidence float64 `json:"confidence"`
+		UsedML     bool    `json:"used_ml"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil || result.Transport == "" {
+		return "", 0
+	}
+
+	log.Info("ML transport recommendation: %s (confidence=%.2f, ml=%v)",
+		result.Transport, result.Confidence, result.UsedML)
+	return result.Transport, result.Confidence
+}
+
+// mlSendFeedback отправляет результат подключения в ml_api_server.
+// Вызывается асинхронно — не блокирует основной поток.
+func (m *Manager) mlSendFeedback(transport string, success bool, latencyMs float64) {
+	if m.config.MLServerURL == "" || transport == "" {
+		return
+	}
+
+	host, _, _ := net.SplitHostPort(m.config.ServerAddr)
+	if host == "" {
+		host = m.config.ServerAddr
+	}
+
+	go func() {
+		body, _ := json.Marshal(map[string]interface{}{
+			"transport":   transport,
+			"success":     success,
+			"latency_ms":  latencyMs,
+			"destination": host,
+		})
+
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+			m.config.MLServerURL+"/feedback/connection", bytes.NewReader(body))
+		if err != nil {
+			return
+		}
+		req.Header.Set("Content-Type", "application/json")
+		if m.config.MLToken != "" {
+			req.Header.Set("Authorization", "Bearer "+m.config.MLToken)
+		}
+
+		resp, err := mlHTTPClient.Do(req)
+		if err != nil {
+			log.Debug("ML feedback send failed: %v", err)
+			return
+		}
+		resp.Body.Close()
+	}()
 }
 
 func probeLatency(ctx context.Context, addr string, timeout time.Duration) (time.Duration, error) {

@@ -142,6 +142,21 @@ func (t *Transport) Dial(ctx context.Context, addr string) (net.Conn, error) {
 	return ssConn, nil
 }
 
+// DialConn выполняет Shadowsocks handshake поверх уже установленного conn.
+// Позволяет стекировать SS поверх другого транспорта (Meek, Obfs4 и т.д.).
+// Реализует interfaces.DialableTransport.
+func (t *Transport) DialConn(ctx context.Context, conn net.Conn, addr string) (net.Conn, error) {
+	ssConn, err := t.newClientConn(conn, addr)
+	if err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("shadowsocks DialConn: %w", err)
+	}
+	atomic.AddUint64(&t.totalConns, 1)
+	atomic.AddInt64(&t.activeConns, 1)
+	log.Info("shadowsocks: handshake on existing conn -> %s", addr)
+	return ssConn, nil
+}
+
 func (t *Transport) deriveKey() []byte {
 	h := sha256.Sum256([]byte(t.config.Password))
 	return h[:]

@@ -1,0 +1,20 @@
+{
+  "profile": "standard",
+  "model": "MLPClassifier",
+  "classes": {
+    "0": "encrypted_tls",
+    "1": "http_plain",
+    "2": "dns",
+    "3": "vpn_tunnel",
+    "4": "plaintext"
+  },
+  "feature_dim": 100,
+  "accuracy": 1.0,
+  "hidden_layer_sizes": [
+    128,
+    64,
+    32
+  ],
+  "n_iter": 97,
+  "trained_at": "2026-03-15T22:08:46"
+}

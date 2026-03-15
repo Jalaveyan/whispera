@@ -39,14 +39,19 @@ type Config struct {
 	TestTimeout time.Duration `yaml:"test_timeout" json:"test_timeout"`
 
 	MaxRetries int `yaml:"max_retries" json:"max_retries"`
+
+	// RefreshInterval controls how often the bridge list is re-fetched from the server.
+	// 0 means no periodic refresh (fetch only on first Connect).
+	RefreshInterval time.Duration `yaml:"refresh_interval" json:"refresh_interval"`
 }
 
 func DefaultConfig() *Config {
 	return &Config{
-		Mode:           ModeDirect,
-		EnableFailover: true,
-		TestTimeout:    5 * time.Second,
-		MaxRetries:     3,
+		Mode:            ModeDirect,
+		EnableFailover:  true,
+		TestTimeout:     5 * time.Second,
+		MaxRetries:      3,
+		RefreshInterval: 5 * time.Minute,
 	}
 }
 
@@ -79,12 +84,37 @@ func NewSelector(cfg *Config) *Selector {
 
 func NewSelectorWithURL(discoveryURL string) *Selector {
 	return NewSelector(&Config{
-		Mode:           ModeAuto,
-		DiscoveryURL:   discoveryURL,
-		EnableFailover: true,
-		TestTimeout:    5 * time.Second,
-		MaxRetries:     3,
+		Mode:            ModeAuto,
+		DiscoveryURL:    discoveryURL,
+		EnableFailover:  true,
+		TestTimeout:     5 * time.Second,
+		MaxRetries:      3,
+		RefreshInterval: 5 * time.Minute,
 	})
+}
+
+// StartRefresh launches a background goroutine that re-fetches the bridge list
+// every Config.RefreshInterval. It stops when ctx is cancelled.
+func (s *Selector) StartRefresh(ctx context.Context) {
+	if s.config.RefreshInterval <= 0 || s.config.DiscoveryURL == "" {
+		return
+	}
+	go func() {
+		ticker := time.NewTicker(s.config.RefreshInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if err := s.FetchBridges(ctx); err != nil {
+					log.Printf("[BridgeSelector] Refresh failed: %v", err)
+				} else {
+					log.Printf("[BridgeSelector] Refreshed bridge list (%d bridges)", len(s.GetAvailableBridges()))
+				}
+			}
+		}
+	}()
 }
 
 func (s *Selector) SetMode(mode BridgeMode) {

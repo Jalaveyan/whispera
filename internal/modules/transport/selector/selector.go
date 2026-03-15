@@ -1,9 +1,13 @@
 package selector
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
+	"net/http"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -82,6 +86,20 @@ func (c *Config) Validate() error {
 	return nil
 }
 
+// mlRecommendResponse mirrors JSON returned by POST /recommend/transport
+type mlRecommendResponse struct {
+	Transport string `json:"transport"`   // имя транспорта
+	DPIRisk   string `json:"dpi_risk"`    // "low"/"medium"/"high"/"critical"
+	Options   string `json:"options"`
+}
+
+var dpiRiskScore = map[string]float64{
+	"low":      0.1,
+	"medium":   0.4,
+	"high":     0.7,
+	"critical": 1.0,
+}
+
 type Selector struct {
 	*base.Module
 	config     *Config
@@ -90,6 +108,8 @@ type Selector struct {
 	metrics    map[interfaces.TransportType]*TransportMetrics
 	preferred  interfaces.TransportType
 	mlEnabled  bool
+	mlHTTP     *http.Client
+	mlBaseURL  string
 
 	selections uint64
 	mlUsed     uint64
@@ -101,6 +121,11 @@ func New(cfg *Config) (*Selector, error) {
 		cfg = DefaultConfig()
 	}
 
+	mlURL := os.Getenv("WHISPERA_ML_SERVER")
+	if mlURL == "" {
+		mlURL = "http://127.0.0.1:8000"
+	}
+
 	s := &Selector{
 		Module:     base.NewModule(ModuleName, ModuleVersion, nil),
 		config:     cfg,
@@ -108,6 +133,10 @@ func New(cfg *Config) (*Selector, error) {
 		metrics:    make(map[interfaces.TransportType]*TransportMetrics),
 		preferred:  cfg.DefaultTransport,
 		mlEnabled:  cfg.Mode == ModeAuto,
+		mlBaseURL:  mlURL,
+		mlHTTP: &http.Client{
+			Timeout: 2 * time.Second,
+		},
 	}
 
 	return s, nil
@@ -208,7 +237,72 @@ func (s *Selector) Select(ctx *NetworkContext) (interfaces.Transport, error) {
 	return s.autoSelect(ctx)
 }
 
+// queryMLTransport спрашивает ML-сервер какой транспорт использовать.
+// Возвращает ("", "") при любой ошибке — вызывающий код использует статический скоринг.
+func (s *Selector) queryMLTransport(dest string) (transport string, dpiRisk string) {
+	body, _ := json.Marshal(map[string]interface{}{
+		"server_host": dest,
+		"server_port": 443,
+	})
+	resp, err := s.mlHTTP.Post(s.mlBaseURL+"/recommend/transport", "application/json", bytes.NewReader(body))
+	if err != nil {
+		return "", ""
+	}
+	defer resp.Body.Close()
+	var r mlRecommendResponse
+	if err := json.NewDecoder(resp.Body).Decode(&r); err != nil {
+		return "", ""
+	}
+	return r.Transport, r.DPIRisk
+}
+
+// reportConnectionResult отправляет результат соединения в ML-сервер
+// (fire-and-forget в горутине, не блокирует путь данных).
+func (s *Selector) reportConnectionResult(t interfaces.TransportType, success bool, latency time.Duration) {
+	if !s.mlEnabled {
+		return
+	}
+	go func() {
+		body, _ := json.Marshal(map[string]interface{}{
+			"transport":  string(t),
+			"success":    success,
+			"latency_ms": float64(latency.Milliseconds()),
+		})
+		ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+		defer cancel()
+		req, err := http.NewRequestWithContext(ctx, "POST", s.mlBaseURL+"/feedback/connection",
+			bytes.NewReader(body))
+		if err != nil {
+			return
+		}
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := s.mlHTTP.Do(req)
+		if err == nil {
+			resp.Body.Close()
+		}
+	}()
+}
+
 func (s *Selector) autoSelect(ctx *NetworkContext) (interfaces.Transport, error) {
+	var mlRecommended interfaces.TransportType
+
+	if s.mlEnabled && ctx != nil && ctx.DestinationAddr != "" {
+		host, _, _ := net.SplitHostPort(ctx.DestinationAddr)
+		if host == "" {
+			host = ctx.DestinationAddr
+		}
+		rec, dpiRisk := s.queryMLTransport(host)
+		if rec != "" {
+			mlRecommended = interfaces.TransportType(rec)
+		}
+		// Применяем DPI риск из ML к NetworkContext если он не задан явно
+		if dpiRisk != "" {
+			if score, ok := dpiRiskScore[dpiRisk]; ok && ctx.ThreatLevel == 0 {
+				ctx.ThreatLevel = int(score * 10) // 0.7 → 7, 1.0 → 10
+			}
+		}
+	}
+
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -219,12 +313,17 @@ func (s *Selector) autoSelect(ctx *NetworkContext) (interfaces.Transport, error)
 		if ctx != nil && ctx.IsBlocked[t] {
 			continue
 		}
-
 		if _, exists := s.transports[t]; !exists {
 			continue
 		}
 
 		score := s.calculateScore(t, metrics, ctx)
+
+		// Буст рекомендованного ML транспорта
+		if t == mlRecommended && s.config.MLWeight > 0 {
+			score += s.config.MLWeight
+		}
+
 		if score > bestScore {
 			bestScore = score
 			bestTransport = t
@@ -373,7 +472,10 @@ func (s *Selector) Dial(ctx context.Context, addr string, netCtx *NetworkContext
 	if err != nil {
 		return nil, err
 	}
-	return transport.Dial(ctx, addr)
+	start := time.Now()
+	conn, dialErr := transport.Dial(ctx, addr)
+	s.reportConnectionResult(transport.Type(), dialErr == nil, time.Since(start))
+	return conn, dialErr
 }
 
 func (s *Selector) UpdateMetrics(t interfaces.TransportType, latency time.Duration, bandwidth float64, packetLoss float64) {

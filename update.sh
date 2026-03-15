@@ -630,7 +630,7 @@ show_extras_menu() {
         echo -e "${BLUE}╔${SEP}╗${PLAIN}"
         _row "          WHISPERA MANAGEMENT MENU"
         echo -e "${BLUE}╠${SEP}╣${PLAIN}"
-        _row "  Web Panel:  https://${SRV_IP}:3000/  (or 127.0.0.1:3000 locally)"
+        _row "  Web Panel:  https://${SRV_IP}:3000/"
         _row "  Config:     /etc/whispera/config.yaml"
         echo -e "${BLUE}╠${SEP}╣${PLAIN}"
         _row "  BRIDGE MANAGEMENT"
@@ -913,6 +913,118 @@ ENVEOF
             /etc/systemd/system/whispera.service
         systemctl daemon-reload
         log_info "Enabled file logging for whispera service"
+    fi
+
+    # Ensure uploads directory exists and has correct ownership
+    if [[ -d "$DAT_PATH/panel" ]]; then
+        mkdir -p "$DAT_PATH/panel/public/uploads"
+        chown -R whispera:whispera "$DAT_PATH/panel/public" 2>/dev/null || true
+    fi
+
+    # Patch whispera.service: remove NoNewPrivileges (blocks sudo for UFW), add missing caps/paths
+    local SVC=/etc/systemd/system/whispera.service
+    if [[ -f "$SVC" ]]; then
+        local RELOAD=false
+        # NoNewPrivileges=true prevents sudo from escalating — must be removed for UFW support
+        if grep -q "^NoNewPrivileges=true" "$SVC"; then
+            sed -i '/^NoNewPrivileges=true/d' "$SVC"
+            RELOAD=true
+            log_info "Removed NoNewPrivileges from whispera.service (required for UFW sudo)"
+        fi
+        if ! grep -q "CAP_NET_RAW" "$SVC"; then
+            sed -i 's/AmbientCapabilities=\(.*\)/AmbientCapabilities=\1 CAP_NET_RAW/' "$SVC"
+            RELOAD=true
+        fi
+        if ! grep -q "/etc/ufw" "$SVC"; then
+            sed -i 's|ReadWritePaths=\(.*\)|ReadWritePaths=\1 /etc/ufw /lib/ufw /var/lib/ufw /run/ufw|' "$SVC"
+            RELOAD=true
+        fi
+        if [[ "$RELOAD" == true ]]; then
+            systemctl daemon-reload
+            log_info "Updated whispera.service for UFW access"
+        fi
+    fi
+
+    # ── ML service — обновление / установка ─────────────────────────────────
+    local ML_SCRIPT="$WORK_DIR/internal/obfuscation/ml/ml_api_server.py"
+    local PYTHON_BIN
+    PYTHON_BIN=$(command -v python3 || command -v python || echo "")
+    if [[ -n "$PYTHON_BIN" && -f "$ML_SCRIPT" ]]; then
+
+        # Ресурсы сервера (могут измениться с момента первой установки)
+        local SRV_CORES SRV_RAMMB ML_PROFILE MEM_LIMIT RETRAIN_THRESH
+        SRV_CORES=$(nproc 2>/dev/null || grep -c ^processor /proc/cpuinfo 2>/dev/null || echo 1)
+        SRV_RAMMB=$(grep MemTotal /proc/meminfo 2>/dev/null | awk '{print int($2/1024)}' || echo 1024)
+
+        if   [[ $SRV_CORES -le 1 || $SRV_RAMMB -lt 2048 ]]; then
+            ML_PROFILE="minimal";  MEM_LIMIT="256M"; RETRAIN_THRESH="200"
+        elif [[ $SRV_CORES -ge 8 && $SRV_RAMMB -ge 8192 ]]; then
+            ML_PROFILE="full";     MEM_LIMIT="1G";   RETRAIN_THRESH="1000"
+        else
+            ML_PROFILE="standard"; MEM_LIMIT="512M"; RETRAIN_THRESH="500"
+        fi
+
+        # Читаем текущий профиль из юнита (если уже установлен)
+        local CURRENT_PROFILE
+        CURRENT_PROFILE=$(grep "WHISPERA_ML_PROFILE=" /etc/systemd/system/whispera-ml.service 2>/dev/null \
+            | cut -d= -f2 | tr -d '[:space:]')
+
+        # Обновляем зависимости если профиль изменился или сервис новый
+        if [[ "$CURRENT_PROFILE" != "$ML_PROFILE" || ! -f /etc/systemd/system/whispera-ml.service ]]; then
+            log_info "ML profile: $CURRENT_PROFILE → $ML_PROFILE (${SRV_CORES} cores, ${SRV_RAMMB} MB RAM)"
+
+            $PYTHON_BIN -m pip install --quiet \
+                fastapi uvicorn pydantic python-multipart \
+                numpy "scikit-learn>=1.6.1,<1.7.0" scipy joblib 2>/dev/null || true
+
+            if [[ "$ML_PROFILE" == "full" ]]; then
+                $PYTHON_BIN -m pip install --quiet tensorflow-cpu 2>/dev/null || \
+                    $PYTHON_BIN -m pip install --quiet onnxruntime skl2onnx 2>/dev/null || true
+            else
+                $PYTHON_BIN -m pip install --quiet onnxruntime skl2onnx 2>/dev/null || true
+            fi
+
+            # Переобучаем модели под новый профиль
+            local TRAIN_SCRIPT="$WORK_DIR/ml_engine/train_onnx_models.py"
+            if [[ -f "$TRAIN_SCRIPT" ]]; then
+                WHISPERA_ML_PROFILE="$ML_PROFILE" \
+                    $PYTHON_BIN "$TRAIN_SCRIPT" 2>/dev/null && \
+                    log_success "ML models retrained for profile: $ML_PROFILE" || \
+                    log_warn "ML model training failed"
+            fi
+        else
+            log_info "ML profile unchanged ($ML_PROFILE) — skipping deps update"
+        fi
+
+        # Всегда обновляем systemd-юнит (мог измениться при обновлении)
+        cat > /etc/systemd/system/whispera-ml.service <<EOF
+[Unit]
+Description=Whispera ML Server
+After=network.target whispera.service
+PartOf=whispera.service
+
+[Service]
+User=whispera
+Group=whispera
+WorkingDirectory=$WORK_DIR/internal/obfuscation/ml
+ExecStart=$PYTHON_BIN $ML_SCRIPT
+Restart=on-failure
+RestartSec=10
+Environment=WHISPERA_ML_PORT=8000
+Environment=PYTHONPATH=$WORK_DIR/ml_engine
+Environment=WHISPERA_ML_PROFILE=$ML_PROFILE
+Environment=WHISPERA_ML_RETRAIN_THRESHOLD=$RETRAIN_THRESH
+MemoryMax=$MEM_LIMIT
+MemorySwapMax=0
+
+[Install]
+WantedBy=multi-user.target
+EOF
+        systemctl daemon-reload
+        systemctl enable whispera-ml >/dev/null 2>&1
+        systemctl restart whispera-ml 2>/dev/null && \
+            log_info "ML service started (profile: $ML_PROFILE)" || \
+            log_warn "ML service failed to start (check: journalctl -u whispera-ml)"
     fi
 
     if [[ -f "$CONF_PATH/config.yaml" ]]; then

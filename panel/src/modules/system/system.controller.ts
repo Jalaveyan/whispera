@@ -148,6 +148,30 @@ export class SystemController {
         }
     }
 
+    @Get('api/ml/config')
+    async getMLConfig(@Headers('authorization') auth: string, @Res() res: Response) {
+        try {
+            const token = auth?.replace('Bearer ', '');
+            const data = await this.systemService.getMLConfig(token);
+            return res.json(data);
+        } catch (err: any) {
+            return res.status(err?.response?.status || HttpStatus.INTERNAL_SERVER_ERROR)
+                .json({ error: err?.response?.data?.error || err?.message || 'Failed' });
+        }
+    }
+
+    @Post('api/ml/token/rotate')
+    async rotateMLToken(@Headers('authorization') auth: string, @Res() res: Response) {
+        try {
+            const token = auth?.replace('Bearer ', '');
+            const data = await this.systemService.rotateMLToken(token);
+            return res.json(data);
+        } catch (err: any) {
+            return res.status(err?.response?.status || HttpStatus.INTERNAL_SERVER_ERROR)
+                .json({ error: err?.response?.data?.error || err?.message || 'Failed' });
+        }
+    }
+
     @Get('api/qr')
     async generateQR(@Query('data') data: string, @Res() res: Response) {
         if (!data) {

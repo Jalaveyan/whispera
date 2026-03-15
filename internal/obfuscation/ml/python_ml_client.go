@@ -39,6 +39,22 @@ func GetEnvOrDefault(key, defaultValue string) string {
 	return defaultValue
 }
 
+// flowProfile кэшируется на уровне потока: ML классифицирует первый пакет,
+// все следующие пакеты применяют профиль локально без вызова Python.
+type flowProfile struct {
+	dpiType    int
+	confidence float64
+	expires    time.Time
+}
+
+// flowCacheTTL — как долго хранить профиль потока.
+// 30 секунд: достаточно для TCP-сессии, не слишком долго для смены условий сети.
+const flowCacheTTL = 30 * time.Second
+
+// flowSampleEvery — переклассифицировать поток каждые N пакетов
+// (для адаптации если сеть изменилась во время сессии).
+const flowSampleEvery = 200
+
 type PythonMLClient struct {
 	baseURL               string
 	httpClient            *http.Client
@@ -47,6 +63,12 @@ type PythonMLClient struct {
 	lastMLWarningUnixNano int64
 	resultChanPool        sync.Pool
 	errorChanPool         sync.Pool
+
+	// flowCache: ключ = protocol+direction+первые4байта → flowProfile
+	// Классификация делается только для первого пакета потока (и каждые 200).
+	// Все остальные пакеты применяют обфускацию локально в Go — без HTTP round-trip.
+	flowCache    sync.Map
+	flowCounters sync.Map // ключ → uint64 (счётчик пакетов потока)
 }
 
 type MLPredictionResponsePython struct {
@@ -434,75 +456,25 @@ func (client *PythonMLClient) HealthCheck() error {
 	return nil
 }
 
-func (client *PythonMLClient) prepareFeatures(packetData []byte, isTLS bool) []float64 {
-	const targetFeatures = 100
-	features := make([]float64, targetFeatures)
-
-	packetSize := len(packetData)
-	if packetSize == 0 {
-		return features
+// prepareFeatures возвращает сырые байты пакета нормированные в [0,1].
+// Python-сервер восстанавливает байты через int(v*255) и сам вычисляет
+// правильные 100 фич через _build_features() — ту же функцию что используется
+// при обучении. Это гарантирует совпадение признакового пространства.
+//
+// Максимум 1500 байт (MTU) — Python принимает переменную длину.
+func (client *PythonMLClient) prepareFeatures(packetData []byte, _ bool) []float64 {
+	n := len(packetData)
+	if n == 0 {
+		return []float64{}
 	}
-
-	packetArray := make([]float64, packetSize)
-	for i, b := range packetData {
-		packetArray[i] = float64(b) / 255.0
+	if n > 1500 {
+		n = 1500
 	}
-
-	features[0] = float64(packetSize) / 1500.0
-	features[1] = client.mean(packetArray)
-	features[2] = client.std(packetArray)
-	features[3] = client.variance(packetArray)
-	features[4] = client.min(packetArray)
-	features[5] = client.max(packetArray)
-	features[6] = client.median(packetArray)
-	features[7] = client.percentile(packetArray, 25)
-	features[8] = client.percentile(packetArray, 75)
-	features[9] = client.percentile(packetArray, 90)
-	features[10] = client.percentile(packetArray, 95)
-	features[11] = client.percentile(packetArray, 99)
-	features[12] = client.count(packetArray, 0.0) / float64(packetSize)
-	features[13] = client.count(packetArray, 1.0) / float64(packetSize)
-	features[14] = client.countAbove(packetArray, 0.5) / float64(packetSize)
-
-	if packetSize >= 20 {
-		features[15] = float64(packetData[0]) / 255.0
-		features[16] = float64(packetData[1]) / 255.0
-		if packetSize >= 4 {
-			features[17] = float64(uint16(packetData[2])<<8|uint16(packetData[3])) / 65535.0
-		}
-		if packetSize >= 9 {
-			features[18] = float64(packetData[8]) / 255.0
-			features[19] = float64(packetData[9]) / 255.0
-		}
+	out := make([]float64, n)
+	for i := 0; i < n; i++ {
+		out[i] = float64(packetData[i]) / 255.0
 	}
-
-	entropy := client.calculateEntropy(packetData)
-	features[20] = entropy / 8.0
-
-	if isTLS {
-		features[98] = 1.0
-		if len(packetData) >= 5 && packetData[0] == 0x16 {
-			features[99] = 1.0
-		} else if len(packetData) >= 5 && packetData[0] == 0x17 {
-			features[99] = 0.8
-		}
-	} else {
-		features[98] = 0.0
-		features[99] = 0.0
-	}
-
-	for i := 0; i < 77 && (21+i) < 98; i++ {
-		byteIdx := i * 256 / 79
-		count := 0
-		for _, b := range packetData {
-			if int(b) == byteIdx {
-				count++
-			}
-		}
-		features[21+i] = float64(count) / float64(packetSize)
-	}
-
-	return features
+	return out
 }
 
 func (client *PythonMLClient) mean(data []float64) float64 {
@@ -729,6 +701,27 @@ func (client *PythonMLClient) fallbackPrediction(packetData []byte, protocol, di
 	}
 }
 
+// flowKey строит ключ кэша для потока: protocol+direction+первые4байта.
+// Первые байты — это magic bytes протокола (TLS 0x16 0x03, DNS и т.д.),
+// поэтому потоки одного типа получат один и тот же ключ — что нам и нужно.
+func flowKey(packetData []byte, protocol, direction string) string {
+	n := len(packetData)
+	if n > 4 {
+		n = 4
+	}
+	return protocol + "|" + direction + "|" + string(packetData[:n])
+}
+
+// ProcessTraffic — горячий путь данных.
+//
+// Схема для скорости:
+//   1. Первый пакет потока (или каждый flowSampleEvery-й) → ML классификация
+//      через Python (5 мс таймаут), результат кэшируется в flowCache.
+//   2. Все остальные пакеты → применяем кэшированный профиль локально в Go,
+//      без HTTP round-trip к Python.
+//
+// Это позволяет нейросети работать без влияния на пропускную способность:
+// классификация делается 1 раз на поток, а не 8000 раз в секунду.
 func (client *PythonMLClient) ProcessTraffic(packetData []byte, context *types.UnifiedTrafficContext) ([]byte, error) {
 	if len(packetData) == 0 {
 		return packetData, fmt.Errorf("empty packet data")
@@ -736,18 +729,50 @@ func (client *PythonMLClient) ProcessTraffic(packetData []byte, context *types.U
 	if context == nil {
 		return packetData, fmt.Errorf("nil traffic context")
 	}
-
 	if context.IsTLS {
 		context.Protocol = context.TLSMode
 	}
-
+	// Пакеты < 64 байт не несут достаточно информации для классификации
 	if len(packetData) < 64 {
 		return packetData, nil
 	}
 
-	var response *types.MLPredictionResponse
-	var err error
+	key := flowKey(packetData, context.Protocol, context.Direction)
 
+	// ── Счётчик пакетов для данного потока ───────────────────────────────────
+	var pktCount uint64
+	if v, loaded := client.flowCounters.LoadOrStore(key, new(uint64)); loaded {
+		pktCount = atomic.AddUint64(v.(*uint64), 1)
+	} else {
+		pktCount = 1
+	}
+
+	// ── Проверяем кэш потока ─────────────────────────────────────────────────
+	needClassify := false
+	if cached, ok := client.flowCache.Load(key); ok {
+		profile := cached.(flowProfile)
+		if time.Now().Before(profile.expires) && pktCount%flowSampleEvery != 0 {
+			// Кэш свежий и не пора переклассифицировать —
+			// применяем профиль локально без вызова Python
+			if profile.dpiType > 0 {
+				pred := types.PredictionResult{
+					DPIType:    profile.dpiType,
+					Confidence: profile.confidence,
+				}
+				return client.applyObfuscation(packetData, pred)
+			}
+			return packetData, nil
+		}
+		needClassify = true
+	} else {
+		needClassify = true
+	}
+
+	if !needClassify {
+		return packetData, nil
+	}
+
+	// ── ML классификация (только для первого пакета / каждые N) ──────────────
 	resultChan := client.resultChanPool.Get().(chan *types.MLPredictionResponse)
 	errorChan := client.errorChanPool.Get().(chan error)
 
@@ -763,31 +788,40 @@ func (client *PythonMLClient) ProcessTraffic(packetData []byte, context *types.U
 		}
 	}()
 
+	var response *types.MLPredictionResponse
 	select {
 	case response = <-resultChan:
-		err = <-errorChan
+		<-errorChan
 		client.resultChanPool.Put(resultChan)
 		client.errorChanPool.Put(errorChan)
-		if err != nil {
-			return packetData, nil
-		}
 	case <-time.After(5 * time.Millisecond):
+		// Python не ответил за 5 мс — не блокируем пакет, просто пропускаем
 		client.resultChanPool.Put(resultChan)
 		client.errorChanPool.Put(errorChan)
 		return packetData, nil
 	}
 
+	// ── Кэшируем профиль потока ───────────────────────────────────────────────
+	profile := flowProfile{expires: time.Now().Add(flowCacheTTL)}
 	if response != nil && len(response.Predictions) > 0 {
 		pred := response.Predictions[0]
+		profile.dpiType = pred.DPIType
+		profile.confidence = pred.Confidence
+	}
+	client.flowCache.Store(key, profile)
 
-		if pred.DPIType > 0 {
-			obfuscated, obfErr := client.applyObfuscation(packetData, pred)
-			if obfErr != nil {
-				log.Warn("Obfuscation failed: %v, using original data", obfErr)
-				return packetData, nil
-			}
-			return obfuscated, nil
+	// ── Применяем обфускацию если DPI обнаружен ───────────────────────────────
+	if profile.dpiType > 0 {
+		pred := types.PredictionResult{
+			DPIType:    profile.dpiType,
+			Confidence: profile.confidence,
 		}
+		obfuscated, obfErr := client.applyObfuscation(packetData, pred)
+		if obfErr != nil {
+			log.Warn("Obfuscation failed: %v, using original data", obfErr)
+			return packetData, nil
+		}
+		return obfuscated, nil
 	}
 
 	return packetData, nil

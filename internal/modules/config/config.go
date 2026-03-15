@@ -43,6 +43,14 @@ const (
 	ModuleVersion = "1.0.0"
 )
 
+type MLConfig struct {
+	Enabled bool `yaml:"enabled" json:"enabled"`
+
+	ServerURL string `yaml:"server_url" json:"server_url"`
+
+	TokenFile string `yaml:"token_file" json:"token_file"`
+}
+
 type ServerConfig struct {
 	Server         ServerSettings     `yaml:"server"`
 	Transport      TransportConfig    `yaml:"transport"`
@@ -69,6 +77,7 @@ type ServerConfig struct {
 	Update         UpdateConfig       `yaml:"update" json:"update"`
 	Correlation    CorrelationConfig  `yaml:"correlation" json:"correlation"`
 	SNIBypass      SNIBypassConfig    `yaml:"sni_bypass" json:"sni_bypass"`
+	ML             MLConfig           `yaml:"ml" json:"ml"`
 }
 
 func (p *Provider) SaveConfig(path string) error {

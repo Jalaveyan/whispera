@@ -3473,39 +3473,52 @@ class WhisperaApp {
         if (!user) { this.showNotification('Пользователь не найден', 'error'); return; }
 
         const trafficGB = user.trafficLimit ? (user.trafficLimit / 1073741824) : 0;
+
+        const field = (label, body) => `
+            <div class="form-group">
+                <label style="font-size:0.8em;text-transform:uppercase;opacity:0.7;letter-spacing:0.05em;">${label}</label>
+                ${body}
+            </div>`;
+
         const modal = document.createElement('div');
         modal.className = 'modal active';
+        modal.style.zIndex = '10000';
         modal.innerHTML = `
-        <div class="modal-content" style="max-width:420px;">
+        <div class="modal-content" style="max-width:460px;">
             <div class="modal-header">
                 <h3>Редактировать пользователя</h3>
-                <button class="btn-close" onclick="this.closest('.modal').remove()">×</button>
+                <button class="modal-close modal-close-icon" onclick="this.closest('.modal').remove()"><i class="fas fa-times"></i></button>
             </div>
-            <div class="modal-body" style="display:flex;flex-direction:column;gap:12px;">
-                <div>
-                    <label style="font-size:0.85em;opacity:0.7;">Email</label>
-                    <input id="eu-username" class="form-control" type="text" value="${user.username || ''}" style="margin-top:4px;">
-                </div>
-                <div>
-                    <label style="font-size:0.85em;opacity:0.7;">Статус</label>
-                    <select id="eu-status" class="form-control" style="margin-top:4px;">
-                        <option value="active" ${user.status === 'active' ? 'selected' : ''}>Active</option>
-                        <option value="inactive" ${user.status !== 'active' ? 'selected' : ''}>Inactive</option>
-                    </select>
-                </div>
-                <div>
-                    <label style="font-size:0.85em;opacity:0.7;">Лимит трафика (0 = безлимит)</label>
-                    <div style="display:flex;align-items:center;gap:8px;margin-top:4px;">
-                        <input id="eu-traffic" class="form-control" type="number" min="0" step="1" value="${trafficGB}" style="flex:1;">
-                        <span style="opacity:0.6;font-size:0.9em;">GB</span>
-                    </div>
-                </div>
-                <div>
-                    <label style="font-size:0.85em;opacity:0.7;">Дата истечения (пусто = бессрочно)</label>
-                    <input id="eu-expiry" class="form-control" type="date" value="${user.expiryDate || ''}" style="margin-top:4px;">
-                </div>
+            <div class="modal-body" style="display:flex;flex-direction:column;gap:2px;">
+                ${field('Email', `<input id="eu-username" class="form-control" type="text" value="${user.username || ''}">`)}
+                ${field('Статус', `
+                    <select id="eu-status" class="form-control">
+                        <option value="active"    ${user.status === 'active'    ? 'selected' : ''}>Активен</option>
+                        <option value="disabled"  ${user.status === 'disabled'  ? 'selected' : ''}>Отключён</option>
+                    </select>`)}
+                ${field('Лимит трафика', `
+                    <div style="display:flex;gap:8px;align-items:center;">
+                        <input id="eu-traffic" class="form-control" type="number" min="0" step="0.1" value="${trafficGB}" style="flex:1;">
+                        <span style="opacity:0.6;font-size:0.9em;white-space:nowrap;">GB &nbsp;(0 = ∞)</span>
+                    </div>`)}
+                ${field('Дата истечения', `<input id="eu-expiry" class="form-control" type="date" value="${user.expiryDate || ''}" placeholder="бессрочно">`)}
+                ${field('Профиль обфускации', `
+                    <select id="eu-obfs" class="form-control">
+                        <option value=""    ${!user.obfsProfile                  ? 'selected' : ''}>По умолчанию</option>
+                        <option value="vk"  ${user.obfsProfile === 'vk'          ? 'selected' : ''}>VK</option>
+                        <option value="ok"  ${user.obfsProfile === 'ok'          ? 'selected' : ''}>OK</option>
+                        <option value="yt"  ${user.obfsProfile === 'yt'          ? 'selected' : ''}>YouTube</option>
+                    </select>`)}
+                ${field('Российский сервис (ASN bypass)', `
+                    <select id="eu-russian" class="form-control">
+                        <option value=""           ${!user.russianService                    ? 'selected' : ''}>Авто</option>
+                        <option value="vk"         ${user.russianService === 'vk'            ? 'selected' : ''}>VK</option>
+                        <option value="ok"         ${user.russianService === 'ok'            ? 'selected' : ''}>Одноклассники</option>
+                        <option value="yandex"     ${user.russianService === 'yandex'        ? 'selected' : ''}>Яндекс</option>
+                        <option value="wildberries"${user.russianService === 'wildberries'   ? 'selected' : ''}>Wildberries</option>
+                    </select>`)}
             </div>
-            <div class="modal-footer" style="display:flex;justify-content:flex-end;gap:8px;padding-top:12px;">
+            <div class="modal-footer">
                 <button class="btn btn-secondary" onclick="this.closest('.modal').remove()">Отмена</button>
                 <button class="btn btn-primary" onclick="app.saveUserEdit(${userId}, this.closest('.modal'))">Сохранить</button>
             </div>
@@ -3515,9 +3528,11 @@ class WhisperaApp {
 
     async saveUserEdit(userId, modal) {
         const username = modal.querySelector('#eu-username').value.trim();
-        const status = modal.querySelector('#eu-status').value;
+        const status   = modal.querySelector('#eu-status').value;
         const trafficGB = parseFloat(modal.querySelector('#eu-traffic').value) || 0;
         const expiryDate = modal.querySelector('#eu-expiry').value;
+        const obfsProfile = modal.querySelector('#eu-obfs').value;
+        const russianService = modal.querySelector('#eu-russian').value;
 
         if (!username) { this.showNotification('Email не может быть пустым', 'error'); return; }
 
@@ -3527,6 +3542,8 @@ class WhisperaApp {
                 status,
                 trafficLimit: Math.round(trafficGB * 1073741824),
                 expiryDate: expiryDate || '',
+                obfsProfile,
+                russianService,
             });
             modal.remove();
             this.showNotification('Пользователь обновлён', 'success');
@@ -3921,6 +3938,24 @@ class WhisperaApp {
             ${connectionURI ? `<div id="key-modal-qr-wrap" style="display:flex;flex-direction:column;align-items:center;gap:6px;margin:8px 0;">
                 <img id="key-modal-qr" style="border-radius:8px;background:#fff;padding:8px;width:220px;height:220px;" />
                 <span style="font-size:0.78em;opacity:0.5;">Сканируйте QR-кодом в клиенте</span>
+            </div>` : ''}
+            ${connectionURI && privKey ? `
+            <div style="margin-top:4px;padding:10px 12px;background:rgba(99,102,241,0.08);border:1px solid rgba(99,102,241,0.25);border-radius:8px;">
+                <div style="font-size:0.78em;font-weight:600;text-transform:uppercase;letter-spacing:0.06em;opacity:0.7;margin-bottom:6px;">
+                    <i class="fas fa-brain" style="margin-right:4px;color:#6366f1;"></i>ML Токен (для режима ML в клиенте)
+                </div>
+                <div style="display:flex;gap:6px;align-items:center;">
+                    <input type="text" value="${pkEsc}" readonly
+                        style="flex:1;font-family:monospace;font-size:0.78em;padding:6px 10px;
+                               background:var(--bg-secondary,#1a1a2e);border:1px solid rgba(99,102,241,0.3);
+                               border-radius:6px;color:inherit;min-width:0;">
+                    <button onclick="navigator.clipboard.writeText('${pkEsc}').then(()=>app.showNotification('ML токен скопирован','success'))"
+                        style="flex-shrink:0;padding:6px 10px;border-radius:6px;border:none;
+                               background:rgba(99,102,241,0.3);color:#fff;cursor:pointer;font-size:12px;">
+                        <i class="fas fa-copy"></i>
+                    </button>
+                </div>
+                <div style="font-size:0.75em;opacity:0.5;margin-top:4px;">Вставьте в поле «ML Токен» в разделе Режим ML клиента whisp</div>
             </div>` : ''}
             <p style="margin-top:4px;font-size:0.82em;opacity:0.6;">
                 <i class="fas fa-info-circle"></i> Ключ содержит все параметры подключения. Сохраните — он больше не будет показан.
