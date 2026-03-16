@@ -1,8 +1,0 @@
-{
-  "model_type": "transformer",
-  "input_size": 1500,
-  "num_classes": 10,
-  "accuracy": 0.9987179636955261,
-  "last_updated": "2025-10-25T17:33:00.132772",
-  "is_trained": true
-}

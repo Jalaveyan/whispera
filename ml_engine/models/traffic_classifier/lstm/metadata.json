@@ -1,8 +1,0 @@
-{
-  "model_type": "lstm",
-  "input_size": 1500,
-  "num_classes": 10,
-  "accuracy": 0.9205127954483032,
-  "last_updated": "2025-10-25T17:32:50.660055",
-  "is_trained": true
-}
