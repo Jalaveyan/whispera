@@ -170,8 +170,6 @@ Features:
 
 ---
 
----
-
 ## CLI Management
 
 **Service commands (`whispera-mgmt`):**
