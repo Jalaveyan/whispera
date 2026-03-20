@@ -2816,5 +2816,5 @@ func (m *Manager) rotateTransport() {
 	log.Info("[REKEY] Rotating %d transport connections for PFS", poolSize)
 
 	m.setState(StateReconnecting)
-	m.Reconnect(context.Background())
+	m.Reconnect(m.Context())
 }
