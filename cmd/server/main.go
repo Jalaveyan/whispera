@@ -562,6 +562,64 @@ func StopInbound(tag string) error {
 	return nil
 }
 
+// StartReverseInbound dials remoteAddr in a loop and treats each connection as
+// an inbound client connection (server-as-client / reverse-connect mode).
+func StartReverseInbound(inbound modconfig.InboundConfig, serverConfig *modconfig.ServerConfig, stopCh <-chan struct{}) {
+	remoteAddr := inbound.RemoteAddr
+	if remoteAddr == "" {
+		log.Printf("⚠ [Reverse] Inbound %s: remote_addr is empty, skipping", inbound.Tag)
+		return
+	}
+
+	var hsHandler *handshake.Handler
+	if serverConfig.Server.PrivateKey != "" {
+		hsHandler = createHandshakeHandler(serverConfig.Server.PrivateKey, serverConfig)
+	}
+
+	log.Printf("🔄 [Reverse] Inbound %s: will dial %s repeatedly", inbound.Tag, remoteAddr)
+
+	backoff := 2 * time.Second
+	const maxBackoff = 60 * time.Second
+
+	for {
+		select {
+		case <-stopCh:
+			log.Printf("⏹ [Reverse] Inbound %s stopped", inbound.Tag)
+			return
+		default:
+		}
+
+		conn, err := net.DialTimeout("tcp", remoteAddr, 10*time.Second)
+		if err != nil {
+			log.Printf("⚠ [Reverse] %s: dial failed: %v (retry in %v)", inbound.Tag, err, backoff)
+			select {
+			case <-stopCh:
+				return
+			case <-time.After(backoff):
+			}
+			if backoff < maxBackoff {
+				backoff *= 2
+			}
+			continue
+		}
+
+		backoff = 2 * time.Second
+		log.Printf("✅ [Reverse] %s: connected to %s", inbound.Tag, remoteAddr)
+
+		if globalRelay != nil {
+			if hsHandler != nil {
+				handleTCPConnection(conn, hsHandler)
+			} else {
+				globalRelay.ServeTunnel(conn, nil)
+			}
+		} else {
+			conn.Close()
+		}
+
+		log.Printf("🔁 [Reverse] %s: connection closed, reconnecting...", inbound.Tag)
+	}
+}
+
 func main() {
 	if len(os.Args) > 1 {
 		cmd := strings.TrimSpace(os.Args[1])
@@ -699,7 +757,10 @@ func main() {
 	memWatchdog.Start()
 	manager.OnShutdown(func() { memWatchdog.Stop() })
 
-	if err := createModules(manager); err != nil {
+	moduleCtx, moduleCancel := context.WithCancel(context.Background())
+	manager.OnShutdown(moduleCancel)
+
+	if err := createModules(manager, moduleCtx); err != nil {
 		log.Fatalf("Failed to create modules: %v", err)
 	}
 
@@ -737,7 +798,7 @@ func main() {
 	log.Println("Server shutdown complete")
 }
 
-func createModules(manager *lifecycle.Manager) error {
+func createModules(manager *lifecycle.Manager, ctx context.Context) error {
 	configProvider, err := modconfig.New(*configFile)
 	if err != nil {
 		return err
@@ -814,6 +875,10 @@ func createModules(manager *lifecycle.Manager) error {
 
 	dynamic.Global.SetCallbacks(
 		func(inbound modconfig.InboundConfig) error {
+			if inbound.Mode == "reverse" {
+				go StartReverseInbound(inbound, serverConfig, ctx.Done())
+				return nil
+			}
 			return StartInbound(inbound, serverConfig)
 		},
 		func(tag string) error {
@@ -1045,6 +1110,11 @@ func createModules(manager *lifecycle.Manager) error {
 	if len(serverConfig.Inbounds) > 0 {
 		log.Printf("[Server] Starting %d inbounds...", len(serverConfig.Inbounds))
 		for _, inbound := range serverConfig.Inbounds {
+			if inbound.Mode == "reverse" {
+				ib := inbound
+				go StartReverseInbound(ib, serverConfig, ctx.Done())
+				continue
+			}
 			if inbound.Port == 0 {
 				continue
 			}

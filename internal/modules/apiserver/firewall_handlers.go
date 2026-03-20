@@ -114,7 +114,6 @@ func (s *Server) handleFirewallStatus(w http.ResponseWriter, r *http.Request) {
 		s.jsonOK(w, map[string]interface{}{
 			"active": false,
 			"rules":  []FirewallRule{},
-			"error":  err.Error(),
 		})
 		return
 	}
@@ -173,11 +172,12 @@ func (s *Server) handleFirewallAddRule(w http.ResponseWriter, r *http.Request) {
 
 	out, err := runUFW(args...)
 	if err != nil {
-		s.jsonError(w, http.StatusInternalServerError, "ufw error: "+strings.TrimSpace(string(out)))
+		log.Warn("ufw add rule failed: %s", strings.TrimSpace(string(out)))
+		s.jsonError(w, http.StatusInternalServerError, "firewall rule could not be applied")
 		return
 	}
 	status, _ := getFirewallStatus()
-	s.jsonOK(w, map[string]interface{}{"success": true, "message": strings.TrimSpace(string(out)), "status": status})
+	s.jsonOK(w, map[string]interface{}{"success": true, "message": "rule applied", "status": status})
 }
 
 func (s *Server) handleFirewallDeleteRule(w http.ResponseWriter, r *http.Request) {
@@ -190,11 +190,12 @@ func (s *Server) handleFirewallDeleteRule(w http.ResponseWriter, r *http.Request
 	}
 	out, err := runUFW("--force", "delete", strconv.Itoa(req.Number))
 	if err != nil {
-		s.jsonError(w, http.StatusInternalServerError, "ufw error: "+strings.TrimSpace(string(out)))
+		log.Warn("ufw delete rule failed: %s", strings.TrimSpace(string(out)))
+		s.jsonError(w, http.StatusInternalServerError, "firewall rule could not be deleted")
 		return
 	}
 	status, _ := getFirewallStatus()
-	s.jsonOK(w, map[string]interface{}{"success": true, "message": strings.TrimSpace(string(out)), "status": status})
+	s.jsonOK(w, map[string]interface{}{"success": true, "message": "rule deleted", "status": status})
 }
 
 func (s *Server) handleFirewallToggle(w http.ResponseWriter, r *http.Request) {
@@ -213,9 +214,10 @@ func (s *Server) handleFirewallToggle(w http.ResponseWriter, r *http.Request) {
 	}
 	out, err := runUFW(args...)
 	if err != nil {
-		s.jsonError(w, http.StatusInternalServerError, "ufw error: "+strings.TrimSpace(string(out)))
+		log.Warn("ufw toggle failed: %s", strings.TrimSpace(string(out)))
+		s.jsonError(w, http.StatusInternalServerError, "firewall toggle failed")
 		return
 	}
 	status, _ := getFirewallStatus()
-	s.jsonOK(w, map[string]interface{}{"success": true, "message": strings.TrimSpace(string(out)), "status": status})
+	s.jsonOK(w, map[string]interface{}{"success": true, "status": status})
 }

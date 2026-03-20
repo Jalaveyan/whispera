@@ -282,6 +282,9 @@ type InboundConfig struct {
 	Port     int    `yaml:"port" json:"port"`
 	Ports []int `yaml:"ports,omitempty" json:"ports,omitempty"`
 
+	Mode       string `yaml:"mode,omitempty" json:"mode,omitempty"`
+	RemoteAddr string `yaml:"remote_addr,omitempty" json:"remote_addr,omitempty"`
+
 	Settings map[string]interface{} `yaml:"settings" json:"settings"`
 
 	StreamSettings StreamConfig `yaml:"stream_settings" json:"stream_settings"`

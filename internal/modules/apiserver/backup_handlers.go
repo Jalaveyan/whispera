@@ -3,7 +3,6 @@ package apiserver
 import (
 	"encoding/json"
 	"fmt"
-	"log"
 	"net/http"
 	"os"
 	"time"
@@ -49,7 +48,10 @@ func (s *Server) handleGetBackup(w http.ResponseWriter, r *http.Request) {
 	s.jsonOK(w, backup)
 }
 
+const maxBackupBodySize = 10 << 20
+
 func (s *Server) handleRestoreBackup(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxBackupBodySize)
 	var payload map[string]json.RawMessage
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 		s.jsonError(w, http.StatusBadRequest, "invalid backup file")

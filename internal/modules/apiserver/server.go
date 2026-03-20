@@ -12,7 +12,6 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
-	"log"
 	"net"
 	"net/http"
 	"os"
@@ -24,6 +23,7 @@ import (
 
 	"whispera/internal/auth"
 	"whispera/internal/core/base"
+	"whispera/internal/logger"
 	"whispera/internal/core/events"
 	"whispera/internal/core/interfaces"
 	"whispera/internal/core/registry"
@@ -47,6 +47,8 @@ const (
 	ModuleName    = "api.server"
 	ModuleVersion = "1.0.0"
 )
+
+var log = logger.Module("apiserver")
 
 type ctxKey int
 
@@ -146,7 +148,7 @@ func New(cfg *Config) (*Server, error) {
 	}
 
 	if err := os.MkdirAll("/etc/whispera", 0755); err != nil {
-		log.Printf("[API] Warning: failed to create /etc/whispera: %v", err)
+		log.Warn("failed to create /etc/whispera: %v", err)
 	}
 
 	bridgeReg := bridgepool.NewRegistry("/etc/whispera/bridges.json")
@@ -241,6 +243,8 @@ func (s *Server) registerDefaultRoutes() {
 	s.Handle("POST /api/keys/revoke", s.handleRevokeKey)
 	s.Handle("GET /api/keys/revoked", s.handleListRevokedKeys)
 	s.Handle("POST /api/keys/check", s.handleCheckKey)
+	s.Handle("GET /api/keys/ping", s.handlePingKey)
+	s.Handle("GET /api/keys/ping/all", s.handlePingAllKeys)
 
 	s.Handle("GET /api/subscriptions", s.handleGetSubscriptions)
 	s.Handle("POST /api/subscriptions/add", s.handleAddSubscription)
@@ -297,6 +301,7 @@ func (s *Server) registerDefaultRoutes() {
 
 	s.Handle("GET /api/ml/config", s.handleMLConfig)
 	s.Handle("POST /api/ml/token/rotate", s.handleMLTokenRotate)
+	s.Handle("GET /api/events", s.handleGetEvents)
 }
 
 func (s *Server) Init(ctx context.Context, cfg interfaces.ModuleConfig) error {
@@ -317,6 +322,35 @@ func (s *Server) Start() error {
 	}
 
 	s.startTime = time.Now()
+
+	go func() {
+		ticker := time.NewTicker(5 * time.Minute)
+		defer ticker.Stop()
+		ctx := s.Module.Context()
+		for {
+			select {
+			case <-ticker.C:
+				cutoff := time.Now().Add(-2 * time.Minute)
+				s.loginAttemptsMu.Lock()
+				for ip, attempts := range s.loginAttempts {
+					var fresh []time.Time
+					for _, t := range attempts {
+						if t.After(cutoff) {
+							fresh = append(fresh, t)
+						}
+					}
+					if len(fresh) == 0 {
+						delete(s.loginAttempts, ip)
+					} else {
+						s.loginAttempts[ip] = fresh
+					}
+				}
+				s.loginAttemptsMu.Unlock()
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
 
 	if !s.config.Enabled {
 		s.SetHealthy(true, "API server disabled")
@@ -447,11 +481,15 @@ func (s *Server) buildHandler() http.Handler {
 
 	handler = s.authMiddleware(handler)
 
+	handler = s.requestBodyLimitMiddleware(handler)
+
 	handler = s.apiRateMiddleware(handler)
 
 	if s.config.EnableCORS {
 		handler = s.corsMiddleware(handler)
 	}
+
+	handler = s.securityHeadersMiddleware(handler)
 
 	handler = s.loggingMiddleware(handler)
 
@@ -478,8 +516,19 @@ func (s *Server) corsMiddleware(next http.Handler) http.Handler {
 			}
 		} else {
 			if origin != "" {
-				host := r.Host
-				if strings.Contains(origin, host) {
+				originHost := origin
+				if i := strings.Index(originHost, "://"); i >= 0 {
+					originHost = originHost[i+3:]
+				}
+				originHost = strings.TrimRight(originHost, "/")
+				reqHost := r.Host
+				if h, _, err := net.SplitHostPort(reqHost); err == nil {
+					reqHost = h
+				}
+				if h, _, err := net.SplitHostPort(originHost); err == nil {
+					originHost = h
+				}
+				if originHost == reqHost {
 					allowedOrigin = origin
 				}
 			}
@@ -497,6 +546,34 @@ func (s *Server) corsMiddleware(next http.Handler) http.Handler {
 			return
 		}
 
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (s *Server) securityHeadersMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := w.Header()
+		h.Set("X-Content-Type-Options", "nosniff")
+		h.Set("X-Frame-Options", "DENY")
+		h.Set("X-XSS-Protection", "1; mode=block")
+		h.Set("Referrer-Policy", "strict-origin-when-cross-origin")
+		if r.TLS != nil {
+			h.Set("Strict-Transport-Security", "max-age=63072000; includeSubDomains")
+		}
+		if strings.HasPrefix(r.URL.Path, "/api/") || strings.HasPrefix(r.URL.Path, "/sub/") {
+			h.Set("Content-Security-Policy", "default-src 'none'")
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+const maxAPIBodyBytes = 1 << 20
+
+func (s *Server) requestBodyLimitMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost || r.Method == http.MethodPut || r.Method == http.MethodPatch {
+			r.Body = http.MaxBytesReader(w, r.Body, maxAPIBodyBytes)
+		}
 		next.ServeHTTP(w, r)
 	})
 }
@@ -751,7 +828,8 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	clientIP := s.getClientIP(r)
 	if !s.checkLoginRateLimit(clientIP) {
-		log.Printf("[API] Rate limit exceeded for IP: %s", clientIP)
+		log.Warn("rate limit exceeded for IP: %s", clientIP)
+		AppendEvent(EventAuth, SeverityWarn, "rate limit exceeded", map[string]string{"ip": clientIP})
 		s.jsonError(w, http.StatusTooManyRequests, "Too many login attempts. Please wait 1 minute.")
 		return
 	}
@@ -770,7 +848,8 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		user, err := database.AuthenticateUser(r.Context(), req.Username, req.Password)
 		if err == nil && user.IsAdmin {
 			s.clearLoginAttempts(clientIP)
-			log.Printf("[API] Successful DB login from IP: %s (user: %s)", clientIP, req.Username)
+			log.Info("successful login (db) from %s user=%s", clientIP, req.Username)
+			AppendEvent(EventAuth, SeverityInfo, "login success", map[string]string{"ip": clientIP, "user": req.Username})
 
 			token := s.issueTimedToken(req.Username)
 			w.Header().Set("Content-Type", "application/json")
@@ -793,7 +872,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 
 	if expectedUsername == "" {
 		expectedUsername = "admin"
-		log.Printf("[API] WARNING: No admin_username configured, falling back to 'admin'")
+		log.Warn("no admin_username configured, falling back to 'admin'")
 	}
 
 	if expectedPassword != "" {
@@ -804,7 +883,8 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 			s.clearLoginAttempts(clientIP)
 
 			token := s.issueTimedToken(req.Username)
-			log.Printf("[API] Successful login from IP: %s", clientIP)
+			log.Info("successful login from %s user=%s", clientIP, req.Username)
+			AppendEvent(EventAuth, SeverityInfo, "login success", map[string]string{"ip": clientIP, "user": req.Username})
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(map[string]interface{}{
 				"success":    true,
@@ -819,7 +899,8 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	log.Printf("[API] Failed login attempt from IP: %s (user: %s)", clientIP, req.Username)
+	log.Warn("failed login attempt from %s user=%s", clientIP, req.Username)
+	AppendEvent(EventAuth, SeverityWarn, "login failed", map[string]string{"ip": clientIP, "user": req.Username})
 	s.jsonError(w, http.StatusUnauthorized, "Invalid username or password")
 }
 
@@ -1270,20 +1351,20 @@ func loadOrCreateSessionToken() string {
 	if err == nil {
 		token := strings.TrimSpace(string(data))
 		if token != "" {
-			log.Println("[API] Loaded existing session token")
+			log.Info("loaded existing session token")
 			return token
 		}
 	}
 	tokenBytes := make([]byte, 32)
 	if _, err := rand.Read(tokenBytes); err != nil {
-		log.Printf("[API] Failed to generate session token: %v", err)
+		log.Error("failed to generate session token: %v", err)
 		return base64.StdEncoding.EncodeToString([]byte("fallback-token"))
 	}
 	token := base64.StdEncoding.EncodeToString(tokenBytes)
 	if err := os.WriteFile(sessionTokenFile, []byte(token), 0600); err != nil {
-		log.Printf("[API] Warning: failed to save session token: %v", err)
+		log.Warn("failed to save session token: %v", err)
 	} else {
-		log.Println("[API] Generated and saved new session token")
+		log.Info("generated and saved new session token")
 	}
 	return token
 }
@@ -1530,11 +1611,11 @@ func saveUsers() {
 
 	data, err := json.Marshal(userPersist{Users: list, NextUserID: nid})
 	if err != nil {
-		log.Printf("[API] Failed to marshal users: %v", err)
+		log.Error("failed to marshal users: %v", err)
 		return
 	}
 	if err := os.WriteFile(userDataFile, data, 0600); err != nil {
-		log.Printf("[API] Failed to save users: %v", err)
+		log.Error("failed to save users: %v", err)
 	}
 }
 
@@ -1545,7 +1626,7 @@ func loadUsers() {
 	}
 	var p userPersist
 	if err := json.Unmarshal(data, &p); err != nil {
-		log.Printf("[API] Failed to load users: %v", err)
+		log.Error("failed to load users: %v", err)
 		return
 	}
 	userStoreMu.Lock()
@@ -1556,7 +1637,7 @@ func loadUsers() {
 		nextUserID = p.NextUserID
 	}
 	userStoreMu.Unlock()
-	log.Printf("[API] Loaded %d users from %s", len(p.Users), userDataFile)
+	log.Info("loaded %d users from %s", len(p.Users), userDataFile)
 }
 
 func (s *Server) handleGetUsers(w http.ResponseWriter, r *http.Request) {
@@ -1973,7 +2054,8 @@ func (s *Server) handleRevokeKey(w http.ResponseWriter, r *http.Request) {
 	s.revokedKeysMu.Unlock()
 
 	s.persistRevokedKeys()
-	log.Printf("[API] Key revoked: %s reason=%s", req.KeyID, req.Reason)
+	log.Info("key revoked: %s reason=%s", req.KeyID, req.Reason)
+	AppendEvent(EventKey, SeverityWarn, "key revoked", map[string]string{"key_id": req.KeyID, "reason": req.Reason})
 	s.jsonOK(w, map[string]interface{}{"success": true, "key_id": req.KeyID})
 }
 
@@ -2590,6 +2672,28 @@ func (s *Server) handleAdminUpdate(w http.ResponseWriter, r *http.Request) {
 	s.jsonOK(w, map[string]interface{}{"success": true})
 }
 
+func (s *Server) handleGetEvents(w http.ResponseWriter, r *http.Request) {
+	limitStr := r.URL.Query().Get("limit")
+	limit := 100
+	if limitStr != "" {
+		if n, err := fmt.Sscanf(limitStr, "%d", &limit); n != 1 || err != nil || limit <= 0 || limit > 500 {
+			limit = 100
+		}
+	}
+	kind := r.URL.Query().Get("kind")
+	events := RecentEvents(limit)
+	if kind != "" {
+		filtered := events[:0]
+		for _, e := range events {
+			if string(e.Kind) == kind {
+				filtered = append(filtered, e)
+			}
+		}
+		events = filtered
+	}
+	s.jsonOK(w, map[string]interface{}{"success": true, "events": events, "count": len(events)})
+}
+
 func (s *Server) handleGetLogsAPI(w http.ResponseWriter, r *http.Request) {
 	limitStr := r.URL.Query().Get("limit")
 	limit := 200
@@ -2599,10 +2703,12 @@ func (s *Server) handleGetLogsAPI(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	events := RecentEvents(limit)
+
 	out, err := exec.CommandContext(context.Background(), "journalctl", "-u", "whispera", "-n", fmt.Sprintf("%d", limit), "--no-pager", "--output=short-iso").Output()
 	if err == nil && len(out) > 0 {
 		lines := strings.Split(strings.TrimRight(string(out), "\n"), "\n")
-		s.jsonOK(w, map[string]interface{}{"success": true, "logs": lines, "source": "journalctl"})
+		s.jsonOK(w, map[string]interface{}{"success": true, "logs": lines, "events": events, "source": "journalctl"})
 		return
 	}
 
@@ -2616,11 +2722,11 @@ func (s *Server) handleGetLogsAPI(w http.ResponseWriter, r *http.Request) {
 		if len(all) > limit {
 			all = all[len(all)-limit:]
 		}
-		s.jsonOK(w, map[string]interface{}{"success": true, "logs": all, "source": path})
+		s.jsonOK(w, map[string]interface{}{"success": true, "logs": all, "events": events, "source": path})
 		return
 	}
 
-	s.jsonOK(w, map[string]interface{}{"success": true, "logs": []string{}, "source": "none"})
+	s.jsonOK(w, map[string]interface{}{"success": true, "logs": []string{}, "events": events, "source": "none"})
 }
 
 func readProcStatCPU() (idle, total uint64, err error) {

@@ -469,7 +469,7 @@ func (m *Manager) Start() error {
 	m.PublishEvent(events.EventTypeModuleStarted, nil)
 	log.Info("[TUNNEL] Starting Tunnel Manager (Build: Zero-Copy Final v3)...")
 
-	safeGo("Reconnect", func() { m.Reconnect(context.Background()) })
+	safeGo("Reconnect", func() { m.Reconnect(m.Context()) })
 
 	return nil
 }
@@ -1713,7 +1713,7 @@ func (m *Manager) readLoop(mc *managedConn) {
 						consecutiveGarbage++
 						if consecutiveGarbage > 20 {
 							log.Error("Too much garbage data (%d packets), triggering reconnect", consecutiveGarbage)
-							go m.Reconnect(context.Background())
+							go m.Reconnect(m.Context())
 							return
 						}
 					}
@@ -1867,7 +1867,7 @@ func (m *Manager) handleReadError(mc *managedConn, err error) {
 		m.lastError = err
 
 		if m.GetState() == StateConnected {
-			go m.Reconnect(context.Background())
+			go m.Reconnect(m.Context())
 		}
 	}
 }
@@ -2318,30 +2318,37 @@ func (m *Manager) DialStream(ctx context.Context, network, addr string) (net.Con
 		streamID: streamID,
 		manager:  m,
 		readCh:   ch,
+		done:     make(chan struct{}),
 		local:    localAddr,
 		remote:   remoteAddr,
 	}, nil
 }
 
 type StreamConn struct {
-	streamID uint16
-	manager  *Manager
-	readCh   chan []byte
-	local    net.Addr
-	remote   net.Addr
+	streamID  uint16
+	manager   *Manager
+	readCh    chan []byte
+	done      chan struct{}
+	closeOnce sync.Once
+	local     net.Addr
+	remote    net.Addr
 }
 
 func (s *StreamConn) Read(b []byte) (n int, err error) {
-	data, ok := <-s.readCh
-	if !ok {
+	select {
+	case data, ok := <-s.readCh:
+		if !ok {
+			return 0, io.EOF
+		}
+		if len(data) <= FrameHeaderSize {
+			return 0, nil
+		}
+		payload := data[FrameHeaderSize:]
+		copy(b, payload)
+		return len(payload), nil
+	case <-s.done:
 		return 0, io.EOF
 	}
-	if len(data) <= FrameHeaderSize {
-		return 0, nil
-	}
-	payload := data[FrameHeaderSize:]
-	copy(b, payload)
-	return len(payload), nil
 }
 
 func (s *StreamConn) Write(b []byte) (n int, err error) {
@@ -2359,9 +2366,12 @@ func (s *StreamConn) Write(b []byte) (n int, err error) {
 }
 
 func (s *StreamConn) Close() error {
-	s.manager.streamChsMu.Lock()
-	delete(s.manager.streamChs, s.streamID)
-	s.manager.streamChsMu.Unlock()
+	s.closeOnce.Do(func() {
+		s.manager.streamChsMu.Lock()
+		delete(s.manager.streamChs, s.streamID)
+		s.manager.streamChsMu.Unlock()
+		close(s.done)
+	})
 
 	frame := make([]byte, FrameHeaderSize)
 	binary.BigEndian.PutUint16(frame[0:2], s.streamID)
@@ -2412,7 +2422,7 @@ func (m *Manager) sendKeepalive() {
 		maxSilence := 60 * time.Second
 		if silentDuration > maxSilence {
 			log.Warn("No data received in %s (max %s), triggering reconnect", silentDuration, maxSilence)
-			go m.Reconnect(context.Background())
+			go m.Reconnect(m.Context())
 			return
 		}
 	}

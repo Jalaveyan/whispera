@@ -5,7 +5,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"log"
 	"net"
 	"net/http"
 	"os"
@@ -20,14 +19,16 @@ import (
 
 
 type Subscription struct {
-	ID          string    `json:"id"`
-	Name        string    `json:"name"`
-	Token       string    `json:"token"`
-	UserIDs     []int     `json:"user_ids"`
-	Transports  []string  `json:"transports"`
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
-	SubURL string `json:"sub_url,omitempty"`
+	ID         string    `json:"id"`
+	Name       string    `json:"name"`
+	Group      string    `json:"group,omitempty"`
+	Token      string    `json:"token"`
+	UserIDs    []int     `json:"user_ids"`
+	KeyIDs     []string  `json:"key_ids,omitempty"`
+	Transports []string  `json:"transports"`
+	CreatedAt  time.Time `json:"created_at"`
+	UpdatedAt  time.Time `json:"updated_at"`
+	SubURL     string    `json:"sub_url,omitempty"`
 }
 
 const subDataFile = "/etc/whispera/subscriptions.json"
@@ -55,11 +56,11 @@ func saveSubscriptions() {
 
 	data, err := json.Marshal(subPersist{Subscriptions: list, NextID: nid})
 	if err != nil {
-		log.Printf("[API] Failed to marshal subscriptions: %v", err)
+		log.Error("failed to marshal subscriptions: %v", err)
 		return
 	}
 	if err := os.WriteFile(subDataFile, data, 0600); err != nil {
-		log.Printf("[API] Failed to save subscriptions: %v", err)
+		log.Error("failed to save subscriptions: %v", err)
 	}
 }
 
@@ -70,7 +71,7 @@ func loadSubscriptions() {
 	}
 	var p subPersist
 	if err := json.Unmarshal(data, &p); err != nil {
-		log.Printf("[API] Failed to load subscriptions: %v", err)
+		log.Error("failed to load subscriptions: %v", err)
 		return
 	}
 	subStoreMu.Lock()
@@ -82,7 +83,7 @@ func loadSubscriptions() {
 		subNextID = p.NextID
 	}
 	subStoreMu.Unlock()
-	log.Printf("[API] Loaded %d subscriptions from %s", len(p.Subscriptions), subDataFile)
+	log.Info("loaded %d subscriptions from %s", len(p.Subscriptions), subDataFile)
 }
 
 
@@ -111,7 +112,9 @@ func (s *Server) handleGetSubscriptions(w http.ResponseWriter, r *http.Request) 
 func (s *Server) handleAddSubscription(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Name       string   `json:"name"`
+		Group      string   `json:"group"`
 		UserIDs    []int    `json:"user_ids"`
+		KeyIDs     []string `json:"key_ids"`
 		Transports []string `json:"transports"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -134,8 +137,10 @@ func (s *Server) handleAddSubscription(w http.ResponseWriter, r *http.Request) {
 	sub := &Subscription{
 		ID:         fmt.Sprintf("%d", subNextID),
 		Name:       req.Name,
+		Group:      req.Group,
 		Token:      token,
 		UserIDs:    req.UserIDs,
+		KeyIDs:     req.KeyIDs,
 		Transports: req.Transports,
 		CreatedAt:  time.Now(),
 		UpdatedAt:  time.Now(),
@@ -144,6 +149,7 @@ func (s *Server) handleAddSubscription(w http.ResponseWriter, r *http.Request) {
 	subByToken[token] = sub
 	subStoreMu.Unlock()
 	go saveSubscriptions()
+	AppendEvent(EventSubscription, SeverityInfo, "subscription created", map[string]string{"id": sub.ID, "name": sub.Name})
 
 	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
 	defer cancel()
@@ -162,7 +168,9 @@ func (s *Server) handleUpdateSubscription(w http.ResponseWriter, r *http.Request
 	var req struct {
 		ID         string   `json:"id"`
 		Name       string   `json:"name"`
+		Group      string   `json:"group"`
 		UserIDs    []int    `json:"user_ids"`
+		KeyIDs     []string `json:"key_ids"`
 		Transports []string `json:"transports"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.ID == "" {
@@ -181,8 +189,14 @@ func (s *Server) handleUpdateSubscription(w http.ResponseWriter, r *http.Request
 	if req.Name != "" {
 		sub.Name = req.Name
 	}
+	if req.Group != "" {
+		sub.Group = req.Group
+	}
 	if req.UserIDs != nil {
 		sub.UserIDs = req.UserIDs
+	}
+	if req.KeyIDs != nil {
+		sub.KeyIDs = req.KeyIDs
 	}
 	if req.Transports != nil {
 		sub.Transports = req.Transports
@@ -210,6 +224,9 @@ func (s *Server) handleDeleteSubscription(w http.ResponseWriter, r *http.Request
 	}
 	subStoreMu.Unlock()
 	go saveSubscriptions()
+	if ok {
+		AppendEvent(EventSubscription, SeverityInfo, "subscription deleted", map[string]string{"id": req.ID})
+	}
 
 	s.jsonOK(w, map[string]interface{}{"success": true})
 }
@@ -254,7 +271,17 @@ func (s *Server) handleServeSubscription(w http.ResponseWriter, r *http.Request)
 
 	var keys []string
 	userStoreMu.RLock()
-	if len(sub.UserIDs) > 0 {
+	if len(sub.KeyIDs) > 0 {
+		keySet := make(map[string]bool, len(sub.KeyIDs))
+		for _, kid := range sub.KeyIDs {
+			keySet[kid] = true
+		}
+		for _, u := range userStore {
+			if u.ConnectionURI != "" && keySet[u.ConnectionURI] {
+				keys = append(keys, u.ConnectionURI)
+			}
+		}
+	} else if len(sub.UserIDs) > 0 {
 		for _, uid := range sub.UserIDs {
 			if u, ok := userStore[uid]; ok && u.ConnectionURI != "" {
 				keys = append(keys, u.ConnectionURI)
@@ -432,6 +459,98 @@ func splitHostPort(addr string) (host, port string, err error) {
 		}
 	}
 	return "", addr, nil
+}
+
+func (s *Server) handlePingKey(w http.ResponseWriter, r *http.Request) {
+	addr := r.URL.Query().Get("addr")
+	if addr == "" {
+		s.jsonError(w, http.StatusBadRequest, "addr required (host:port)")
+		return
+	}
+	start := time.Now()
+	conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
+	if err != nil {
+		s.jsonOK(w, map[string]interface{}{
+			"addr":    addr,
+			"reachable": false,
+			"error":   err.Error(),
+		})
+		return
+	}
+	conn.Close()
+	s.jsonOK(w, map[string]interface{}{
+		"addr":       addr,
+		"reachable":  true,
+		"latency_ms": time.Since(start).Milliseconds(),
+	})
+}
+
+func (s *Server) handlePingAllKeys(w http.ResponseWriter, r *http.Request) {
+	userStoreMu.RLock()
+	type target struct {
+		userID int
+		addr   string
+		name   string
+	}
+	var targets []target
+	for uid, u := range userStore {
+		if u.ConnectionURI == "" {
+			continue
+		}
+		host, port := parseAddrFromURI(u.ConnectionURI)
+		if host == "" {
+			continue
+		}
+		targets = append(targets, target{uid, net.JoinHostPort(host, port), u.Username})
+	}
+	userStoreMu.RUnlock()
+
+	type result struct {
+		UserID    int    `json:"user_id"`
+		Name      string `json:"name"`
+		Addr      string `json:"addr"`
+		Reachable bool   `json:"reachable"`
+		LatencyMs int64  `json:"latency_ms,omitempty"`
+		Error     string `json:"error,omitempty"`
+	}
+
+	results := make([]result, len(targets))
+	var wg sync.WaitGroup
+	for i, t := range targets {
+		wg.Add(1)
+		go func(i int, t target) {
+			defer wg.Done()
+			start := time.Now()
+			conn, err := net.DialTimeout("tcp", t.addr, 4*time.Second)
+			if err != nil {
+				results[i] = result{UserID: t.userID, Name: t.name, Addr: t.addr, Error: err.Error()}
+				return
+			}
+			conn.Close()
+			results[i] = result{UserID: t.userID, Name: t.name, Addr: t.addr,
+				Reachable: true, LatencyMs: time.Since(start).Milliseconds()}
+		}(i, t)
+	}
+	wg.Wait()
+	s.jsonOK(w, map[string]interface{}{"results": results, "count": len(results)})
+}
+
+func parseAddrFromURI(uri string) (host, port string) {
+	uri = strings.TrimPrefix(uri, "whispera://")
+	if i := strings.Index(uri, "@"); i >= 0 {
+		uri = uri[i+1:]
+	}
+	if i := strings.Index(uri, "?"); i >= 0 {
+		uri = uri[:i]
+	}
+	if i := strings.Index(uri, "/"); i >= 0 {
+		uri = uri[:i]
+	}
+	host, port, _ = net.SplitHostPort(uri)
+	if port == "" {
+		port = "8443"
+	}
+	return
 }
 
 func derivePublicKeyB64(privKeyB64 string) string {
