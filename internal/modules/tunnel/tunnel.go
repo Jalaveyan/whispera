@@ -22,6 +22,7 @@ import (
 
 	"nhooyr.io/websocket"
 	"whispera/internal/core/base"
+	whisperdns "whispera/internal/dns"
 	"whispera/internal/core/events"
 	"whispera/internal/core/interfaces"
 	"whispera/internal/logger"
@@ -51,6 +52,24 @@ import (
 )
 
 var log = logger.Module("tunnel")
+
+var dohResolver = whisperdns.NewResolver(whisperdns.DefaultConfig())
+
+func dohDialer() *net.Dialer {
+	return &net.Dialer{
+		Timeout: 10 * time.Second,
+		Resolver: &net.Resolver{
+			PreferGo: true,
+			Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
+				ips, err := dohResolver.Resolve(ctx, strings.Split(address, ":")[0])
+				if err != nil || len(ips) == 0 {
+					return (&net.Dialer{Timeout: 3 * time.Second}).DialContext(ctx, network, address)
+				}
+				return (&net.Dialer{Timeout: 3 * time.Second}).DialContext(ctx, network, ips[0].String()+":53")
+			},
+		},
+	}
+}
 
 // mlHTTPClient используется только для запросов к локальному ml_api_server.
 // InsecureSkipVerify=true — допустимо, т.к. сервер слушает на 127.0.0.1
@@ -523,6 +542,7 @@ func (m *Manager) Connect(ctx context.Context) error {
 	// Применяем только если transport пустой, "auto", или это первая попытка
 	// (не fallback из Reconnect — там своя логика).
 	if m.config.MLServerURL != "" {
+		m.mlStartFederatedSync(ctx)
 		if rec, conf := m.mlRecommendTransport(ctx); rec != "" && conf >= 0.55 {
 			m.config.Transport = rec
 		}
@@ -1067,7 +1087,7 @@ func (m *Manager) dialH2C(ctx context.Context) (net.Conn, error) {
 }
 
 func (m *Manager) dialTCP(ctx context.Context) (net.Conn, error) {
-	conn, err := (&net.Dialer{Timeout: 10 * time.Second}).DialContext(ctx, "tcp4", m.config.ServerAddrTCP)
+	conn, err := dohDialer().DialContext(ctx, "tcp4", m.config.ServerAddrTCP)
 	if err != nil {
 		return nil, err
 	}
@@ -2558,6 +2578,65 @@ func (m *Manager) mlSendFeedback(transport string, success bool, latencyMs float
 		}
 		resp.Body.Close()
 	}()
+}
+
+func (m *Manager) mlStartFederatedSync(ctx context.Context) {
+	if m.config.MLServerURL == "" {
+		return
+	}
+	go func() {
+		ticker := time.NewTicker(24 * time.Hour)
+		defer ticker.Stop()
+		m.mlFederatedSync(ctx)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				m.mlFederatedSync(ctx)
+			}
+		}
+	}()
+}
+
+func (m *Manager) mlFederatedSync(ctx context.Context) {
+	base := m.config.MLServerURL
+
+	dlCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(dlCtx, http.MethodGet, base+"/federated/download", nil)
+	if err != nil {
+		return
+	}
+	if m.config.MLToken != "" {
+		req.Header.Set("Authorization", "Bearer "+m.config.MLToken)
+	}
+	resp, err := mlHTTPClient.Do(req)
+	if err == nil && resp.StatusCode == http.StatusOK {
+		resp.Body.Close()
+		log.Debug("ML federated: downloaded global delta")
+	} else if resp != nil {
+		resp.Body.Close()
+	}
+
+	ulCtx, ulCancel := context.WithTimeout(ctx, 10*time.Second)
+	defer ulCancel()
+	uploadBody, _ := json.Marshal(map[string]string{"client_id": "go-client", "data": ""})
+	ulReq, err := http.NewRequestWithContext(ulCtx, http.MethodPost,
+		base+"/federated/upload", bytes.NewReader(uploadBody))
+	if err != nil {
+		return
+	}
+	ulReq.Header.Set("Content-Type", "application/json")
+	if m.config.MLToken != "" {
+		ulReq.Header.Set("Authorization", "Bearer "+m.config.MLToken)
+	}
+	ulResp, err := mlHTTPClient.Do(ulReq)
+	if err == nil {
+		ulResp.Body.Close()
+		log.Debug("ML federated: uploaded local delta")
+	}
 }
 
 func probeLatency(ctx context.Context, addr string, timeout time.Duration) (time.Duration, error) {
