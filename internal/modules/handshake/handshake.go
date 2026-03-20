@@ -276,7 +276,11 @@ func (h *Handler) handleInit(ctx context.Context, data []byte, addr net.Addr) (i
 		return nil, fmt.Errorf("failed to create session: %w", err)
 	}
 
-	response := make([]byte, 48)
+	padLenBuf := make([]byte, 1)
+	rand.Read(padLenBuf)
+	respPadLen := int(padLenBuf[0]) & 0x1F
+
+	response := make([]byte, 48+respPadLen)
 	response[0] = byte(HandshakeTypeResponse)
 	response[1] = 0x00
 
@@ -286,7 +290,11 @@ func (h *Handler) handleInit(ctx context.Context, data []byte, addr net.Addr) (i
 	response[4] = byte(sid >> 8)
 	response[5] = byte(sid)
 	copy(response[6:38], seed)
-	rand.Read(response[38:48])
+	rand.Read(response[38:47])
+	response[47] = byte(respPadLen)
+	if respPadLen > 0 {
+		rand.Read(response[48:])
+	}
 	session.SetMetadata("handshake_response", response)
 
 	h.markAsProcessed(data)
@@ -376,7 +384,11 @@ func (h *Handler) InitiateHandshake(ctx context.Context, conn net.Conn, addr net
 		}
 	}
 
-	initPkt := make([]byte, 64)
+	padLenBuf := make([]byte, 1)
+	rand.Read(padLenBuf)
+	padLen := int(padLenBuf[0]) & 0x1F
+
+	initPkt := make([]byte, 64+padLen)
 	initPkt[0] = byte(HandshakeTypeInit)
 	initPkt[1] = 0x01
 	copy(initPkt[2:18], clientUUID[:])
@@ -393,7 +405,11 @@ func (h *Handler) InitiateHandshake(ctx context.Context, conn net.Conn, addr net
 	initPkt[52] = byte(ts >> 8)
 	initPkt[53] = byte(ts)
 
-	rand.Read(initPkt[54:])
+	rand.Read(initPkt[54:63])
+	initPkt[63] = byte(padLen)
+	if padLen > 0 {
+		rand.Read(initPkt[64:])
+	}
 
 	h.PublishEvent(events.EventTypeHandshakeStarted, map[string]interface{}{
 		"address": addr.String(),

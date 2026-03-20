@@ -1320,7 +1320,14 @@ func handleTCPConnection(conn net.Conn, hsHandler *handshake.Handler) {
 			}
 			return
 		}
+		padLen := int(rest[62])
 		buf := append(firstByte[:], rest...)
+		if padLen > 0 && padLen <= 32 {
+			extra := make([]byte, padLen)
+			if _, err := io.ReadFull(conn, extra); err == nil {
+				buf = append(buf, extra...)
+			}
+		}
 
 		sess, err := hsHandler.HandleHandshake(context.Background(), buf, addr)
 		if err != nil {

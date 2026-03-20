@@ -3,6 +3,8 @@
 set -e
 
 WORK_DIR="/opt/whispera"
+ML_DIR="/opt/whispera-ml"
+ML_REPO="https://github.com/Jalaveyan/ml.git"
 BIN_PATH="/usr/local/bin"
 DAT_PATH="/usr/local/share/whispera"
 CONF_PATH="/etc/whispera"
@@ -379,6 +381,7 @@ setup_autoupdate() {
     cat > /etc/cron.daily/whispera-update <<'CRONEOF'
 #!/bin/bash
 WORK_DIR="__WORK_DIR__"
+ML_DIR="/opt/whispera-ml"
 BIN_PATH="__BIN_PATH__"
 BRANCH="__BRANCH__"
 LOG="/var/log/whispera-update.log"
@@ -405,7 +408,18 @@ GO_CHANGED=$(echo "$CHANGED" | grep -E '\.(go)$|^go\.(mod|sum)$' || true)
 ML_PY_CHANGED=$(echo "$CHANGED" | grep -E '^(internal/obfuscation/ml|ml_engine)/.*\.py$' || true)
 PANEL_CHANGED=$(echo "$CHANGED" | grep -E '^panel/' || true)
 
-# ML Python — просто рестарт сервиса, без пересборки
+# ML repo (Jalaveyan/ml) — подтягиваем и рестартим
+if [[ -d "$ML_DIR/.git" ]]; then
+    ML_BEFORE=$(git -C "$ML_DIR" rev-parse HEAD 2>/dev/null || echo "")
+    git -C "$ML_DIR" pull origin main --quiet 2>/dev/null || true
+    ML_AFTER=$(git -C "$ML_DIR" rev-parse HEAD 2>/dev/null || echo "")
+    if [[ "$ML_BEFORE" != "$ML_AFTER" ]]; then
+        echo "ML repo updated — restarting whispera-ml"
+        systemctl restart whispera-ml 2>/dev/null && echo "whispera-ml restarted" || echo "whispera-ml not running"
+    fi
+fi
+
+# ML Python из основного репо — просто рестарт сервиса, без пересборки
 if [[ -n "$ML_PY_CHANGED" ]]; then
     echo "ML Python files updated — restarting whispera-ml"
     systemctl restart whispera-ml 2>/dev/null && echo "whispera-ml restarted" || echo "whispera-ml not running"
@@ -617,46 +631,59 @@ setup_backups() {
         setup_postgres
     fi
     
-    cat > /usr/local/bin/whispera-backup <<EOF
+    cat > /usr/local/bin/whispera-backup <<'BACKUPEOF'
+#!/bin/bash
 BACKUP_DIR="/var/backups/whispera"
 RETENTION_DAYS=7
-DATE=\$(date +%Y%m%d_%H%M%S)
+DATE=$(date +%Y%m%d_%H%M%S)
 LOG_FILE="/var/log/whispera/backup.log"
+CONF_PATH="/etc/whispera"
 
-mkdir -p "\$BACKUP_DIR"
-mkdir -p "\$(dirname "\$LOG_FILE")"
+mkdir -p "$BACKUP_DIR"
+mkdir -p "$(dirname "$LOG_FILE")"
 
-log() {
-    echo "[\$(date '+%Y-%m-%d %H:%M:%S')] \$1" | tee -a "\$LOG_FILE"
-}
+log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG_FILE"; }
 
-if [ -f "$CONF_PATH/postgres.env" ]; then
-    source $CONF_PATH/postgres.env
-else
-    log "Error: $CONF_PATH/postgres.env not found!"
+DB_URL=""
+if [[ -f "$CONF_PATH/config.yaml" ]]; then
+    DB_URL=$(grep -E '^\s*postgres_url:' "$CONF_PATH/config.yaml" | head -1 | sed 's/.*postgres_url:\s*["\x27]\?\([^"'\''[:space:]]*\)["\x27]\?.*/\1/')
+fi
+if [[ -z "$DB_URL" && -f "$CONF_PATH/postgres.env" ]]; then
+    source "$CONF_PATH/postgres.env"
+    DB_URL="${POSTGRES_URL:-postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@localhost/${POSTGRES_DB}}"
+fi
+if [[ -z "$DB_URL" ]]; then
+    log "ERROR: No database URL found in config.yaml or postgres.env"
     exit 1
 fi
 
-export PGPASSWORD=\$POSTGRES_PASSWORD
+export PGPASSWORD=$(echo "$DB_URL" | grep -oP '://[^:]+:\K[^@]+')
+PG_USER=$(echo "$DB_URL" | grep -oP '://\K[^:]+')
+PG_HOST=$(echo "$DB_URL" | grep -oP '@\K[^:/]+')
+PG_PORT=$(echo "$DB_URL" | grep -oP '@[^/]+:\K[0-9]+' || echo "5432")
+PG_DB=$(echo "$DB_URL" | grep -oP '/\K[^?]+$')
 
-FILENAME="\$BACKUP_DIR/whispera_backup_\$DATE.sql.gz"
-log "Starting backup: \$FILENAME"
+FILENAME="$BACKUP_DIR/whispera_${DATE}.sql.gz"
+log "Backup → $FILENAME (db=$PG_DB host=$PG_HOST)"
 
-if command -v pg_dump &>/dev/null; then
-    if pg_dump -h localhost -U \$POSTGRES_USER -d \$POSTGRES_DB | gzip > "\$FILENAME"; then
-        log "Backup created successfully: \$(du -h "\$FILENAME" | cut -f1)"
-    else
-        log "Backup failed!"
-        rm -f "\$FILENAME"
-        exit 1
-    fi
-else
-    log "pg_dump not found!"
+if ! command -v pg_dump &>/dev/null; then
+    log "ERROR: pg_dump not found"
     exit 1
 fi
 
-ls -1t "\$BACKUP_DIR"/whispera_backup_*.sql.gz 2>/dev/null | tail -n +6 | xargs -r rm -f
-EOF
+if pg_dump -h "$PG_HOST" -p "$PG_PORT" -U "$PG_USER" -d "$PG_DB" | gzip > "$FILENAME"; then
+    SIZE=$(du -h "$FILENAME" | cut -f1)
+    log "OK: $SIZE"
+else
+    log "FAILED"
+    rm -f "$FILENAME"
+    exit 1
+fi
+
+find "$BACKUP_DIR" -name "whispera_*.sql.gz" -mtime +"$RETENTION_DAYS" -delete
+KEPT=$(ls -1 "$BACKUP_DIR"/whispera_*.sql.gz 2>/dev/null | wc -l)
+log "Retention: kept $KEPT backups (${RETENTION_DAYS}d)"
+BACKUPEOF
 
     chmod +x /usr/local/bin/whispera-backup
     
@@ -792,9 +819,36 @@ show_extras_menu() {
 }
 
 
+_repair_panel_bundle() {
+    local panel_dir="${1:-$DAT_PATH/panel}"
+    if [[ -f "$panel_dir/bundle/index.js" ]]; then
+        return
+    fi
+    log_warn "bundle/index.js missing — attempting repair"
+    if [[ -f "$panel_dir/dist/main.js" ]]; then
+        local node_bin
+        node_bin=$(command -v node || echo /usr/bin/node)
+        if "$node_bin" -e "require('@vercel/ncc')" 2>/dev/null; then
+            cd "$panel_dir"
+            npx @vercel/ncc build dist/main.js -o bundle/ --minify --no-source-map-register \
+                && log_success "Panel bundle rebuilt" \
+                || { mkdir -p bundle; cp dist/main.js bundle/index.js; log_warn "ncc failed — copied dist/main.js"; }
+            cd - >/dev/null
+        else
+            mkdir -p "$panel_dir/bundle"
+            cp "$panel_dir/dist/main.js" "$panel_dir/bundle/index.js"
+            log_warn "ncc not available — copied dist/main.js as bundle/index.js"
+        fi
+    else
+        log_warn "Neither bundle/index.js nor dist/main.js found — panel needs reinstall"
+    fi
+}
+
 do_update() {
     mkdir -p "$WORK_DIR"
     cd "$WORK_DIR" || exit 1
+
+    _repair_panel_bundle
 
     if command -v whispera-backup &>/dev/null; then
         log_info "Creating pre-update backup..."
@@ -941,6 +995,8 @@ ENVEOF
             fi
             systemctl daemon-reload
 
+            _repair_panel_bundle "$PANEL_DEST"
+            systemctl daemon-reload
             systemctl restart whispera-panel 2>/dev/null || log_warn "Panel service not configured"
 
             setup_nginx_proxy
@@ -1008,8 +1064,38 @@ ENVEOF
         fi
     fi
 
+    # ── ML repo — подтягиваем изменения из Jalaveyan/ml ─────────────────────
+    if [[ -d "$ML_DIR/.git" ]]; then
+        log_info "Pulling ML repo updates..."
+        local ML_BEFORE ML_AFTER ML_CHANGED
+        ML_BEFORE=$(git -C "$ML_DIR" rev-parse HEAD 2>/dev/null || echo "")
+        git -C "$ML_DIR" pull origin main --quiet 2>/dev/null || log_warn "ML repo pull failed"
+        ML_AFTER=$(git -C "$ML_DIR" rev-parse HEAD 2>/dev/null || echo "")
+
+        if [[ -n "$ML_BEFORE" && "$ML_BEFORE" != "$ML_AFTER" ]]; then
+            ML_CHANGED=$(git -C "$ML_DIR" diff --name-only "$ML_BEFORE" "$ML_AFTER" 2>/dev/null || true)
+            log_info "ML repo updated: $(echo "$ML_CHANGED" | wc -l) files"
+            systemctl restart whispera-ml 2>/dev/null && \
+                log_success "whispera-ml restarted (ML repo updated)" || \
+                log_warn "whispera-ml restart failed"
+        else
+            log_info "ML repo: no changes"
+        fi
+    elif command -v git &>/dev/null; then
+        log_info "Cloning ML repo → $ML_DIR"
+        git clone "$ML_REPO" "$ML_DIR" --quiet 2>/dev/null && \
+            log_success "ML repo cloned to $ML_DIR" || \
+            log_warn "ML repo clone failed"
+    fi
+
     # ── ML service — обновление / установка ─────────────────────────────────
-    local ML_SCRIPT="$WORK_DIR/internal/obfuscation/ml/ml_api_server.py"
+    # Путь к скрипту: сначала из ML репо, затем из основного репо
+    local ML_SCRIPT
+    if [[ -f "$ML_DIR/ml_api_server.py" ]]; then
+        ML_SCRIPT="$ML_DIR/ml_api_server.py"
+    else
+        ML_SCRIPT="$WORK_DIR/internal/obfuscation/ml/ml_api_server.py"
+    fi
     local PYTHON_BIN
     PYTHON_BIN=$(command -v python3 || command -v python || echo "")
     if [[ -n "$PYTHON_BIN" && -f "$ML_SCRIPT" ]]; then
@@ -1048,7 +1134,12 @@ ENVEOF
             fi
 
             # Переобучаем модели под новый профиль
-            local TRAIN_SCRIPT="$WORK_DIR/ml_engine/train_onnx_models.py"
+            local TRAIN_SCRIPT
+            if [[ -f "$ML_DIR/train_onnx_models.py" ]]; then
+                TRAIN_SCRIPT="$ML_DIR/train_onnx_models.py"
+            else
+                TRAIN_SCRIPT="$WORK_DIR/ml_engine/train_onnx_models.py"
+            fi
             if [[ -f "$TRAIN_SCRIPT" ]]; then
                 WHISPERA_ML_PROFILE="$ML_PROFILE" \
                     $PYTHON_BIN "$TRAIN_SCRIPT" 2>/dev/null && \
@@ -1060,21 +1151,30 @@ ENVEOF
         fi
 
         # Всегда обновляем systemd-юнит (мог измениться при обновлении)
+        # WorkingDirectory и PYTHONPATH зависят от того, есть ли отдельный ML репо
+        local ML_WORK_DIR ML_PYTHONPATH
+        if [[ -d "$ML_DIR/.git" ]]; then
+            ML_WORK_DIR="$ML_DIR"
+            ML_PYTHONPATH="$ML_DIR"
+        else
+            ML_WORK_DIR="$WORK_DIR/internal/obfuscation/ml"
+            ML_PYTHONPATH="$WORK_DIR/ml_engine"
+        fi
+
         cat > /etc/systemd/system/whispera-ml.service <<EOF
 [Unit]
 Description=Whispera ML Server
-After=network.target whispera.service
-PartOf=whispera.service
+After=network.target
 
 [Service]
 User=whispera
 Group=whispera
-WorkingDirectory=$WORK_DIR/internal/obfuscation/ml
+WorkingDirectory=$ML_WORK_DIR
 ExecStart=$PYTHON_BIN $ML_SCRIPT
 Restart=on-failure
 RestartSec=10
 Environment=WHISPERA_ML_PORT=8000
-Environment=PYTHONPATH=$WORK_DIR/ml_engine
+Environment=PYTHONPATH=$ML_PYTHONPATH
 Environment=WHISPERA_ML_PROFILE=$ML_PROFILE
 Environment=WHISPERA_ML_RETRAIN_THRESHOLD=$RETRAIN_THRESH
 MemoryMax=$MEM_LIMIT

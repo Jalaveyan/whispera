@@ -1038,15 +1038,18 @@ ENVEOF
     
     export NODE_OPTIONS="--max-old-space-size=2048"
     npm run build
-    
-    if command -v javascript-obfuscator &>/dev/null; then
-        log_info "Obfuscating Panel..."
-        npm run obfuscate
-    fi
-    
+
     if [[ ! -d "dist" ]]; then
         log_err "Panel build failed!"
         exit 1
+    fi
+
+    log_info "Bundling Panel..."
+    npx --yes @vercel/ncc build dist/main.js -o bundle/ --minify --no-source-map-register
+    if [[ ! -f "bundle/index.js" ]]; then
+        log_warn "Bundle step failed — falling back to dist/main.js"
+        mkdir -p bundle
+        cp dist/main.js bundle/index.js
     fi
     
     mkdir -p "$PANEL_DEST"
@@ -1438,7 +1441,7 @@ EOF
     cat > /etc/systemd/system/whispera-panel.service <<EOF
 [Unit]
 Description=Whispera Panel (Frontend)
-After=network.target whispera.service
+After=network.target
 
 [Service]
 User=whispera
@@ -1515,8 +1518,7 @@ EOF
         cat > /etc/systemd/system/whispera-ml.service <<EOF
 [Unit]
 Description=Whispera ML Server
-After=network.target whispera.service
-PartOf=whispera.service
+After=network.target
 
 [Service]
 User=whispera
