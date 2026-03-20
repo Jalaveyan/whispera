@@ -97,3 +97,5 @@ reports/
 
 whisp/
 ml_engine/
+internal/obfuscation/ml/*.py
+internal/obfuscation/ml/*.spec
