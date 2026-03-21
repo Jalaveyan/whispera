@@ -1,6 +1,7 @@
 package apiserver
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -113,7 +114,7 @@ func dumpPostgres(postgresURL string) ([]byte, error) {
 	if postgresURL == "" {
 		return nil, nil
 	}
-	cmd := exec.Command("pg_dump", "--no-owner", "--no-acl", "--format=custom", postgresURL)
+	cmd := exec.CommandContext(context.Background(), "pg_dump", "--no-owner", "--no-acl", "--format=custom", postgresURL)
 	return cmd.Output()
 }
 
@@ -225,7 +226,7 @@ func (s *Server) createBackupSnapshot() {
 	pgURL := s.getPostgresURL()
 	if pgURL != "" {
 		dumpFile := filepath.Join(backupStorageDir, fmt.Sprintf("pgdump-%s.dump", ts))
-		cmd := exec.Command("pg_dump", "--no-owner", "--no-acl", "--format=custom", "-f", dumpFile, pgURL)
+		cmd := exec.CommandContext(context.Background(), "pg_dump", "--no-owner", "--no-acl", "--format=custom", "-f", dumpFile, pgURL)
 		if err := cmd.Run(); err != nil {
 			log.Printf("[backup] scheduled pg_dump failed: %v", err)
 		} else {

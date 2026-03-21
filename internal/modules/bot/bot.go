@@ -575,10 +575,10 @@ func (b *Bot) handleBan(msg *tgbotapi.Message, args string) {
 		return
 	}
 
-	b.db.DeleteUserSessions(ctx, user.ID)
+	_ = b.db.DeleteUserSessions(ctx, user.ID)
 
 	active := false
-	b.db.SetUserActive(ctx, user.ID, active)
+	_ = b.db.SetUserActive(ctx, user.ID, active)
 
 	b.reply(msg.Chat.ID, fmt.Sprintf("User `%s` banned and sessions terminated.", email))
 }
@@ -604,7 +604,7 @@ func (b *Bot) handleUnban(msg *tgbotapi.Message, args string) {
 		return
 	}
 
-	b.db.SetUserActive(ctx, user.ID, true)
+	_ = b.db.SetUserActive(ctx, user.ID, true)
 
 	b.reply(msg.Chat.ID, fmt.Sprintf("User `%s` unbanned.", email))
 }
@@ -735,7 +735,7 @@ func (b *Bot) handleLogs(msg *tgbotapi.Message, args string) {
 
 func (b *Bot) handleCallback(cb *tgbotapi.CallbackQuery) {
 	ack := tgbotapi.NewCallback(cb.ID, "")
-	b.api.Request(ack)
+	_, _ = b.api.Request(ack)
 
 	data := cb.Data
 

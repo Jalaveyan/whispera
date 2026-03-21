@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math/big"
 	"net"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -544,8 +545,8 @@ func (d *Detector) ReflectProbe(probeData []byte, sourceAddr string) {
 
 func (d *Detector) doReflect(ip string, probeData []byte) {
 	for _, port := range d.cfg.ReflectionPorts {
-		addr := fmt.Sprintf("%s:%d", ip, port)
-		conn, err := net.DialTimeout("tcp", addr, 2*time.Second)
+		addr := net.JoinHostPort(ip, strconv.Itoa(port))
+		conn, err := (&net.Dialer{Timeout: 2 * time.Second}).DialContext(context.Background(), "tcp", addr)
 		if err != nil {
 			continue
 		}

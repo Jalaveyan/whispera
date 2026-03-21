@@ -200,6 +200,7 @@ func (fm *FailoverManager) ReportFailure() {
 			atomic.AddUint64(&fm.totalBlocks, 1)
 			log.Warn("IP block confirmed, initiating failover")
 			fm.activateNextStrategy()
+		case BlockConfirmed, BlockRecovering:
 		}
 	}
 }
@@ -248,6 +249,7 @@ func (fm *FailoverManager) GetDialOverride(ctx context.Context, tunnelMgr *Manag
 	case StrategyVKWebRTC:
 		tunnelMgr.config.Transport = "vkwebrtc"
 		return "", "", false
+	case StrategyDirect, StrategyTorBridge:
 	}
 
 	return "", "", false
@@ -321,6 +323,7 @@ func (fm *FailoverManager) scoreStrategy(s FailoverStrategy, stats *strategyStat
 		score += 4
 	case StrategyTGBot:
 		score += 3
+	case StrategyDirect, StrategyTorBridge:
 	}
 
 	if !stats.lastUsed.IsZero() {
@@ -433,7 +436,7 @@ func (fm *FailoverManager) probeTarget_(target string) bool {
 	}()
 
 	go func() {
-		conn, err := net.DialTimeout("tcp", target, fm.config.ProbeTimeout)
+		conn, err := (&net.Dialer{Timeout: fm.config.ProbeTimeout}).DialContext(ctx, "tcp", target)
 		if err != nil {
 			results <- false
 			return

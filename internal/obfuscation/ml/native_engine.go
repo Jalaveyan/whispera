@@ -176,42 +176,6 @@ func (rb *ReplayBuffer) size() int {
 	return rb.writeIdx
 }
 
-func forwardBatch(net *GorgoniaNet, inputs []float64, batchSz, inSize int) []float64 {
-	g := gorgonia.NewGraph()
-	outSize := net.Layers[len(net.Layers)-1].OutSize
-
-	xVal := tensor.New(tensor.WithShape(batchSz, inSize), tensor.WithBacking(gnet.CopyF64(inputs)))
-	x := gorgonia.NewMatrix(g, gorgonia.Float64, gorgonia.WithShape(batchSz, inSize), gorgonia.WithValue(xVal), gorgonia.WithName("x"))
-
-	result := x
-	for i, ld := range net.Layers {
-		wVal := tensor.New(tensor.WithShape(ld.InSize, ld.OutSize), tensor.WithBacking(gnet.CopyF64(ld.W)))
-		bVal := tensor.New(tensor.WithShape(1, ld.OutSize), tensor.WithBacking(gnet.CopyF64(ld.B)))
-		wNode := gorgonia.NewMatrix(g, gorgonia.Float64, gorgonia.WithShape(ld.InSize, ld.OutSize), gorgonia.WithValue(wVal), gorgonia.WithName(fmt.Sprintf("w%d", i)))
-		bNode := gorgonia.NewMatrix(g, gorgonia.Float64, gorgonia.WithShape(1, ld.OutSize), gorgonia.WithValue(bVal), gorgonia.WithName(fmt.Sprintf("b%d", i)))
-
-		linear := gorgonia.Must(gorgonia.Mul(result, wNode))
-		linear = gorgonia.Must(gorgonia.BroadcastAdd(linear, bNode, nil, []byte{0}))
-
-		if i < len(net.Layers)-1 {
-			result = gorgonia.Must(gorgonia.Rectify(linear))
-		} else {
-			result = linear
-		}
-	}
-
-	vm := gorgonia.NewTapeMachine(g)
-	defer vm.Close()
-	if err := vm.RunAll(); err != nil {
-		return make([]float64, batchSz*outSize)
-	}
-
-	outTensor := result.Value().(tensor.Tensor)
-	out := make([]float64, batchSz*outSize)
-	copy(out, outTensor.Data().([]float64))
-	return out
-}
-
 type gorgoniaTrainer struct {
 	net      *GorgoniaNet
 	isBinary bool
@@ -270,12 +234,12 @@ func (t *gorgoniaTrainer) step(xData, yData []float64) (float64, error) {
 	var grads gorgonia.Nodes
 	grads = append(grads, weights...)
 	grads = append(grads, biases...)
-	gorgonia.Grad(loss, grads...)
+	_, _ = gorgonia.Grad(loss, grads...)
 
 	xT := tensor.New(tensor.WithShape(BatchSize, inSize), tensor.WithBacking(gnet.CopyF64(xData)))
 	yT := tensor.New(tensor.WithShape(BatchSize, t.outSize), tensor.WithBacking(gnet.CopyF64(yData)))
-	gorgonia.Let(x, xT)
-	gorgonia.Let(y, yT)
+	_ = gorgonia.Let(x, xT)
+	_ = gorgonia.Let(y, yT)
 
 	vm := gorgonia.NewTapeMachine(g, gorgonia.BindDualValues(weights...), gorgonia.BindDualValues(biases...))
 	defer vm.Close()
@@ -1107,8 +1071,8 @@ func (e *NativeMLEngine) Train(epochs int) (int, float64) {
 			if err1 == nil {
 				epochLoss += l1
 			}
-			dpiTrainer.step(xData, yDPI)
-			anomalyTrainer.step(xData, yAnomaly)
+			_, _ = dpiTrainer.step(xData, yDPI)
+			_, _ = anomalyTrainer.step(xData, yAnomaly)
 			batchCount++
 		}
 

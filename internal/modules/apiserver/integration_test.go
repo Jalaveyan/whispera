@@ -2,6 +2,7 @@ package apiserver
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -56,7 +57,7 @@ func doRequest(handler http.Handler, method, path string, body interface{}, toke
 		data, _ := json.Marshal(body)
 		bodyReader = bytes.NewReader(data)
 	}
-	req := httptest.NewRequest(method, path, bodyReader)
+	req, _ := http.NewRequestWithContext(context.Background(), method, path, bodyReader)
 	if method == "POST" || method == "PUT" || method == "PATCH" || method == "DELETE" {
 		req.Header.Set("Content-Type", "application/json")
 	}
@@ -496,7 +497,7 @@ func TestCORS_Preflight(t *testing.T) {
 	s := newTestServer(t)
 	handler := s.buildHandler()
 
-	req := httptest.NewRequest("OPTIONS", "/api/v1/health", nil)
+	req, _ := http.NewRequestWithContext(context.Background(), "OPTIONS", "/api/v1/health", nil)
 	req.Header.Set("Origin", "http://127.0.0.1:3000")
 	req.Header.Set("Access-Control-Request-Method", "GET")
 	rec := httptest.NewRecorder()
@@ -512,7 +513,7 @@ func TestRequestBodyLimit(t *testing.T) {
 	handler := s.buildHandler()
 
 	bigBody := make([]byte, 2<<20)
-	req := httptest.NewRequest("POST", "/api/login", bytes.NewReader(bigBody))
+	req, _ := http.NewRequestWithContext(context.Background(), "POST", "/api/login", bytes.NewReader(bigBody))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -574,7 +575,7 @@ func TestLoginV1_EmptyBody(t *testing.T) {
 	s := newTestServer(t)
 	handler := s.buildHandler()
 
-	req := httptest.NewRequest("POST", "/api/login", bytes.NewReader([]byte("")))
+	req, _ := http.NewRequestWithContext(context.Background(), "POST", "/api/login", bytes.NewReader([]byte("")))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -588,7 +589,7 @@ func TestLoginV1_MalformedJSON(t *testing.T) {
 	s := newTestServer(t)
 	handler := s.buildHandler()
 
-	req := httptest.NewRequest("POST", "/api/login", bytes.NewReader([]byte("{bad json")))
+	req, _ := http.NewRequestWithContext(context.Background(), "POST", "/api/login", bytes.NewReader([]byte("{bad json")))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)

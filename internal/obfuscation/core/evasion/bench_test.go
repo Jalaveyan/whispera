@@ -56,7 +56,7 @@ func BenchmarkProcessPacket_Outbound(b *testing.B) {
 	b.SetBytes(1400)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		m.ProcessPacket(data, "outbound")
+		_, _, _ = m.ProcessPacket(data, "outbound")
 	}
 }
 
@@ -67,7 +67,7 @@ func BenchmarkProcessPacket_Inbound(b *testing.B) {
 	b.SetBytes(1400)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		m.ProcessPacket(data, "inbound")
+		_, _, _ = m.ProcessPacket(data, "inbound")
 	}
 }
 

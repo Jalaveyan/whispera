@@ -462,7 +462,7 @@ func (t *TSPUPressure) sendPollutionPacket() {
 	time.Sleep(time.Duration(drainTime) * time.Millisecond)
 
 	buf := make([]byte, 4096)
-	conn.Read(buf)
+	_, _ = conn.Read(buf)
 
 	closeDelay := 100 + cryptoRandIntn(2000)
 	time.Sleep(time.Duration(closeDelay) * time.Millisecond)
@@ -616,7 +616,7 @@ func (t *TSPUPressure) sendDecoyHandshake() {
 	conn.Write(hello)
 
 	buf := make([]byte, 8192)
-	conn.Read(buf)
+	_, _ = conn.Read(buf)
 
 	atomic.AddUint64(&t.decoysServed, 1)
 
@@ -811,7 +811,7 @@ func (r *ProbeReflector) reflectTLS(conn net.Conn, domain string) {
 		return
 	}
 
-	realConn, err := net.DialTimeout("tcp", domain+":443", 3*time.Second)
+	realConn, err := (&net.Dialer{Timeout: 3 * time.Second}).DialContext(context.Background(), "tcp", net.JoinHostPort(domain, "443"))
 	if err != nil {
 		return
 	}

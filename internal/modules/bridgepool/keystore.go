@@ -46,7 +46,7 @@ func NewEncryptedKeyStore(serverSecret string, persistDir string) *EncryptedKeyS
 		auditLog:   &AuditLog{persistPath: persistDir + ".audit.jsonl"},
 	}
 	hkdfReader := hkdf.New(sha256.New, []byte(serverSecret), []byte("whispera-keystore-v1"), []byte("aes-256-gcm"))
-	io.ReadFull(hkdfReader, ks.masterKey[:])
+	_, _ = io.ReadFull(hkdfReader, ks.masterKey[:])
 	return ks
 }
 

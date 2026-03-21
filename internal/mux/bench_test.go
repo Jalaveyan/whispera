@@ -167,7 +167,7 @@ func BenchmarkMuxParallel(b *testing.B) {
 		resp := make([]byte, 1400)
 		for pb.Next() {
 			stream.Write(data)
-			io.ReadFull(stream, resp)
+			_, _ = io.ReadFull(stream, resp)
 		}
 	})
 }

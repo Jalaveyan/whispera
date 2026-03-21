@@ -1,6 +1,7 @@
 package camouflage
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/tls"
 	"encoding/binary"
@@ -78,7 +79,7 @@ func (fb *FakeBridgeManager) Start() error {
 		if fb.tlsConfig != nil {
 			listener, err = tls.Listen("tcp", addr, fb.tlsConfig)
 		} else {
-			listener, err = net.Listen("tcp", addr)
+			listener, err = (&net.ListenConfig{}).Listen(context.Background(), "tcp", addr)
 		}
 
 		if err != nil {

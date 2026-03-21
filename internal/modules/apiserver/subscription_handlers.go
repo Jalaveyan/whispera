@@ -468,7 +468,7 @@ func (s *Server) handlePingKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	start := time.Now()
-	conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
+	conn, err := (&net.Dialer{Timeout: 5 * time.Second}).DialContext(r.Context(), "tcp", addr)
 	if err != nil {
 		s.jsonOK(w, map[string]interface{}{
 			"addr":    addr,
@@ -521,7 +521,7 @@ func (s *Server) handlePingAllKeys(w http.ResponseWriter, r *http.Request) {
 		go func(i int, t target) {
 			defer wg.Done()
 			start := time.Now()
-			conn, err := net.DialTimeout("tcp", t.addr, 4*time.Second)
+			conn, err := (&net.Dialer{Timeout: 4 * time.Second}).DialContext(r.Context(), "tcp", t.addr)
 			if err != nil {
 				results[i] = result{UserID: t.userID, Name: t.name, Addr: t.addr, Error: err.Error()}
 				return

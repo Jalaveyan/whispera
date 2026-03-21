@@ -91,7 +91,7 @@ func (r *P2PRelay) Start() error {
 		return nil
 	}
 
-	listener, err := net.Listen("tcp", r.config.ListenAddr)
+	listener, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", r.config.ListenAddr)
 	if err != nil {
 		return err
 	}

@@ -294,98 +294,6 @@ func (m *Marionette) applyTLSEvasion(data []byte, _ map[string]interface{}) ([]b
 	return append(data, tlsObfuscation...), 0
 }
 
-func (m *Marionette) applyGREASEEvasion(_ []byte) []byte {
-	var greaseValues = [16]byte{0x0a, 0x0a, 0x1a, 0x1a, 0x2a, 0x2a, 0x3a, 0x3a, 0x4a, 0x4a, 0x5a, 0x5a, 0x6a, 0x6a, 0x7a, 0x7a}
-	count := 2 + cryptoRandInt(6)
-	greaseObfuscation := make([]byte, count)
-	for i := range greaseObfuscation {
-		greaseObfuscation[i] = greaseValues[cryptoRandInt(len(greaseValues))]
-	}
-	return greaseObfuscation
-}
-
-func (m *Marionette) applyALPNEvasion(_ []byte) []byte {
-	alpnProtos := [][]byte{
-		{0x02, 'h', '2'},
-		{0x08, 'h', 't', 't', 'p', '/', '1', '.', '1'},
-		{0x02, 'h', '3'},
-	}
-	chosen := alpnProtos[cryptoRandInt(len(alpnProtos))]
-	result := make([]byte, len(chosen))
-	copy(result, chosen)
-	return result
-}
-
-func (m *Marionette) applyECHEvasion(_ []byte) []byte {
-	size := 8 + cryptoRandInt(24)
-	buf := make([]byte, size)
-	rand.Read(buf)
-	return buf
-}
-
-func (m *Marionette) applyHPACKEvasion(_ []byte) []byte {
-	size := 4 + cryptoRandInt(16)
-	buf := make([]byte, size)
-	rand.Read(buf)
-	return buf
-}
-
-func (m *Marionette) applyQPACKEvasion(_ []byte) []byte {
-	size := 4 + cryptoRandInt(16)
-	buf := make([]byte, size)
-	rand.Read(buf)
-	return buf
-}
-
-func (m *Marionette) applyDoHEvasion(_ []byte) []byte {
-	size := 4 + cryptoRandInt(12)
-	buf := make([]byte, size)
-	rand.Read(buf)
-	return buf
-}
-
-func (m *Marionette) applyDoQEvasion(_ []byte) []byte {
-	size := 4 + cryptoRandInt(12)
-	buf := make([]byte, size)
-	rand.Read(buf)
-	return buf
-}
-
-func (m *Marionette) applyTimingAnalysisEvasion(_ []byte) []byte {
-	size := 4 + cryptoRandInt(16)
-	buf := make([]byte, size)
-	rand.Read(buf)
-	return buf
-}
-
-func (m *Marionette) applyFlowAnalysisEvasion(_ []byte) []byte {
-	size := 4 + cryptoRandInt(20)
-	buf := make([]byte, size)
-	rand.Read(buf)
-	return buf
-}
-
-func (m *Marionette) applyStatisticalEvasion(_ []byte) []byte {
-	size := 6 + cryptoRandInt(24)
-	buf := make([]byte, size)
-	rand.Read(buf)
-	return buf
-}
-
-func (m *Marionette) applyMLClassificationEvasion(_ []byte) []byte {
-	size := 12 + cryptoRandInt(48)
-	buf := make([]byte, size)
-	rand.Read(buf)
-	return buf
-}
-
-func (m *Marionette) applyEnhancedBehavioralMimicry(_ []byte) []byte {
-	size := 2 + cryptoRandInt(8)
-	buf := make([]byte, size)
-	rand.Read(buf)
-	return buf
-}
-
 func (m *Marionette) mimicHumanBehavior(data []byte, _ map[string]interface{}) ([]byte, time.Duration) {
 	return data, 0
 }
@@ -406,10 +314,6 @@ func cryptoRandInt(n int) int {
 	rand.Read(buf[:])
 	v := binary.LittleEndian.Uint64(buf[:])
 	return int(v % uint64(n))
-}
-
-func (m *Marionette) generateRealisticRandom(n int) int {
-	return cryptoRandInt(n)
 }
 
 func (m *Marionette) generateRealisticPadding(size int) []byte {

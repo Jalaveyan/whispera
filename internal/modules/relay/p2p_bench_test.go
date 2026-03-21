@@ -116,7 +116,7 @@ func BenchmarkP2PRelay_ConnectHandshake(b *testing.B) {
 
 		done := make(chan struct{})
 		go func() {
-			peerA.WaitForPartner(ctx)
+			_, _ = peerA.WaitForPartner(ctx)
 			close(done)
 		}()
 

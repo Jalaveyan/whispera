@@ -137,7 +137,7 @@ func (s *MLServer) Start() error {
 		IdleTimeout:  120 * time.Second,
 	}
 
-	ln, err := net.Listen("tcp", s.listenAddr)
+	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", s.listenAddr)
 	if err != nil {
 		return fmt.Errorf("ml server listen: %w", err)
 	}
@@ -168,7 +168,7 @@ func (s *MLServer) Start() error {
 		}
 	}()
 
-	s.addLog("ML server started on %s (HTTPS, native Go MLP engine)", s.listenAddr)
+	s.addLogf("ML server started on %s (HTTPS, native Go MLP engine)", s.listenAddr)
 	log.Printf("ML server started on %s (HTTPS)", s.listenAddr)
 	s.SetHealthy(true, "ml server running")
 	return nil
@@ -272,7 +272,7 @@ func (s *MLServer) jsonReply(w http.ResponseWriter, data interface{}) {
 	json.NewEncoder(w).Encode(data)
 }
 
-func (s *MLServer) addLog(format string, args ...interface{}) {
+func (s *MLServer) addLogf(format string, args ...interface{}) {
 	line := fmt.Sprintf("[%s] %s", time.Now().Format("15:04:05"), fmt.Sprintf(format, args...))
 	s.logMu.Lock()
 	s.logLines = append(s.logLines, line)
@@ -326,7 +326,7 @@ func (s *MLServer) handleModelsStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *MLServer) handleModelsLoad(w http.ResponseWriter, r *http.Request) {
-	s.addLog("model reload requested")
+	s.addLogf("model reload requested")
 	s.jsonReply(w, map[string]string{"status": "loaded"})
 }
 
@@ -391,7 +391,7 @@ func (s *MLServer) handleNetworkAnalyze(w http.ResponseWriter, r *http.Request) 
 		req.Port = 443
 	}
 
-	s.addLog("network analysis: %s:%d", req.Host, req.Port)
+	s.addLogf("network analysis: %s:%d", req.Host, req.Port)
 
 	targets := []struct {
 		host string
@@ -416,7 +416,7 @@ func (s *MLServer) handleNetworkAnalyze(w http.ResponseWriter, r *http.Request) 
 		go func(idx int, host string, port int) {
 			defer wg.Done()
 			start := time.Now()
-			conn, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", host, port), 5*time.Second)
+			conn, err := (&net.Dialer{Timeout: 5 * time.Second}).DialContext(context.Background(), "tcp", net.JoinHostPort(host, strconv.Itoa(port)))
 			if err == nil {
 				results[idx] = probeResult{reachable: true, rtt: time.Since(start)}
 				conn.Close()
@@ -472,7 +472,7 @@ func (s *MLServer) handleNetworkAnalyze(w http.ResponseWriter, r *http.Request) 
 		resp["recommended_reason"] = "some throttling detected, use domain fronting"
 	}
 
-	s.addLog("analysis: dpi=%s reachable=%d/%d", dpiRisk, reachable, len(targets))
+	s.addLogf("analysis: dpi=%s reachable=%d/%d", dpiRisk, reachable, len(targets))
 	s.jsonReply(w, resp)
 }
 
@@ -503,7 +503,7 @@ func (s *MLServer) handleRecommendTransport(w http.ResponseWriter, r *http.Reque
 	rttData := make([]float64, len(probeTargets))
 	for i, t := range probeTargets {
 		start := time.Now()
-		conn, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", t.host, t.port), 5*time.Second)
+		conn, err := (&net.Dialer{Timeout: 5 * time.Second}).DialContext(context.Background(), "tcp", net.JoinHostPort(t.host, strconv.Itoa(t.port)))
 		if err != nil {
 			rttData[i] = 9999
 		} else {
@@ -586,7 +586,7 @@ func (s *MLServer) handleFeedbackConnection(w http.ResponseWriter, r *http.Reque
 	ts.Count++
 	s.feedbackMu.Unlock()
 
-	s.addLog("feedback: %s success=%v latency=%.0fms", req.Transport, req.Success, req.Latency)
+	s.addLogf("feedback: %s success=%v latency=%.0fms", req.Transport, req.Success, req.Latency)
 	s.jsonReply(w, map[string]string{"status": "ok"})
 }
 
@@ -615,9 +615,9 @@ func (s *MLServer) handleTrainStart(w http.ResponseWriter, r *http.Request) {
 	}
 
 	go func() {
-		s.addLog("training started (%d epochs)", epochs)
+		s.addLogf("training started (%d epochs)", epochs)
 		samples, acc := s.engine.Train(epochs)
-		s.addLog("training done: %d samples, accuracy=%.4f", samples, acc)
+		s.addLogf("training done: %d samples, accuracy=%.4f", samples, acc)
 	}()
 
 	s.jsonReply(w, map[string]string{"status": "started"})
@@ -625,7 +625,7 @@ func (s *MLServer) handleTrainStart(w http.ResponseWriter, r *http.Request) {
 
 func (s *MLServer) handleTrainStop(w http.ResponseWriter, r *http.Request) {
 	s.engine.StopTraining()
-	s.addLog("training stop requested")
+	s.addLogf("training stop requested")
 	s.jsonReply(w, map[string]string{"status": "stopping"})
 }
 
@@ -669,7 +669,7 @@ func (s *MLServer) handleScan(w http.ResponseWriter, r *http.Request) {
 		go func(p int, service string) {
 			defer wg.Done()
 			start := time.Now()
-			conn, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", host, p), 2*time.Second)
+			conn, err := (&net.Dialer{Timeout: 2 * time.Second}).DialContext(context.Background(), "tcp", net.JoinHostPort(host, strconv.Itoa(p)))
 			lat := int(time.Since(start).Milliseconds())
 			open := err == nil
 			if open {
@@ -686,7 +686,7 @@ func (s *MLServer) handleScan(w http.ResponseWriter, r *http.Request) {
 	}
 	wg.Wait()
 
-	s.addLog("scan %s: %d ports checked", host, len(ports))
+	s.addLogf("scan %s: %d ports checked", host, len(ports))
 	s.jsonReply(w, map[string]interface{}{"results": results})
 }
 
@@ -730,7 +730,7 @@ func (s *MLServer) handleFedImport(w http.ResponseWriter, r *http.Request) {
 	}
 	s.feedbackMu.Unlock()
 
-	s.addLog("federated import applied")
+	s.addLogf("federated import applied")
 	s.jsonReply(w, map[string]string{"status": "applied"})
 }
 
@@ -767,7 +767,7 @@ func (s *MLServer) handleFedUpload(w http.ResponseWriter, r *http.Request) {
 	}
 	fname := fmt.Sprintf("delta_%d.json", time.Now().UnixNano())
 	os.WriteFile(filepath.Join(s.fedDir, fname), body, 0600)
-	s.addLog("federated delta uploaded: %s (%d bytes)", fname, len(body))
+	s.addLogf("federated delta uploaded: %s (%d bytes)", fname, len(body))
 	s.jsonReply(w, map[string]string{"status": "ok"})
 }
 
@@ -831,7 +831,7 @@ func (s *MLServer) handleDatasetsCapture(w http.ResponseWriter, r *http.Request)
 	})
 	os.WriteFile(fpath, data, 0600)
 
-	s.addLog("dataset captured: %s", name)
+	s.addLogf("dataset captured: %s", name)
 	s.jsonReply(w, map[string]interface{}{"status": "ok", "name": name})
 }
 
@@ -850,7 +850,7 @@ func (s *MLServer) handleDatasetsUpload(w http.ResponseWriter, r *http.Request) 
 	}
 	name = filepath.Base(name)
 	os.WriteFile(filepath.Join(dsDir, name), body, 0600)
-	s.addLog("dataset uploaded: %s (%d bytes)", name, len(body))
+	s.addLogf("dataset uploaded: %s (%d bytes)", name, len(body))
 	s.jsonReply(w, map[string]interface{}{"status": "ok", "name": name, "size": len(body)})
 }
 
@@ -858,13 +858,6 @@ func (s *MLServer) handleDatasetsExchange(w http.ResponseWriter, r *http.Request
 	s.jsonReply(w, map[string]interface{}{
 		"status": "exchange requires peer_url, use Python server for P2P",
 	})
-}
-
-func max64(a, b int64) int64 {
-	if a > b {
-		return a
-	}
-	return b
 }
 
 func min64f(a, b float64) float64 {
@@ -898,7 +891,7 @@ func (s *MLServer) handleAdversarialEvolve(w http.ResponseWriter, r *http.Reques
 		req.Data = make([]byte, 256)
 	}
 	perturbed := s.adversarial.Apply(req.Data)
-	s.addLog("adversarial evolve: input=%d output=%d", len(req.Data), len(perturbed))
+	s.addLogf("adversarial evolve: input=%d output=%d", len(req.Data), len(perturbed))
 	s.jsonReply(w, map[string]interface{}{
 		"input_size":  len(req.Data),
 		"output_size": len(perturbed),
@@ -929,7 +922,7 @@ func (s *MLServer) handleAdversarialFeedback(w http.ResponseWriter, r *http.Requ
 		fArr[i] = features[i]
 	}
 	s.adversarial.RecordFeedback(req.Detected, req.Strategy, req.Intensity, fArr)
-	s.addLog("adversarial feedback: detected=%v strategy=%d", req.Detected, req.Strategy)
+	s.addLogf("adversarial feedback: detected=%v strategy=%d", req.Detected, req.Strategy)
 	s.jsonReply(w, map[string]interface{}{"status": "ok"})
 }
 

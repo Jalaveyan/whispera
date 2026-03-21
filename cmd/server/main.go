@@ -590,7 +590,7 @@ func StartReverseInbound(inbound modconfig.InboundConfig, serverConfig *modconfi
 		default:
 		}
 
-		conn, err := net.DialTimeout("tcp", remoteAddr, 10*time.Second)
+		conn, err := (&net.Dialer{Timeout: 10 * time.Second}).DialContext(context.Background(), "tcp", remoteAddr)
 		if err != nil {
 			log.Printf("⚠ [Reverse] %s: dial failed: %v (retry in %v)", inbound.Tag, err, backoff)
 			select {

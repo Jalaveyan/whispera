@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -33,9 +34,6 @@ const (
 
 	authTagLen   = 8
 	maxHandshake = 16384
-
-	switchCmdTunnel byte = 0x17
-	switchCmdProxy  byte = 0x00
 )
 
 type Config struct {
@@ -253,7 +251,7 @@ func (t *Transport) Listen(ctx context.Context, addr string) (net.Listener, erro
 		listenAddr = t.config.ListenAddr
 	}
 
-	ln, err := net.Listen("tcp", listenAddr)
+	ln, err := (&net.ListenConfig{}).Listen(ctx, "tcp", listenAddr)
 	if err != nil {
 		return nil, fmt.Errorf("mirage: listen %s: %w", listenAddr, err)
 	}
@@ -309,8 +307,8 @@ func (t *Transport) handleServerConn(ctx context.Context, raw net.Conn) (net.Con
 		log.Info("Mirage: authenticated client from %s", raw.RemoteAddr())
 		atomic.AddInt64(&t.connCount, 1)
 
-		targetAddr := fmt.Sprintf("%s:%d", t.config.SNI, t.config.TargetPort)
-		targetConn, err := net.DialTimeout("tcp", targetAddr, 5*time.Second)
+		targetAddr := net.JoinHostPort(t.config.SNI, strconv.Itoa(t.config.TargetPort))
+		targetConn, err := (&net.Dialer{Timeout: 5 * time.Second}).DialContext(ctx, "tcp", targetAddr)
 		if err != nil {
 			log.Warn("Mirage: cannot reach target %s: %v", targetAddr, err)
 			raw.Close()
@@ -351,8 +349,8 @@ func (t *Transport) handleServerConn(ctx context.Context, raw net.Conn) (net.Con
 	atomic.AddUint64(&t.proxyFalls, 1)
 	log.Debug("Mirage: unauthenticated connection from %s, proxying to real server", raw.RemoteAddr())
 
-	targetAddr := fmt.Sprintf("%s:%d", t.config.SNI, t.config.TargetPort)
-	targetConn, err := net.DialTimeout("tcp", targetAddr, 5*time.Second)
+	targetAddr := net.JoinHostPort(t.config.SNI, strconv.Itoa(t.config.TargetPort))
+	targetConn, err := (&net.Dialer{Timeout: 5 * time.Second}).DialContext(ctx, "tcp", targetAddr)
 	if err != nil {
 		raw.Close()
 		return nil, fmt.Errorf("mirage: proxy to %s: %w", targetAddr, err)
