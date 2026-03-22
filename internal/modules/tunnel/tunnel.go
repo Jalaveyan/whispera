@@ -248,10 +248,11 @@ func (c *Config) Validate() error {
 
 type managedConn struct {
 	net.Conn
-	session   *mux.Session
-	id        string
-	createdAt time.Time
-	closing   chan struct{}
+	session    *mux.Session
+	id         string
+	createdAt  time.Time
+	closing    chan struct{}
+	closeOnce  sync.Once
 }
 
 type Manager struct {
@@ -1458,14 +1459,14 @@ func (m *Manager) Disconnect() {
 	m.connMu.Lock()
 
 	for _, c := range m.activePool {
-		close(c.closing)
+		c.closeOnce.Do(func() { close(c.closing) })
 		c.Close()
 	}
 	m.activePool = nil
 	m.activeConn = nil
 
 	for _, c := range m.drainingConns {
-		close(c.closing)
+		c.closeOnce.Do(func() { close(c.closing) })
 		c.Close()
 	}
 	m.drainingConns = nil
@@ -2249,7 +2250,7 @@ func (m *Manager) monitorDrainingConn(mc *managedConn) {
 		}
 	}
 
-	close(mc.closing)
+	mc.closeOnce.Do(func() { close(mc.closing) })
 	mc.Close()
 	log.Info("Draining connection closed (Timeout)")
 }

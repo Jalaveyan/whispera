@@ -802,6 +802,12 @@ func (t *Transport) receiveTrack(track *webrtc.TrackRemote) {
 	frameWant := -1
 
 	for {
+		select {
+		case <-t.stopChan:
+			return
+		default:
+		}
+
 		pkt, _, err := track.ReadRTP()
 		if err != nil {
 			if err != io.EOF {
@@ -830,9 +836,12 @@ func (t *Transport) receiveTrack(track *webrtc.TrackRemote) {
 		}
 		if pkt.Header.Marker {
 			if frameWant > 0 && len(frameBuf) == frameWant {
-				out := make([]byte, frameWant) //nolint:pool - goes to channel, caller owns
+				out := make([]byte, frameWant)
+				copy(out, frameBuf)
 				select {
 				case t.dataIn <- out:
+				case <-t.stopChan:
+					return
 				default:
 					log.Printf("dataIn full, dropping frame")
 				}
