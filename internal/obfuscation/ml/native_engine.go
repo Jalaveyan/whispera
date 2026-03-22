@@ -747,7 +747,7 @@ func (e *NativeMLEngine) Predict(data []byte, protocol, direction string) *types
 		tspuType, tspuConf := e.tspuDetector.DetectTSPU()
 		if tspuType != DPITypeNone && tspuConf > dpiConf {
 			dpiType = tspuType
-			dpiConf = tspuConf
+			_ = tspuConf // used for comparison only
 			dpiName = dpiTypeName(tspuType)
 		}
 	}
@@ -1383,32 +1383,6 @@ func (e *NativeMLEngine) loadModel() {
 	e.mu.Unlock()
 }
 
-func (e *NativeMLEngine) buildResponse(classID int, confidence float64, protocol, direction string, data []byte, dpiType int, dpiName string) *types.MLPredictionResponse {
-	isAnomaly := false
-	anomalyScore := 0.0
-	if len(data) > 0 {
-		zeros := 0
-		for _, b := range data {
-			if b == 0 {
-				zeros++
-			}
-		}
-		zr := float64(zeros) / float64(len(data))
-		if zr > 0.5 {
-			isAnomaly = true
-			anomalyScore = zr
-		}
-	}
-
-	return &types.MLPredictionResponse{
-		Predictions: []types.PredictionResult{{
-			ClassID: classID, Confidence: confidence, Protocol: protocol,
-			Direction: direction, DPIType: dpiType, DPIName: dpiName,
-			IsAnomaly: isAnomaly, AnomalyScore: anomalyScore,
-		}},
-		ModelUsed: "gorgonia_mlp_go", Confidence: confidence, Timestamp: time.Now(),
-	}
-}
 
 func isDNSPacket(data []byte) bool {
 	if len(data) < 12 {

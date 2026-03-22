@@ -2,6 +2,7 @@ package ml
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
 	"encoding/json"
 	"net/http"
@@ -297,7 +298,7 @@ func (dc *DataCollector) UploadToMLServer() error {
 	if url[len(url)-1] != '/' {
 		url += "/"
 	}
-	req, err := http.NewRequest(http.MethodPost, url+"federated/upload", bytes.NewReader(payload))
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, url+"federated/upload", bytes.NewReader(payload))
 	if err != nil {
 		return err
 	}

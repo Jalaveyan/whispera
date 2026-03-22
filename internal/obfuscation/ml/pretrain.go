@@ -1,7 +1,6 @@
 package ml
 
 import (
-	"math"
 	mrand "math/rand"
 	"time"
 )
@@ -199,8 +198,3 @@ func fillCryptoRandom(b []byte) {
 	}
 }
 
-func gaussianNoise(scale float64) float64 {
-	u1 := mrand.Float64() + 1e-10
-	u2 := mrand.Float64() + 1e-10
-	return math.Sqrt(-2*math.Log(u1)) * math.Cos(2*math.Pi*u2) * scale
-}
