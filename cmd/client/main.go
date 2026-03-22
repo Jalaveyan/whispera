@@ -52,6 +52,8 @@ var (
 	vkToken          = flag.String("vk-token", "", "VK User Access Token for WebRTC Tunneling")
 	serverList       = flag.String("servers", "", "Comma-separated server addresses for latency-based routing")
 	rekeyInterval    = flag.Duration("rekey", 10*time.Minute, "Session rekeying interval (0 = disabled)")
+	mlServerURL      = flag.String("ml-server", "", "ML server URL (e.g. https://127.0.0.1:8000)")
+	mlTokenFlag      = flag.String("ml-token", "", "ML API auth token")
 )
 
 // mlDefaultDataDir возвращает каталог данных Whispera по тем же правилам, что и ml_api_server.py.
@@ -165,6 +167,14 @@ func main() {
 
 	if *connKey == "" && *serverAddr != "" {
 		cfg.Server = *serverAddr
+	}
+
+	// ML server URL/token from CLI flags (override key-parsed values)
+	if *mlServerURL != "" {
+		cfg.MLServerURL = *mlServerURL
+	}
+	if *mlTokenFlag != "" {
+		cfg.MLToken = *mlTokenFlag
 	}
 
 	// ML mode: -user-key sets phantom PSK without requiring a full connection key

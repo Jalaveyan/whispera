@@ -36,7 +36,7 @@ func DefaultMLConfig() *MLConfig {
 		StableSampleRate:       20,
 		UnstableSampleRate:     5,
 		BatchFlushTimeout:      100 * time.Millisecond,
-		MinPacketSize:          2048,
+		MinPacketSize:          64,
 	}
 }
 
@@ -147,6 +147,44 @@ func (im *IntegrationManager) ProcessTraffic(data []byte, direction string) ([]b
 		return data, 0, err
 	}
 
+	if im.mlEnabled && im.mlSystem != nil && len(processed) >= im.config.MinPacketSize {
+		im.mu.RLock()
+		disabled := time.Now().Before(im.mlDisabledUntil)
+		im.mu.RUnlock()
+
+		if !disabled {
+			context := &types.UnifiedTrafficContext{
+				Direction: direction,
+				Protocol:  "auto",
+				Size:      len(processed),
+				Timestamp: time.Now(),
+			}
+
+			mlProcessed, mlErr := im.mlSystem.ProcessTraffic(processed, context)
+			if mlErr != nil {
+				im.mu.Lock()
+				im.mlFailures++
+				im.metrics.MLErrors++
+				if im.mlFailures >= im.config.CircuitBreakerLimit {
+					im.mlDisabledUntil = time.Now().Add(im.config.CircuitBreakerCooldown)
+					im.mlFailures = 0
+					im.metrics.CircuitBreakerTrips++
+				}
+				im.mu.Unlock()
+			} else if mlProcessed != nil && len(mlProcessed) > 0 {
+				processed = mlProcessed
+				im.mu.Lock()
+				im.metrics.MLProcessed++
+				im.mlFailures = 0
+				im.mu.Unlock()
+			}
+		} else {
+			im.mu.Lock()
+			im.metrics.MLSkipped++
+			im.mu.Unlock()
+		}
+	}
+
 	im.mu.Lock()
 	im.metrics.PacketsProcessed++
 	im.mu.Unlock()
@@ -184,36 +222,8 @@ func (im *IntegrationManager) updateNetworkStabilityLocked() {
 	im.metrics.NetworkStable = im.networkStable
 }
 
-func (im *IntegrationManager) ProcessTrafficWithML(data []byte, direction string, protocol string) ([]byte, time.Duration, error) {
-	processed := data
-
-	if im.fteEnabled && im.fte != nil {
-		transformed, err := im.fte.Transform(processed)
-		if err == nil && transformed != nil && len(transformed) > 0 {
-			processed = transformed
-		}
-	}
-
-	processed, delay, err := im.adapter.ProcessPacket(processed, direction)
-	if err != nil {
-		return data, 0, err
-	}
-
-	if im.mlEnabled && im.mlSystem != nil && len(processed) > 2048 {
-		context := &types.UnifiedTrafficContext{
-			Direction: direction,
-			Protocol:  protocol,
-			Size:      len(processed),
-			Timestamp: time.Now(),
-		}
-
-		mlProcessed, mlErr := im.mlSystem.ProcessTraffic(processed, context)
-		if mlErr == nil && mlProcessed != nil && len(mlProcessed) > 0 {
-			processed = mlProcessed
-		}
-	}
-
-	return processed, delay, err
+func (im *IntegrationManager) ProcessTrafficWithML(data []byte, direction string, _ string) ([]byte, time.Duration, error) {
+	return im.ProcessTraffic(data, direction)
 }
 
 func (im *IntegrationManager) GetMLSystem() *mlpkg.UnifiedMLSystem {

@@ -989,6 +989,8 @@ func createModules(manager *lifecycle.Manager, ctx context.Context) error {
 	obfuscatorEngine, err := obfuscator.New(&obfuscator.Config{
 		DefaultProfile: serverConfig.Obfuscation.Profile,
 		ThreatLevel:    serverConfig.Obfuscation.ThreatLevel,
+		EnableML:       true,
+		EnableFTE:      true,
 	})
 	if err != nil {
 		return err

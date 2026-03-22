@@ -2,6 +2,7 @@ package ml
 
 import (
 	"fmt"
+	"sync/atomic"
 	"time"
 	"whispera/internal/obfuscation/core/types"
 	"whispera/internal/util"
@@ -52,10 +53,10 @@ func (mls *UnifiedMLSystem) ProcessTraffic(data []byte, context *types.UnifiedTr
 	}
 
 	latency := time.Since(startTime)
-	mls.packetCount++
+	count := atomic.AddInt64(&mls.packetCount, 1)
 
 	if mls.stats != nil {
-		mls.stats.ProcessedPackets = mls.packetCount
+		mls.stats.ProcessedPackets = count
 	}
 
 	if mls.dataCollector != nil && resp != nil && len(resp.Predictions) > 0 {
@@ -118,9 +119,28 @@ func (mls *UnifiedMLSystem) CollectSample(data []byte, protocol, direction strin
 
 func (mls *UnifiedMLSystem) GetStats() *types.MLStats { return mls.stats }
 
-func (mls *UnifiedMLSystem) HealthCheck() error { return nil }
+func (mls *UnifiedMLSystem) HealthCheck() error {
+	if mls.engine == nil {
+		return fmt.Errorf("ml engine not initialized")
+	}
+	if mls.stats == nil {
+		return fmt.Errorf("ml stats not initialized")
+	}
+	return nil
+}
 
-func (mls *UnifiedMLSystem) LoadModels() error { return nil }
+func (mls *UnifiedMLSystem) LoadModels() error {
+	if mls.engine == nil {
+		return fmt.Errorf("ml engine not initialized")
+	}
+	// NativeMLEngine loads models automatically in constructor;
+	// verify engine is functional by checking stats.
+	stats := mls.engine.GetStats()
+	if stats == nil {
+		return fmt.Errorf("ml engine stats unavailable")
+	}
+	return nil
+}
 
 func (mls *UnifiedMLSystem) GetDataCollector() *DataCollector {
 	return mls.dataCollector

@@ -144,34 +144,34 @@ func (s *MLServer) Start() error {
 		return fmt.Errorf("ml server listen: %w", err)
 	}
 
-	tlsCfg := &tls.Config{MinVersion: tls.VersionTLS12}
-
 	if s.tlsCert != "" && s.tlsKey != "" {
+		// Explicit TLS certs provided — serve HTTPS
+		tlsCfg := &tls.Config{MinVersion: tls.VersionTLS12}
 		cert, err := tls.LoadX509KeyPair(s.tlsCert, s.tlsKey)
 		if err != nil {
 			return fmt.Errorf("ml server tls load failed: %w", err)
 		}
 		tlsCfg.Certificates = []tls.Certificate{cert}
+		tlsLn := tls.NewListener(ln, tlsCfg)
+		go func() {
+			serveErr := s.httpServer.Serve(tlsLn)
+			if serveErr != nil && serveErr != http.ErrServerClosed {
+				log.Printf("ml server error: %v", serveErr)
+			}
+		}()
+		s.addLogf("ML server started on %s (HTTPS, native Go MLP engine)", s.listenAddr)
+		log.Printf("ML server started on %s (HTTPS)", s.listenAddr)
 	} else {
-		cert, err := generateSelfSignedCert()
-		if err != nil {
-			return fmt.Errorf("ml server auto-tls failed: %w", err)
-		}
-		tlsCfg.Certificates = []tls.Certificate{cert}
-		log.Printf("ML server: auto-generated self-signed TLS certificate")
+		// No TLS certs — serve plain HTTP (safe for localhost)
+		go func() {
+			serveErr := s.httpServer.Serve(ln)
+			if serveErr != nil && serveErr != http.ErrServerClosed {
+				log.Printf("ml server error: %v", serveErr)
+			}
+		}()
+		s.addLogf("ML server started on %s (HTTP, native Go MLP engine)", s.listenAddr)
+		log.Printf("ML server started on %s (HTTP)", s.listenAddr)
 	}
-
-	tlsLn := tls.NewListener(ln, tlsCfg)
-
-	go func() {
-		serveErr := s.httpServer.Serve(tlsLn)
-		if serveErr != nil && serveErr != http.ErrServerClosed {
-			log.Printf("ml server error: %v", serveErr)
-		}
-	}()
-
-	s.addLogf("ML server started on %s (HTTPS, native Go MLP engine)", s.listenAddr)
-	log.Printf("ML server started on %s (HTTPS)", s.listenAddr)
 	s.SetHealthy(true, "ml server running")
 	return nil
 }

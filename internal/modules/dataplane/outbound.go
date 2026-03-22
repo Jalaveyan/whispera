@@ -98,30 +98,59 @@ func (om *OutboundManager) AddOutbound(cfg config.OutboundConfig) error {
 		}
 	}
 
-	cryptoMod, _ := crypto.New(nil)
-	_ = cryptoMod.Init(context.Background(), nil)
-	_ = cryptoMod.Start()
+	cryptoMod, err := crypto.New(nil)
+	if err != nil {
+		return fmt.Errorf("outbound %s: crypto init: %w", cfg.Tag, err)
+	}
+	if err := cryptoMod.Init(context.Background(), nil); err != nil {
+		return fmt.Errorf("outbound %s: crypto init: %w", cfg.Tag, err)
+	}
+	if err := cryptoMod.Start(); err != nil {
+		return fmt.Errorf("outbound %s: crypto start: %w", cfg.Tag, err)
+	}
 
 	threatLevel := 5
 	if russiaMode {
 		threatLevel = 8
 	}
-	obfsMod, _ := obfuscator.New(&obfuscator.Config{
+	obfsMod, err := obfuscator.New(&obfuscator.Config{
 		DefaultProfile: "default",
 		ThreatLevel:    threatLevel,
+		EnableML:       true,
 		EnableFTE:      true,
 	})
-	_ = obfsMod.Init(context.Background(), nil)
-	_ = obfsMod.Start()
+	if err != nil {
+		return fmt.Errorf("outbound %s: obfuscator init: %w", cfg.Tag, err)
+	}
+	if err := obfsMod.Init(context.Background(), nil); err != nil {
+		return fmt.Errorf("outbound %s: obfuscator init: %w", cfg.Tag, err)
+	}
+	if err := obfsMod.Start(); err != nil {
+		return fmt.Errorf("outbound %s: obfuscator start: %w", cfg.Tag, err)
+	}
 
-	sessMod, _ := session.New(&session.Config{MaxSessions: 10})
-	_ = sessMod.Init(context.Background(), nil)
-	_ = sessMod.Start()
+	sessMod, err := session.New(&session.Config{MaxSessions: 10})
+	if err != nil {
+		return fmt.Errorf("outbound %s: session init: %w", cfg.Tag, err)
+	}
+	if err := sessMod.Init(context.Background(), nil); err != nil {
+		return fmt.Errorf("outbound %s: session init: %w", cfg.Tag, err)
+	}
+	if err := sessMod.Start(); err != nil {
+		return fmt.Errorf("outbound %s: session start: %w", cfg.Tag, err)
+	}
 
-	hsMod, _ := handshake.New(&handshake.Config{RateLimit: 100})
+	hsMod, err := handshake.New(&handshake.Config{RateLimit: 100})
+	if err != nil {
+		return fmt.Errorf("outbound %s: handshake init: %w", cfg.Tag, err)
+	}
 	hsMod.SetDependencies(cryptoMod, sessMod)
-	_ = hsMod.Init(context.Background(), nil)
-	_ = hsMod.Start()
+	if err := hsMod.Init(context.Background(), nil); err != nil {
+		return fmt.Errorf("outbound %s: handshake init: %w", cfg.Tag, err)
+	}
+	if err := hsMod.Start(); err != nil {
+		return fmt.Errorf("outbound %s: handshake start: %w", cfg.Tag, err)
+	}
 
 	tManager, err := tunnel.New(tCfg)
 	if err != nil {

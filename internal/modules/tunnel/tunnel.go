@@ -2563,7 +2563,7 @@ func (m *Manager) mlRecommendTransport(ctx context.Context) (transport string, c
 
 	mlURL := m.config.MLServerURL
 	if !strings.HasPrefix(mlURL, "http://") && !strings.HasPrefix(mlURL, "https://") {
-		mlURL = "https://" + mlURL
+		mlURL = "http://" + mlURL
 	}
 
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost,
