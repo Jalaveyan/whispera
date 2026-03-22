@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"math"
 	"io"
 	"net"
 	"net/http"
@@ -732,6 +733,9 @@ func (s *MLServer) handleTrainStop(w http.ResponseWriter, r *http.Request) {
 
 func (s *MLServer) handleTrainStatus(w http.ResponseWriter, r *http.Request) {
 	running, epoch, total, loss := s.engine.TrainingStatus()
+	if math.IsNaN(loss) || math.IsInf(loss, 0) {
+		loss = 0
+	}
 	s.jsonReply(w, map[string]interface{}{
 		"running":      running,
 		"epoch":        epoch,
