@@ -416,8 +416,37 @@ func (h *Handler) readClientHello(conn net.Conn) ([]byte, error) {
 	if _, err := io.ReadFull(conn, body); err != nil {
 		return nil, fmt.Errorf("read body: %w", err)
 	}
-	clientHello := make([]byte, 5+recordLen)
+
+	// Check if this is a fragmented ClientHello (handshake length > record payload).
+	// TLS allows splitting one handshake message across multiple records.
+	if len(body) >= 4 && body[0] == tlsHandshakeClientHello {
+		hsLen := int(body[1])<<16 | int(body[2])<<8 | int(body[3])
+		totalNeeded := 4 + hsLen // handshake header + handshake body
+
+		for len(body) < totalNeeded {
+			var nextHeader [5]byte
+			if _, err := io.ReadFull(conn, nextHeader[:]); err != nil {
+				break
+			}
+			if nextHeader[0] != tlsRecordHandshake {
+				break
+			}
+			nextLen := int(binary.BigEndian.Uint16(nextHeader[3:5]))
+			if nextLen > 16384 {
+				break
+			}
+			nextBody := make([]byte, nextLen)
+			if _, err := io.ReadFull(conn, nextBody); err != nil {
+				break
+			}
+			body = append(body, nextBody...)
+		}
+	}
+
+	clientHello := make([]byte, 5+len(body))
 	copy(clientHello, header)
+	// Update the record length in the header to reflect the reassembled body
+	binary.BigEndian.PutUint16(clientHello[3:5], uint16(len(body)))
 	copy(clientHello[5:], body)
 	return clientHello, nil
 }

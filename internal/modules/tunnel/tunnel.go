@@ -1072,13 +1072,9 @@ func (m *Manager) dialASNBypass(ctx context.Context) (net.Conn, error) {
 	if tcpConn, ok := conn.(*net.TCPConn); ok {
 		tcpConn.SetNoDelay(true)
 	}
-	if m.config.EnablePhantom && m.phantomAuth != nil {
-		sni := m.getRotationSNI()
-		if err := m.phantomAuth.WrapConn(conn, sni); err != nil {
-			conn.Close()
-			return nil, fmt.Errorf("phantom wrap asn_bypass: %w", err)
-		}
-	}
+	// NOTE: phantom auth is already embedded by dialTLSMasquerade via SetPhantomConfig
+	// (clientRandom + sessionID patched into the uTLS ClientHello).
+	// Do NOT call phantomAuth.WrapConn here — it would send a duplicate ClientHello.
 	return conn, nil
 }
 

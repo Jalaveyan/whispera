@@ -140,21 +140,49 @@ func (c *ClientAuth) WrapConn(conn net.Conn, sni string) error {
 
 	hello := buildChromeClientHello(clientRandom, sessionID, sni)
 
-	splitPos := 1 + mrand.Intn(5)
-	if splitPos >= len(hello) {
-		splitPos = 1
-	}
-
 	if tcpConn, ok := conn.(*net.TCPConn); ok {
 		tcpConn.SetNoDelay(true)
 	}
 
-	if _, err := conn.Write(hello[:splitPos]); err != nil {
+	return writeFragmentedClientHello(conn, hello)
+}
+
+func writeFragmentedClientHello(conn net.Conn, record []byte) error {
+	if len(record) < 6 || record[0] != 0x16 {
+		_, err := conn.Write(record)
 		return err
 	}
-	time.Sleep(time.Duration(1+mrand.Intn(30)) * time.Millisecond)
-	_, err = conn.Write(hello[splitPos:])
-	return err
+
+	contentType := record[0]
+	majorVer := record[1]
+	minorVer := record[2]
+	payload := record[5:]
+	fragSize := 40 + mrand.Intn(25)
+
+	for len(payload) > 0 {
+		chunk := payload
+		if len(chunk) > fragSize {
+			chunk = payload[:fragSize]
+		}
+		payload = payload[len(chunk):]
+
+		frag := make([]byte, 5+len(chunk))
+		frag[0] = contentType
+		frag[1] = majorVer
+		frag[2] = minorVer
+		frag[3] = byte(len(chunk) >> 8)
+		frag[4] = byte(len(chunk))
+		copy(frag[5:], chunk)
+
+		if _, err := conn.Write(frag); err != nil {
+			return err
+		}
+
+		if len(payload) > 0 {
+			time.Sleep(time.Duration(1+mrand.Intn(10)) * time.Millisecond)
+		}
+	}
+	return nil
 }
 
 func greaseValue() uint16 {
