@@ -85,6 +85,8 @@ func New(cfg interface{}) (*MLServer, error) {
 	if c, ok := cfg.(*Config); ok && c != nil {
 		conf = *c
 	}
+	conf.ListenAddr = strings.TrimPrefix(conf.ListenAddr, "https://")
+	conf.ListenAddr = strings.TrimPrefix(conf.ListenAddr, "http://")
 	if conf.ListenAddr == "" {
 		conf.ListenAddr = ":8000"
 	}
