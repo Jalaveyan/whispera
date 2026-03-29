@@ -151,7 +151,7 @@ func (dc *DataCollector) SetConnectionActive(active bool) {
 		atomic.StoreUint32(&dc.connectionActive, 1)
 	} else {
 		atomic.StoreUint32(&dc.connectionActive, 0)
-		go dc.SaveToDisk()
+		go func() { _ = dc.SaveToDisk() }()
 	}
 }
 

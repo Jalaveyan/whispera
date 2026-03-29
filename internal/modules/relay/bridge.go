@@ -196,7 +196,9 @@ func (b *Bridge) healthLoop() {
 		if atomic.LoadInt32(&b.running) == 0 {
 			return
 		}
-		conn, err := net.DialTimeout("tcp", b.upstreamAddr, timeout)
+		dialCtx, dialCancel := context.WithTimeout(context.Background(), timeout)
+		conn, err := (&net.Dialer{}).DialContext(dialCtx, "tcp", b.upstreamAddr)
+		dialCancel()
 		if err == nil {
 			conn.Close()
 			aliveCount++

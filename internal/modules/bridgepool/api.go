@@ -821,7 +821,9 @@ func (h *APIHandler) HandleBridgePing(w http.ResponseWriter, r *http.Request) {
 
 	for i := 0; i < req.Count; i++ {
 		start := time.Now()
-		conn, err := net.DialTimeout("tcp", target, 2*time.Second)
+		dialCtx, dialCancel := context.WithTimeout(r.Context(), 2*time.Second)
+		conn, err := (&net.Dialer{}).DialContext(dialCtx, "tcp", target)
+		dialCancel()
 		sent++
 		if err == nil {
 			conn.Close()

@@ -204,7 +204,6 @@ func startControlServer(ctx context.Context) {
 		w.Header().Set("Content-Type", "application/json")
 
 		switch action {
-
 		case "close":
 			entry.mu.Lock()
 			entry.Enabled = false

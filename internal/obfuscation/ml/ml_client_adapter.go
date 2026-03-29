@@ -17,13 +17,11 @@ import (
 var nativeEngine *NativeMLEngine
 
 var overrideMLServerURL string
-var overrideMLToken string
 var overrideMu sync.RWMutex
 
-func SetMLServerURL(url, token string) {
+func SetMLServerURL(url, _ string) {
 	overrideMu.Lock()
 	overrideMLServerURL = url
-	overrideMLToken = token
 	overrideMu.Unlock()
 	if url != "" {
 		os.Setenv("WHISPERA_ML_SERVER", url)

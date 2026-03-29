@@ -99,7 +99,7 @@ func (r *MultiRouter) RemoveBridge(id string) {
 
 // SetProcessContext sets the current process name for the next OpenStream/DialStream call.
 // This must be called (and reset) by a goroutine that handles a single connection, so
-// callers must synchronise externally if they rely on per-connection process routing.
+// callers must synchronize externally if they rely on per-connection process routing.
 func (r *MultiRouter) SetProcessContext(processName string) {
 	r.mu.Lock()
 	r.processOverride = processName

@@ -289,7 +289,7 @@ func TestP2PMultiplePairs(t *testing.T) {
 			connA.Write(msg)
 			buf := make([]byte, len(msg))
 			connB.SetReadDeadline(time.Now().Add(3 * time.Second))
-			io.ReadFull(connB, buf)
+			_, _ = io.ReadFull(connB, buf)
 
 			connA.Close()
 			connB.Close()
@@ -315,7 +315,9 @@ func TestP2PRelayStats(t *testing.T) {
 	cfg.ListenAddr = "127.0.0.1:0"
 	cfg.Secret = []byte(testSecret)
 	relay := NewP2PRelay(cfg)
-	relay.Start()
+	if err := relay.Start(); err != nil {
+		t.Fatalf("relay.Start: %v", err)
+	}
 	defer relay.Stop()
 
 	relay.mu.Lock()

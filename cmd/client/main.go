@@ -785,7 +785,9 @@ func main() {
 		entry.ConnectedAt = time.Now()
 		entry.mu.Unlock()
 		stdlog.Printf("[multi-bridge] bridge %s connected (%s), rules: %v", bridgeID, bridgeAddr, rules)
-		multiRouter.AttachBridgeTunnel(bridgeID, m)
+		if err := multiRouter.AttachBridgeTunnel(bridgeID, m); err != nil {
+			stdlog.Printf("[multi-bridge] bridge %s attach error: %v", bridgeID, err)
+		}
 	}
 
 	startControlServer(ctx)

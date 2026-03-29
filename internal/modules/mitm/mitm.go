@@ -156,7 +156,7 @@ func (p *Proxy) Start() error {
 	if err := p.Module.Start(); err != nil {
 		return err
 	}
-	ln, err := net.Listen("tcp", p.cfg.ListenAddr)
+	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", p.cfg.ListenAddr)
 	if err != nil {
 		return fmt.Errorf("mitm listen %s: %w", p.cfg.ListenAddr, err)
 	}
@@ -207,6 +207,9 @@ func (p *Proxy) handleCONNECT(conn net.Conn, _ *bufio.Reader, hostport string) {
 		return
 	}
 
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
 	tlsConn := tls.Server(conn, &tls.Config{
 		Certificates: []tls.Certificate{*tlsCert},
 		GetConfigForClient: func(chi *tls.ClientHelloInfo) (*tls.Config, error) {
@@ -221,15 +224,12 @@ func (p *Proxy) handleCONNECT(conn net.Conn, _ *bufio.Reader, hostport string) {
 			return nil, nil
 		},
 	})
-	if err := tlsConn.Handshake(); err != nil {
+	if err := tlsConn.HandshakeContext(ctx); err != nil {
 		return
 	}
 	defer tlsConn.Close()
 
 	sni := tlsConn.ConnectionState().ServerName
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
 
 	var upstream net.Conn
 	if p.cfg.TunnelDial != nil {
@@ -247,7 +247,7 @@ func (p *Proxy) handleCONNECT(conn net.Conn, _ *bufio.Reader, hostport string) {
 		ServerName:         host,
 		InsecureSkipVerify: false,
 	})
-	if err := upstreamTLS.Handshake(); err != nil {
+	if err := upstreamTLS.HandshakeContext(ctx); err != nil {
 		upstreamTLS.Close()
 		log.Error("mitm upstream tls %s: %v", host, err)
 		return

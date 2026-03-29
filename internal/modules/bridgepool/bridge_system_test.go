@@ -182,11 +182,11 @@ func TestCleanExpiredAccessKeys(t *testing.T) {
 	r.RegisterBridge(makeBridge("br-clean", "1.2.3.4:8443", BridgeWhite))
 
 	for i := 0; i < 5; i++ {
-		r.IssueAccessKey("br-clean", fmt.Sprintf("user-%d", i), false, 1*time.Millisecond)
+		_, _ = r.IssueAccessKey("br-clean", fmt.Sprintf("user-%d", i), false, 1*time.Millisecond)
 	}
 	time.Sleep(5 * time.Millisecond)
-	r.IssueAccessKey("br-clean", "user-alive-1", false, time.Hour)
-	r.IssueAccessKey("br-clean", "user-alive-2", false, time.Hour)
+	_, _ = r.IssueAccessKey("br-clean", "user-alive-1", false, time.Hour)
+	_, _ = r.IssueAccessKey("br-clean", "user-alive-2", false, time.Hour)
 
 	r.CleanExpiredAccessKeys()
 
