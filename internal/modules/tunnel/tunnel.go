@@ -201,6 +201,8 @@ type Config struct {
 
 	TransportConfig map[string]interface{}
 
+	ForceObfuscation bool
+
 	CustomDialFn func(ctx context.Context) (net.Conn, error)
 
 	DesyncConfig    *evasion.DesyncConfig
@@ -209,6 +211,15 @@ type Config struct {
 	MLServerURL string
 
 	MLToken string
+
+	CustomSNI   string
+	BridgeAddr  string
+	RateLimitKB int
+
+	EnableIPSpoof  bool
+	SpoofSourceIPs []string
+
+	TLSFragmentSize int
 }
 
 func DefaultConfig() *Config {
@@ -221,6 +232,7 @@ func DefaultConfig() *Config {
 		EnableRotation:       true,
 		RotationInterval:     60 * time.Minute,
 		DrainingTimeout:      90 * time.Minute,
+		ForceObfuscation:     true,
 	}
 }
 
@@ -306,8 +318,12 @@ type Manager struct {
 	phantomAuth       *phantom.ClientAuth
 	isTransportSecure bool
 
-	russianSNIs  []string
-	currentSNI   string
+	transportSecureOverride int32
+	forceObfuscation        int32
+
+	russianSNIs   []string
+	russianSNIsMu sync.RWMutex
+	currentSNI    string
 	lastRotation time.Time
 
 	russianTunneler *russian.RussianTunneler
@@ -318,6 +334,12 @@ type Manager struct {
 	cbState       string
 
 	goroutineLimiter *base.GoroutineLimiter
+
+	rateLimitKB     int32
+	tlsFragmentSize int32
+
+	spoofIPs    []string
+	spoofIdx    uint64
 
 	fedSyncOnce sync.Once
 }
@@ -341,6 +363,11 @@ func New(cfg *Config) (*Manager, error) {
 		return nil, err
 	}
 
+	var forceObfs int32 = 1
+	if !cfg.ForceObfuscation {
+		forceObfs = 0
+	}
+
 	m := &Manager{
 		Module:           base.NewModule(ModuleName, ModuleVersion, []string{"handshake.handler"}),
 		config:           cfg,
@@ -350,6 +377,7 @@ func New(cfg *Config) (*Manager, error) {
 		streamChs:        make(map[uint16]chan []byte),
 		goroutineLimiter: base.NewGoroutineLimiter(1024),
 		reconnectDone:    make(chan struct{}),
+		forceObfuscation: forceObfs,
 	}
 	close(m.reconnectDone)
 
@@ -370,7 +398,12 @@ func New(cfg *Config) (*Manager, error) {
 			ResidentialProxies:     cfg.ResidentialProxies,
 			EnableJA3Randomization: cfg.EnableJA3Randomize,
 			EnableTLSFragmentation: true,
-			TLSFragmentSize:        40,
+			TLSFragmentSize: func() int {
+				if cfg.TLSFragmentSize > 0 {
+					return cfg.TLSFragmentSize
+				}
+				return 40
+			}(),
 			ConnectionBurstLimit:   5,
 			ConnectionCooldown:     2 * time.Second,
 			FailoverTimeout:        cfg.ConnectionTimeout,
@@ -448,6 +481,51 @@ func New(cfg *Config) (*Manager, error) {
 	}
 	if len(m.russianSNIs) > 0 {
 		log.Info("Initialized %d Russian SNIs for rotation", len(m.russianSNIs))
+	}
+
+	if cfg.CustomSNI != "" {
+		if cfg.TransportConfig == nil {
+			cfg.TransportConfig = make(map[string]interface{})
+		}
+		if _, exists := cfg.TransportConfig["sni"]; !exists {
+			cfg.TransportConfig["sni"] = cfg.CustomSNI
+		}
+	}
+
+	if cfg.BridgeAddr != "" && cfg.CustomDialFn == nil {
+		bridgeAddr := cfg.BridgeAddr
+		serverAddr := cfg.ServerAddr
+		cfg.CustomDialFn = func(ctx context.Context) (net.Conn, error) {
+			d := &net.Dialer{}
+			conn, err := d.DialContext(ctx, "tcp", bridgeAddr)
+			if err != nil {
+				return nil, fmt.Errorf("bridge dial %s: %w", bridgeAddr, err)
+			}
+			req := "CONNECT " + serverAddr + " HTTP/1.1\r\nHost: " + serverAddr + "\r\n\r\n"
+			if _, err = conn.Write([]byte(req)); err != nil {
+				conn.Close()
+				return nil, fmt.Errorf("bridge CONNECT write: %w", err)
+			}
+			buf := make([]byte, 256)
+			n, err := conn.Read(buf)
+			if err != nil {
+				conn.Close()
+				return nil, fmt.Errorf("bridge CONNECT read: %w", err)
+			}
+			if n < 12 || string(buf[9:12]) != "200" {
+				conn.Close()
+				return nil, fmt.Errorf("bridge rejected CONNECT: %s", string(buf[:n]))
+			}
+			return conn, nil
+		}
+	}
+
+	if cfg.RateLimitKB > 0 {
+		atomic.StoreInt32(&m.rateLimitKB, int32(cfg.RateLimitKB))
+	}
+
+	if cfg.EnableIPSpoof && len(cfg.SpoofSourceIPs) > 0 {
+		m.spoofIPs = cfg.SpoofSourceIPs
 	}
 
 	return m, nil
@@ -751,6 +829,26 @@ type dialCandidate struct {
 	name   string
 	secure bool
 	fn     func(context.Context) (net.Conn, error)
+}
+
+func (m *Manager) spoofDialer() *net.Dialer {
+	if len(m.spoofIPs) == 0 {
+		return dohDialer()
+	}
+	idx := atomic.AddUint64(&m.spoofIdx, 1) % uint64(len(m.spoofIPs))
+	localIP := m.spoofIPs[idx]
+	if !strings.Contains(localIP, ":") {
+		localIP = localIP + ":0"
+	}
+	localAddr, err := net.ResolveTCPAddr("tcp", localIP)
+	if err != nil {
+		return dohDialer()
+	}
+	return &net.Dialer{
+		LocalAddr: localAddr,
+		Timeout:   10 * time.Second,
+		Resolver:  dohDialer().Resolver,
+	}
 }
 
 func (m *Manager) dial(ctx context.Context) (net.Conn, error) {
@@ -1116,7 +1214,7 @@ func (m *Manager) dialH2C(ctx context.Context) (net.Conn, error) {
 }
 
 func (m *Manager) dialTCP(ctx context.Context) (net.Conn, error) {
-	conn, err := dohDialer().DialContext(ctx, "tcp4", m.config.ServerAddrTCP)
+	conn, err := m.spoofDialer().DialContext(ctx, "tcp4", m.config.ServerAddrTCP)
 	if err != nil {
 		return nil, err
 	}
@@ -1673,12 +1771,13 @@ func (m *Manager) readLoop(mc *managedConn) {
 	defer mc.Close()
 
 	var inputReader io.Reader = mc
-	if m.obfuscator != nil && !m.isTransportSecure {
+	if m.obfuscator != nil && atomic.LoadInt32(&m.transportSecureOverride) == 0 {
 		inputReader = &deobfuscatingReader{r: mc, obf: m.obfuscator}
 	}
 	reader := bufio.NewReaderSize(inputReader, 262144)
 
-	header := make([]byte, FrameHeaderSize)
+	var headerArr [FrameHeaderSize]byte
+	header := headerArr[:]
 	tlsDrainCount := 0
 	consecutiveGarbage := 0
 	const maxTLSDrain = 50
@@ -1693,7 +1792,7 @@ func (m *Manager) readLoop(mc *managedConn) {
 		default:
 		}
 
-		if !m.isTransportSecure {
+		if !m.isTransportSecure || atomic.LoadInt32(&m.forceObfuscation) != 0 {
 			peek, err := reader.Peek(5)
 			if err != nil {
 				if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
@@ -1756,8 +1855,7 @@ func (m *Manager) readLoop(mc *managedConn) {
 											continue
 										}
 
-										frameData := make([]byte, frameTotal)
-										copy(frameData, processBuf[offset:offset+frameTotal])
+										frameData := processBuf[offset : offset+frameTotal]
 
 										m.UpdateActivity()
 
@@ -2073,6 +2171,14 @@ func (m *Manager) OpenStream(ctx context.Context, proto byte, addr string, port 
 }
 
 func (m *Manager) Send(data []byte) error {
+	if limitKB := atomic.LoadInt32(&m.rateLimitKB); limitKB > 0 && len(data) > 0 {
+		limitBPS := int64(limitKB) * 1024
+		sleepNs := int64(len(data)) * int64(time.Second) / limitBPS
+		if sleepNs > 0 {
+			time.Sleep(time.Duration(sleepNs))
+		}
+	}
+
 	var streamID uint16
 	var frameType uint8
 
@@ -2081,7 +2187,7 @@ func (m *Manager) Send(data []byte) error {
 		frameType = data[2]
 	}
 
-	if m.obfuscator != nil && !m.isTransportSecure {
+	if m.obfuscator != nil && atomic.LoadInt32(&m.transportSecureOverride) == 0 {
 		obfuscated, delay, err := m.obfuscator.Process(data, interfaces.DirectionOutbound)
 		if err != nil {
 			return fmt.Errorf("outbound obfuscation failed: %w", err)
@@ -2336,6 +2442,12 @@ func (m *Manager) setState(state TunnelState) {
 			"old_state": oldState.String(),
 			"new_state": state.String(),
 		})
+		if m.obfuscator != nil {
+			type connActiveSet interface{ SetConnectionActive(bool) }
+			if setter, ok := m.obfuscator.(connActiveSet); ok {
+				setter.SetConnectionActive(state == StateConnected)
+			}
+		}
 	}
 }
 
@@ -2971,4 +3083,90 @@ func (m *Manager) rotateTransport() {
 			}
 		}()
 	}
+}
+
+func (m *Manager) Stats() (bytesUp, bytesDown uint64) {
+	return atomic.LoadUint64(&m.bytesUp), atomic.LoadUint64(&m.bytesDown)
+}
+
+func (m *Manager) GetTransport() string {
+	return m.config.Transport
+}
+
+func (m *Manager) SetTransport(transport string) {
+	m.config.Transport = transport
+}
+
+func (m *Manager) AddRussianSNI(sni string) {
+	if sni == "" {
+		return
+	}
+	m.russianSNIsMu.Lock()
+	defer m.russianSNIsMu.Unlock()
+	for _, existing := range m.russianSNIs {
+		if existing == sni {
+			return
+		}
+	}
+	m.russianSNIs = append(m.russianSNIs, sni)
+}
+
+func (m *Manager) GetRussianSNIs() []string {
+	m.russianSNIsMu.RLock()
+	defer m.russianSNIsMu.RUnlock()
+	out := make([]string, len(m.russianSNIs))
+	copy(out, m.russianSNIs)
+	return out
+}
+
+func (m *Manager) SetSpoofIPs(ips []string) {
+	m.connMu.Lock()
+	m.spoofIPs = ips
+	m.connMu.Unlock()
+}
+
+func (m *Manager) SetRateLimit(kbps int) {
+	atomic.StoreInt32(&m.rateLimitKB, int32(kbps))
+}
+
+func (m *Manager) GetRateLimit() int {
+	return int(atomic.LoadInt32(&m.rateLimitKB))
+}
+
+func (m *Manager) SetTLSFragmentSize(size int) {
+	if size < 0 {
+		size = 0
+	}
+	atomic.StoreInt32(&m.tlsFragmentSize, int32(size))
+	if m.config != nil {
+		m.config.TLSFragmentSize = size
+	}
+}
+
+func (m *Manager) GetTLSFragmentSize() int {
+	return int(atomic.LoadInt32(&m.tlsFragmentSize))
+}
+
+func (m *Manager) SetForceObfuscation(enabled bool) {
+	if enabled {
+		atomic.StoreInt32(&m.transportSecureOverride, 0)
+		atomic.StoreInt32(&m.forceObfuscation, 1)
+	} else {
+		atomic.StoreInt32(&m.transportSecureOverride, 1)
+		atomic.StoreInt32(&m.forceObfuscation, 0)
+	}
+}
+
+func (m *Manager) IsForceObfuscation() bool {
+	return atomic.LoadInt32(&m.transportSecureOverride) == 0
+}
+
+func (m *Manager) SetBehavioralProfile(profile string) error {
+	if m.obfuscator == nil {
+		return fmt.Errorf("obfuscator not initialized")
+	}
+	if profile == "" {
+		return nil
+	}
+	return m.obfuscator.SetProfile(profile)
 }

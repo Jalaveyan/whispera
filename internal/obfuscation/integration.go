@@ -93,7 +93,7 @@ func NewIntegrationManager() *IntegrationManager {
 	fte := ftepkg.NewFTE()
 	cfg := DefaultMLConfig()
 
-	return &IntegrationManager{
+	im := &IntegrationManager{
 		marionette:    adapter.GetCore(),
 		adapter:       adapter,
 		mlSystem:      mlSystem,
@@ -106,6 +106,12 @@ func NewIntegrationManager() *IntegrationManager {
 		packetTimings: make([]time.Time, 0, 20),
 		mlSemaphore:   make(chan struct{}, cfg.MaxConcurrentWorkers),
 	}
+	if eng := mlpkg.GetNativeEngine(); eng != nil {
+		eng.SetOnDPIProfile(func(profile string) {
+			_ = im.adapter.SetActiveProfile(profile)
+		})
+	}
+	return im
 }
 
 func NewIntegrationManagerWithOptions(enableML, enableFTE bool) *IntegrationManager {
@@ -126,6 +132,11 @@ func NewIntegrationManagerWithOptions(enableML, enableFTE bool) *IntegrationMana
 
 	if enableML {
 		im.mlSystem = mlpkg.NewUnifiedMLSystem()
+		if eng := mlpkg.GetNativeEngine(); eng != nil {
+			eng.SetOnDPIProfile(func(profile string) {
+				_ = im.adapter.SetActiveProfile(profile)
+			})
+		}
 	}
 	if enableFTE {
 		im.fte = ftepkg.NewFTE()
@@ -228,6 +239,18 @@ func (im *IntegrationManager) ProcessTrafficWithML(data []byte, direction string
 
 func (im *IntegrationManager) GetMLSystem() *mlpkg.UnifiedMLSystem {
 	return im.mlSystem
+}
+
+func (im *IntegrationManager) SetConnectionActive(active bool) {
+	if im.mlSystem == nil {
+		return
+	}
+	if dc := im.mlSystem.GetDataCollector(); dc != nil {
+		dc.SetConnectionActive(active)
+	}
+	if eng := mlpkg.GetNativeEngine(); eng != nil {
+		eng.SetConnectionActive(active)
+	}
 }
 
 func (im *IntegrationManager) GetMetrics() Metrics {

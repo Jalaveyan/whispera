@@ -104,12 +104,6 @@ func (m *Marionette) ProcessPacket(data []byte, direction string) ([]byte, time.
 	if behaviorEngine != nil {
 		d := behaviorEngine.NextPacketDelay()
 		behaviorEngine.TransitionState()
-		// Cap the behavioral delay so VPN data throughput is not destroyed.
-		// Messenger profiles model human-scale inter-message timing (up to 30s
-		// in idle state), which is correct at the session level but kills
-		// throughput if applied to every individual VPN packet.  5 ms gives
-		// enough jitter to defeat per-packet timing fingerprinting without a
-		// significant throughput hit.
 		const maxPacketDelay = 5 * time.Millisecond
 		if d > maxPacketDelay {
 			d = maxPacketDelay
@@ -502,14 +496,12 @@ func (m *Marionette) SetBehavioralProfile(profileName string) error {
 	var profile *behavioral.MessengerProfile
 	var isIOS bool
 
-	// obfuscationProfile is the traffic-shaping profile name used by the rule engine.
-	// utlsFP is the uTLS ClientHello preset used for JA3/JA4 fingerprint evasion.
 	var obfuscationProfile, utlsFP string
 
 	switch profileName {
 	case "telegram":
 		profile = behavioral.TelegramProfile()
-		obfuscationProfile = "websocket" // closest to Telegram's MTProto-over-WebSocket look
+		obfuscationProfile = "websocket"
 		utlsFP = "android"
 	case "vk", "vk_messenger":
 		profile = behavioral.VKMessengerProfile()
@@ -525,7 +517,7 @@ func (m *Marionette) SetBehavioralProfile(profileName string) error {
 		utlsFP = "android"
 	case "max", "max_messenger":
 		profile = behavioral.MaxMessengerProfile()
-		obfuscationProfile = "mailru" // MAX is Mail.ru's product
+		obfuscationProfile = "mailru"
 		utlsFP = "max"
 	case "wechat":
 		profile = behavioral.WeChatProfile()
@@ -562,8 +554,30 @@ func (m *Marionette) SetBehavioralProfile(profileName string) error {
 		utlsFP = "ios"
 		isIOS = true
 
+	case "spotify":
+		profile = behavioral.SpotifyProfile()
+		obfuscationProfile = "http2"
+		utlsFP = "android"
+	case "yandex_music", "yandexmusic":
+		profile = behavioral.YandexMusicProfile()
+		obfuscationProfile = "http2"
+		utlsFP = "android"
+	case "vk_music", "vkmusic":
+		profile = behavioral.VKMusicProfile()
+		obfuscationProfile = "vk"
+		utlsFP = "vk"
+
+	case "youtube":
+		profile = behavioral.YouTubeProfile()
+		obfuscationProfile = "http2"
+		utlsFP = "android"
+	case "vk_video_stream", "vkvideo_stream":
+		profile = behavioral.VKVideoStreamProfile()
+		obfuscationProfile = "vk"
+		utlsFP = "vk"
+
 	default:
-		return fmt.Errorf("unknown behavioral profile: %s, available: telegram, vk, vkvideo, instagram, max, wechat, facebook (add '_ios' for iOS variant)", profileName)
+		return fmt.Errorf("unknown behavioral profile: %s, available: telegram, vk, vkvideo, instagram, max, wechat, facebook (add '_ios' for iOS variant), spotify, yandex_music, vk_music, youtube, vk_video_stream", profileName)
 	}
 
 	m.ActiveBehavioralProfile = profile
@@ -571,7 +585,6 @@ func (m *Marionette) SetBehavioralProfile(profileName string) error {
 	m.lockedProfile = true
 	m.UTLSFingerprint = utlsFP
 
-	// Update active obfuscation profile directly (avoids re-locking the same mutex).
 	if obfuscationProfile != "" {
 		if _, exists := m.Profiles[obfuscationProfile]; exists {
 			m.Active = obfuscationProfile
@@ -581,7 +594,7 @@ func (m *Marionette) SetBehavioralProfile(profileName string) error {
 		}
 	}
 
-	_ = isIOS // used above for utlsFP selection
+	_ = isIOS
 
 	return nil
 }

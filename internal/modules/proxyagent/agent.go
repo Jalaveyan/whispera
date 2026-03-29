@@ -223,6 +223,13 @@ func (pa *ProxyAgent) SelectTransport() (string, string) {
 		return candidate.Name, candidate.Server
 	}
 
+	totalAttempts := 0
+	for _, a := range pa.arms {
+		a.mu.Lock()
+		totalAttempts += a.attempts
+		a.mu.Unlock()
+	}
+
 	bestIdx := 0
 	bestQ := -1.0
 	for i, arm := range pa.arms {
@@ -236,17 +243,9 @@ func (pa *ProxyAgent) SelectTransport() (string, string) {
 			q *= 0.5
 		}
 		ucb := q
-		if arm.attempts > 0 {
-			totalAttempts := 0
-			for _, a := range pa.arms {
-				a.mu.Lock()
-				totalAttempts += a.attempts
-				a.mu.Unlock()
-			}
-			if totalAttempts > 0 {
-				ucb += math.Sqrt(2 * math.Log(float64(totalAttempts)) / float64(arm.attempts))
-			}
-		} else {
+		if arm.attempts > 0 && totalAttempts > 0 {
+			ucb += math.Sqrt(2 * math.Log(float64(totalAttempts)) / float64(arm.attempts))
+		} else if arm.attempts == 0 {
 			ucb = 100
 		}
 		arm.mu.Unlock()

@@ -61,10 +61,37 @@ type ProtocolPattern struct {
 }
 
 type TrainingSample struct {
-	Features []float64
-	ClassID  int
-	DPIType  int
+	Features  []float64
+	ClassID   int
+	DPIType   int
 	IsLabeled bool
+	Quality   float64
+}
+
+func sampleQuality(features []float64) float64 {
+	if len(features) == 0 {
+		return 0
+	}
+	nonZero := 0
+	sum, sumSq := 0.0, 0.0
+	for _, v := range features {
+		if v != 0 {
+			nonZero++
+		}
+		sum += v
+		sumSq += v * v
+	}
+	n := float64(len(features))
+	if nonZero < 3 {
+		return 0
+	}
+	mean := sum / n
+	variance := sumSq/n - mean*mean
+	if variance < 1e-12 {
+		return 0
+	}
+	coverage := float64(nonZero) / n
+	return coverage * math.Min(1.0, math.Sqrt(variance)/10.0)
 }
 
 type ReplayBuffer struct {
@@ -138,6 +165,15 @@ type NativeMLEngine struct {
 	flowAnalyzer  *FlowAnalyzer
 	rlAgent       *RLTransportAgent
 	tspuDetector  *TSPUDetector
+
+	onDPIProfile     atomic.Value
+	lastProfileDPI   int32
+	profileHitStreak int32
+
+	activeConn int32
+
+	sniPoolMu sync.RWMutex
+	sniPool   []string
 }
 
 func NewNativeMLEngine(modelDir string) *NativeMLEngine {
@@ -193,6 +229,20 @@ func (rb *ReplayBuffer) getAll() []TrainingSample {
 	}
 	out := make([]TrainingSample, rb.writeIdx)
 	copy(out, rb.samples[:rb.writeIdx])
+	return out
+}
+
+func (rb *ReplayBuffer) getQualityFiltered(minQuality float64) []TrainingSample {
+	src := rb.samples
+	if !rb.full {
+		src = rb.samples[:rb.writeIdx]
+	}
+	out := make([]TrainingSample, 0, len(src))
+	for _, s := range src {
+		if s.Quality >= minQuality {
+			out = append(out, s)
+		}
+	}
 	return out
 }
 
@@ -747,13 +797,15 @@ func (e *NativeMLEngine) Predict(data []byte, protocol, direction string) *types
 		tspuType, tspuConf := e.tspuDetector.DetectTSPU()
 		if tspuType != DPITypeNone && tspuConf > dpiConf {
 			dpiType = tspuType
-			_ = tspuConf // used for comparison only
+			_ = tspuConf
 			dpiName = dpiTypeName(tspuType)
 		}
 	}
 
 	anomalyScore := sigmoidF64(rawAnomaly[0])
 	isAnomaly := anomalyScore > 0.7
+
+	e.maybeFireProfileChange(dpiType, dpiConf)
 
 	return &types.MLPredictionResponse{
 		Predictions: []types.PredictionResult{
@@ -828,7 +880,11 @@ func (e *NativeMLEngine) GetTSPUDetector() *TSPUDetector {
 }
 
 func (e *NativeMLEngine) addPseudoLabel(features []float64, classID, dpiType int) {
-	sample := TrainingSample{Features: features, ClassID: classID, DPIType: dpiType, IsLabeled: false}
+	q := sampleQuality(features)
+	if q <= 0 {
+		return
+	}
+	sample := TrainingSample{Features: features, ClassID: classID, DPIType: dpiType, IsLabeled: false, Quality: q}
 	e.mu.Lock()
 	e.replayBuf.add(sample)
 	e.mu.Unlock()
@@ -837,7 +893,11 @@ func (e *NativeMLEngine) addPseudoLabel(features []float64, classID, dpiType int
 }
 
 func (e *NativeMLEngine) addGroundTruth(features []float64, classID, dpiType int) {
-	sample := TrainingSample{Features: features, ClassID: classID, DPIType: dpiType, IsLabeled: true}
+	q := sampleQuality(features)
+	if q <= 0 {
+		return
+	}
+	sample := TrainingSample{Features: features, ClassID: classID, DPIType: dpiType, IsLabeled: true, Quality: q}
 	e.mu.Lock()
 	e.labeledBuf.add(sample)
 	e.replayBuf.add(sample)
@@ -1088,9 +1148,35 @@ func (e *NativeMLEngine) RankBridges(bridges []map[string]interface{}) []map[str
 	return bridges
 }
 
+func (e *NativeMLEngine) SetConnectionActive(active bool) {
+	if active {
+		atomic.StoreInt32(&e.activeConn, 1)
+	} else {
+		atomic.StoreInt32(&e.activeConn, 0)
+	}
+}
+
+func (e *NativeMLEngine) IsConnectionActive() bool {
+	return atomic.LoadInt32(&e.activeConn) == 1
+}
+
+func (e *NativeMLEngine) QualitySamplesReady() bool {
+	e.mu.RLock()
+	sz := e.replayBuf.size()
+	e.mu.RUnlock()
+	return sz >= RetrainThreshold
+}
+
 func (e *NativeMLEngine) AddSample(data []byte, classID, dpiType int) {
+	if !e.IsConnectionActive() {
+		return
+	}
 	features := e.ExtractFeatures(data)
-	sample := TrainingSample{Features: features, ClassID: classID, DPIType: dpiType, IsLabeled: true}
+	q := sampleQuality(features)
+	if q < 0.01 {
+		return
+	}
+	sample := TrainingSample{Features: features, ClassID: classID, DPIType: dpiType, IsLabeled: true, Quality: q}
 
 	e.mu.Lock()
 	e.replayBuf.add(sample)
@@ -1124,7 +1210,13 @@ func (e *NativeMLEngine) Train(epochs int) (int, float64) {
 	e.stopTraining = make(chan struct{})
 
 	e.mu.Lock()
-	samples := e.replayBuf.getAll()
+	filtered := e.replayBuf.getQualityFiltered(0.05)
+	var samples []TrainingSample
+	if len(filtered) >= BatchSize*4 {
+		samples = filtered
+	} else {
+		samples = e.replayBuf.getAll()
+	}
 	e.mu.Unlock()
 
 	if len(samples) < BatchSize {
@@ -1147,6 +1239,11 @@ func (e *NativeMLEngine) Train(epochs int) (int, float64) {
 
 	var totalLoss float64
 
+	xData := make([]float64, BatchSize*InputSize)
+	yTraffic := make([]float64, BatchSize*TrafficClasses)
+	yDPI := make([]float64, BatchSize*DPIClasses)
+	yAnomaly := make([]float64, BatchSize)
+
 	for epoch := 0; epoch < epochs; epoch++ {
 		select {
 		case <-e.stopTraining:
@@ -1163,10 +1260,18 @@ func (e *NativeMLEngine) Train(epochs int) (int, float64) {
 		for bStart := 0; bStart+BatchSize <= len(samples); bStart += BatchSize {
 			batch := samples[bStart : bStart+BatchSize]
 
-			xData := make([]float64, BatchSize*InputSize)
-			yTraffic := make([]float64, BatchSize*TrafficClasses)
-			yDPI := make([]float64, BatchSize*DPIClasses)
-			yAnomaly := make([]float64, BatchSize)
+			for i := range xData {
+				xData[i] = 0
+			}
+			for i := range yTraffic {
+				yTraffic[i] = 0
+			}
+			for i := range yDPI {
+				yDPI[i] = 0
+			}
+			for i := range yAnomaly {
+				yAnomaly[i] = 0
+			}
 
 			for i, s := range batch {
 				normF := e.normalizeSnapshot(s.Features)
@@ -1312,6 +1417,55 @@ func (e *NativeMLEngine) GetStats() map[string]interface{} {
 		"anomaly_layers": netLayerSizes(e.anomalyNet),
 		"transport_layers": netLayerSizes(e.transportNet),
 		"parameters":     netParams(e.trafficNet) + netParams(e.dpiNet) + netParams(e.anomalyNet) + netParams(e.transportNet),
+	}
+}
+
+func dpiTypeToProfile(dpiType int) string {
+	switch dpiType {
+	case 1:
+		return "vk"
+	case 2:
+		return "max"
+	case 3:
+		return "facebook"
+	case 4:
+		return "instagram"
+	case 5:
+		return "vk"
+	case 6:
+		return "telegram"
+	default:
+		return ""
+	}
+}
+
+func (e *NativeMLEngine) SetOnDPIProfile(fn func(profile string)) {
+	e.onDPIProfile.Store(fn)
+}
+
+func (e *NativeMLEngine) maybeFireProfileChange(dpiType int, conf float64) {
+	if dpiType <= 0 || conf < 0.82 {
+		atomic.StoreInt32(&e.profileHitStreak, 0)
+		return
+	}
+	last := atomic.LoadInt32(&e.lastProfileDPI)
+	if int32(dpiType) == last {
+		streak := atomic.AddInt32(&e.profileHitStreak, 1)
+		if streak < 5 {
+			return
+		}
+		atomic.StoreInt32(&e.profileHitStreak, 0)
+	} else {
+		atomic.StoreInt32(&e.lastProfileDPI, int32(dpiType))
+		atomic.StoreInt32(&e.profileHitStreak, 1)
+		return
+	}
+	profile := dpiTypeToProfile(dpiType)
+	if profile == "" {
+		return
+	}
+	if fn, ok := e.onDPIProfile.Load().(func(string)); ok && fn != nil {
+		fn(profile)
 	}
 }
 
@@ -1477,4 +1631,121 @@ func netParams(net *GorgoniaNet) int {
 		total += l.InSize*l.OutSize + l.OutSize
 	}
 	return total
+}
+
+func extractTLSSNI(data []byte) string {
+	if len(data) < 43 {
+		return ""
+	}
+	if data[0] != 0x16 {
+		return ""
+	}
+	if len(data) < 5 {
+		return ""
+	}
+	recLen := int(data[3])<<8 | int(data[4])
+	if len(data) < 5+recLen {
+		return ""
+	}
+	hs := data[5:]
+	if len(hs) < 4 || hs[0] != 0x01 {
+		return ""
+	}
+	hsLen := int(hs[1])<<16 | int(hs[2])<<8 | int(hs[3])
+	if len(hs) < 4+hsLen {
+		return ""
+	}
+	hello := hs[4 : 4+hsLen]
+	if len(hello) < 38 {
+		return ""
+	}
+	pos := 2 + 32
+	if pos >= len(hello) {
+		return ""
+	}
+	sessLen := int(hello[pos])
+	pos += 1 + sessLen
+	if pos+2 > len(hello) {
+		return ""
+	}
+	csLen := int(hello[pos])<<8 | int(hello[pos+1])
+	pos += 2 + csLen
+	if pos+1 > len(hello) {
+		return ""
+	}
+	compLen := int(hello[pos])
+	pos += 1 + compLen
+	if pos+2 > len(hello) {
+		return ""
+	}
+	extTotal := int(hello[pos])<<8 | int(hello[pos+1])
+	pos += 2
+	end := pos + extTotal
+	if end > len(hello) {
+		return ""
+	}
+	for pos+4 <= end {
+		extType := int(hello[pos])<<8 | int(hello[pos+1])
+		extLen := int(hello[pos+2])<<8 | int(hello[pos+3])
+		pos += 4
+		if extType == 0x0000 && extLen >= 5 && pos+extLen <= end {
+			listLen := int(hello[pos])<<8 | int(hello[pos+1])
+			if listLen+2 <= extLen && hello[pos+2] == 0x00 {
+				nameLen := int(hello[pos+3])<<8 | int(hello[pos+4])
+				if nameLen+5 <= extLen && pos+5+nameLen <= end {
+					return string(hello[pos+5 : pos+5+nameLen])
+				}
+			}
+		}
+		pos += extLen
+	}
+	return ""
+}
+
+func (e *NativeMLEngine) StoreSNI(sni string) {
+	if sni == "" {
+		return
+	}
+	e.sniPoolMu.Lock()
+	defer e.sniPoolMu.Unlock()
+	for _, s := range e.sniPool {
+		if s == sni {
+			return
+		}
+	}
+	e.sniPool = append(e.sniPool, sni)
+}
+
+func (e *NativeMLEngine) GetSNIPool() []string {
+	e.sniPoolMu.RLock()
+	defer e.sniPoolMu.RUnlock()
+	out := make([]string, len(e.sniPool))
+	copy(out, e.sniPool)
+	return out
+}
+
+func (e *NativeMLEngine) GetCurrentDPILevel() (dpiType int, confidence float64) {
+	samples := e.replayBuf.getAll()
+	if len(samples) == 0 {
+		return 0, 0
+	}
+	if len(samples) > 50 {
+		samples = samples[len(samples)-50:]
+	}
+	counts := make([]int, DPIClasses)
+	totalConf := 0.0
+	for _, s := range samples {
+		if s.DPIType >= 0 && s.DPIType < DPIClasses {
+			counts[s.DPIType]++
+		}
+		totalConf += s.Quality
+	}
+	maxCount, dominantType := 0, 0
+	for t, c := range counts {
+		if c > maxCount {
+			maxCount = c
+			dominantType = t
+		}
+	}
+	return dominantType, totalConf / float64(len(samples))
 }

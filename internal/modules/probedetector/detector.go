@@ -94,6 +94,8 @@ type Detector struct {
 	reflectedTotal  uint64
 	activeReflect   int32
 	reflectHistory  map[string]time.Time
+
+	Guard *ConnGuard
 }
 
 func New(cfg Config) *Detector {
@@ -136,6 +138,7 @@ func New(cfg Config) *Detector {
 		ownIPs:         make(map[string]struct{}),
 		cleanupStop:    make(chan struct{}),
 		reflectHistory: make(map[string]time.Time),
+		Guard: NewConnGuard(true),
 	}
 
 	for _, ip := range cfg.OwnPublicIPs {
@@ -157,6 +160,9 @@ func (d *Detector) Start() {
 
 func (d *Detector) Stop() {
 	close(d.cleanupStop)
+	if d.Guard != nil {
+		d.Guard.Stop()
+	}
 }
 
 func (d *Detector) RecordDNSQuery(clientAddr, hostname string, resolvedIPs []string) {

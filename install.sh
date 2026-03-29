@@ -21,7 +21,6 @@ log_success() { echo -e "${GREEN}[OK]${PLAIN} $1"; }
 log_warn() { echo -e "${YELLOW}[WARN]${PLAIN} $1"; }
 log_err() { echo -e "${RED}[ERR]${PLAIN} $1"; }
 
-# Call after any edit to config.yaml so the integrity check passes on restart
 refresh_config() {
     local cfg="${1:-$CONF_PATH/config.yaml}"
     if [[ ! -f "$cfg" ]]; then return; fi
@@ -55,6 +54,15 @@ check_root() {
     if [[ $EUID -ne 0 ]]; then
         log_err "This script must be run as root!"
         exit 1
+    fi
+}
+
+gen_password() {
+    local len=${1:-30}
+    if command -v openssl &>/dev/null; then
+        openssl rand -base64 40 | tr -dc 'A-Za-z0-9' | head -c "$len"
+    else
+        head -c 64 /dev/urandom | tr -dc 'A-Za-z0-9' | head -c "$len"
     fi
 }
 
@@ -168,7 +176,6 @@ EOF
 setup_warp() {
     log_info "Setting up Cloudflare WARP..."
 
-    # Install warp-cli if not present
     if ! command -v warp-cli &>/dev/null; then
         case $RELEASE in
             ubuntu|debian)
@@ -195,9 +202,7 @@ setup_warp() {
     systemctl enable warp-svc --now 2>/dev/null || true
     sleep 2
 
-    # Connect if not already connected
     if ! warp-cli status 2>/dev/null | grep -q "Connected"; then
-        # Support both old and new warp-cli syntax
         if warp-cli registration new &>/dev/null; then
             warp-cli mode proxy 2>/dev/null || true
         else
@@ -205,7 +210,6 @@ setup_warp() {
             warp-cli set-mode proxy 2>/dev/null || true
         fi
         warp-cli connect 2>/dev/null || true
-        # Wait up to 15s for connection
         for i in $(seq 1 5); do
             sleep 3
             warp-cli status 2>/dev/null | grep -q "Connected" && break
@@ -278,6 +282,42 @@ backend  = systemd
 
 [sshd]
 enabled = true
+
+[whispera]
+enabled   = true
+backend   = systemd
+journalmatch = _SYSTEMD_UNIT=whispera.service
+maxretry  = 5
+findtime  = 1m
+bantime   = 6h
+filter    = whispera
+
+[whispera-panel]
+enabled   = true
+backend   = systemd
+journalmatch = _SYSTEMD_UNIT=whispera-panel.service
+maxretry  = 10
+findtime  = 1m
+bantime   = 1h
+filter    = whispera-panel
+EOF
+
+    mkdir -p /etc/fail2ban/filter.d
+    cat > /etc/fail2ban/filter.d/whispera.conf <<'EOF'
+[Definition]
+failregex = .*handshake failed.*<HOST>
+            .*auth failed.*<HOST>
+            .*invalid key.*<HOST>
+            .*connection rejected.*<HOST>
+ignoreregex =
+EOF
+
+    cat > /etc/fail2ban/filter.d/whispera-panel.conf <<'EOF'
+[Definition]
+failregex = .*401.*<HOST>
+            .*403.*<HOST>
+            .*login failed.*<HOST>
+ignoreregex =
 EOF
 
     systemctl enable fail2ban >/dev/null 2>&1
@@ -285,7 +325,7 @@ EOF
     sleep 2
 
     if systemctl is-active --quiet fail2ban 2>/dev/null; then
-        log_success "Fail2ban installed and running"
+        log_success "Fail2ban installed and running (sshd + whispera + panel jails)"
         log_info "Config: /etc/fail2ban/jail.local"
     else
         log_warn "Fail2ban installed but not running. Check: journalctl -u fail2ban"
@@ -436,7 +476,7 @@ setup_postgres() {
     systemctl restart postgresql >/dev/null 2>&1
     sleep 2
     
-    local PG_PASS=$(openssl rand -hex 16 2>/dev/null || head -c 32 /dev/urandom | xxd -p | head -c 32)
+    local PG_PASS=$(gen_password 30)
     
     sudo -u postgres psql <<EOF >/dev/null 2>&1
 CREATE USER whispera WITH PASSWORD '$PG_PASS';
@@ -536,7 +576,6 @@ setup_autoupdate() {
     log_info "Setting up auto-update..."
     
     cat > /etc/cron.daily/whispera-update <<EOF
-#!/bin/bash
 cd $WORK_DIR
 git pull origin main --quiet
 export PATH=\$PATH:/usr/local/go/bin
@@ -619,6 +658,74 @@ setup_ssh_hardening() {
     
     log_success "SSH hardened (password auth disabled)"
     log_warn "Make sure you have SSH key access before logging out!"
+}
+
+gen_bridge_ssh_otp() {
+    log_info "Generating one-time SSH access code for bridge..."
+
+    local TTL=${1:-3600}  # seconds, default 1 hour
+    local KEY_DIR=$(mktemp -d)
+    local KEY_FILE="$KEY_DIR/bridge_otp"
+
+    ssh-keygen -t ed25519 -f "$KEY_FILE" -N "" -C "whispera-bridge-otp-$(date +%s)" -q
+
+    local PUB_KEY=$(cat "$KEY_FILE.pub")
+    local PRIV_KEY=$(cat "$KEY_FILE")
+    local EXPIRE_AT=$(date -d "+${TTL} seconds" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || date -v "+${TTL}S" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo "in ${TTL}s")
+    local REMOVAL_AT=$(date -d "+${TTL} seconds" '+%H%M %Y-%m-%d' 2>/dev/null || date -v "+${TTL}S" '+%H%M %Y-%m-%d' 2>/dev/null)
+    local MARKER="whispera-bridge-otp-$(date +%s)"
+
+    mkdir -p ~/.ssh
+    chmod 700 ~/.ssh
+    echo "${PUB_KEY} ${MARKER}" >> ~/.ssh/authorized_keys
+    chmod 600 ~/.ssh/authorized_keys
+
+    local CLEANUP_SCRIPT="/tmp/whispera-otp-${MARKER}.sh"
+    cat > "$CLEANUP_SCRIPT" <<CLEANSCRIPT
+sed -i "/${MARKER}/d" ~/.ssh/authorized_keys
+rm -f "$CLEANUP_SCRIPT"
+CLEANSCRIPT
+    chmod +x "$CLEANUP_SCRIPT"
+    local SCHEDULED=0
+
+    if command -v at &>/dev/null; then
+        if systemctl is-active --quiet atd 2>/dev/null || service atd status &>/dev/null 2>&1 || pgrep -x atd &>/dev/null; then
+            echo "bash $CLEANUP_SCRIPT" | at "now + $(( TTL / 60 + 1 )) minutes" 2>/dev/null && SCHEDULED=1
+        fi
+    fi
+
+    if [[ "$SCHEDULED" -eq 0 ]] && command -v crontab &>/dev/null; then
+        local CRON_TIME
+        CRON_TIME=$(date -d "+$(( TTL / 60 + 1 )) minutes" '+%M %H %d %m *' 2>/dev/null \
+                 || date -v "+$(( TTL / 60 + 1 ))M" '+%M %H %d %m *' 2>/dev/null)
+        if [[ -n "$CRON_TIME" ]]; then
+            (crontab -l 2>/dev/null | grep -v "$CLEANUP_SCRIPT"; \
+             echo "$CRON_TIME bash $CLEANUP_SCRIPT") | crontab - 2>/dev/null && SCHEDULED=1
+        fi
+    fi
+
+    if [[ "$SCHEDULED" -eq 0 ]]; then
+        nohup bash -c "sleep ${TTL}; bash $CLEANUP_SCRIPT" </dev/null >/dev/null 2>&1 &
+        SCHEDULED=1
+        log_warn "at/cron unavailable — using background process (key removed in ${TTL}s if server stays up)"
+    fi
+
+    rm -rf "$KEY_DIR"
+
+    echo ""
+    echo -e "${YELLOW}┌─── One-time SSH key (valid until: ${EXPIRE_AT}) ───────────────────────────────┐${PLAIN}"
+    echo -e "${YELLOW}│ Expires automatically. Use ONCE to set up the bridge, then key is removed.   │${PLAIN}"
+    echo -e "${YELLOW}└───────────────────────────────────────────────────────────────────────────────┘${PLAIN}"
+    echo ""
+    echo -e "${GREEN}Paste this private key into a file on the bridge server:${PLAIN}"
+    echo ""
+    echo "$PRIV_KEY"
+    echo ""
+    local SRV_IP=$(get_public_ip)
+    echo -e "${GREEN}SSH command to use on the bridge server:${PLAIN}"
+    echo -e "  ssh -i /tmp/bridge_key -o StrictHostKeyChecking=no root@${SRV_IP}"
+    echo ""
+    log_success "Key added to authorized_keys. It will self-remove after ${TTL}s."
 }
 
 setup_backups() {
@@ -707,6 +814,7 @@ show_extras_menu() {
         _row " 19.  Show bridge token & install command"
         _row " 20.  Add bridge manually (enter IP + token)"
         _row " 21.  List registered bridges"
+        _row " 22.  SSH OTP       - One-time SSH key for bridge admin (1h)"
         echo -e "${BLUE}╠${SEP}╣${PLAIN}"
         _row "  OPTIONAL EXTRAS"
         _row "  1.  BBR           - Faster TCP (recommended)"
@@ -786,6 +894,9 @@ show_extras_menu() {
                     -H "Authorization: Bearer $(cat $CONF_PATH/admin.token 2>/dev/null)" | \
                     jq . 2>/dev/null || cat || \
                     log_err "Failed to fetch bridges (is Whispera running?)"
+                ;;
+            22)
+                gen_bridge_ssh_otp 3600
                 ;;
             0|"") log_info "Exiting menu."; break ;;
             *) log_warn "Invalid option: $choice" ;;
@@ -978,7 +1089,6 @@ setup_monitoring() {
 install_panel() {
     log_info "Installing Whispera Panel..."
 
-    # Ensure Node.js runtime is available to run bundle/index.js
     install_nodejs
     
     local PANEL_SRC="$WORK_DIR/panel"
@@ -1105,8 +1215,7 @@ generate_keys() {
 }
 
 generate_bridge_token() {
-    local TOKEN=$(openssl rand -hex 16 2>/dev/null || head -c 32 /dev/urandom | xxd -p | head -c 32)
-    echo "$TOKEN"
+    gen_password 30
 }
 
 setup_dns_discovery() {
@@ -1156,7 +1265,7 @@ generate_config() {
          PG_PASS="whispera" 
     fi
     
-    local ADMIN_PASS=$(openssl rand -base64 32 2>/dev/null | tr -dc 'A-Za-z0-9!@#$%^&*_+-=' | head -c 36)
+    local ADMIN_PASS=$(gen_password 30)
     echo "$ADMIN_PASS" > "$CONF_PATH/admin.pass"
     chmod 600 "$CONF_PATH/admin.pass"
 
@@ -1315,7 +1424,6 @@ setup_nginx_proxy() {
     local CERT="$CONF_PATH/panel.crt"
     local KEY="$CONF_PATH/panel.key"
 
-    # Install nginx if missing
     if ! command -v nginx &>/dev/null; then
         log_info "Installing nginx..."
         if command -v apt-get &>/dev/null; then
@@ -1328,13 +1436,11 @@ setup_nginx_proxy() {
         fi
     fi
 
-    # Add whispera-ui to /etc/hosts
     if ! grep -q "whispera-ui" /etc/hosts; then
         echo "127.0.0.1 whispera-ui" >> /etc/hosts
         log_info "Added whispera-ui to /etc/hosts"
     fi
 
-    # Write nginx config
     cat > /etc/nginx/sites-available/whispera-ui <<NGINX
 server {
     listen 80;
@@ -1364,14 +1470,11 @@ server {
 }
 NGINX
 
-    # Enable site
     mkdir -p /etc/nginx/sites-enabled
     ln -sf /etc/nginx/sites-available/whispera-ui /etc/nginx/sites-enabled/whispera-ui
 
-    # Disable default site if present
     rm -f /etc/nginx/sites-enabled/default
 
-    # Open ports
     if command -v ufw &>/dev/null; then
         ufw allow 80/tcp >/dev/null 2>&1 || true
         ufw allow 443/tcp >/dev/null 2>&1 || true
@@ -1394,7 +1497,6 @@ setup_systemd() {
         log_info "Created system user 'whispera'"
     fi
 
-    # Allow whispera user to manage UFW without password (for firewall panel)
     local UFW_BIN
     UFW_BIN=$(command -v ufw 2>/dev/null || echo /usr/sbin/ufw)
     echo "whispera ALL=(ALL) NOPASSWD: $UFW_BIN" > /etc/sudoers.d/whispera-ufw
@@ -1472,7 +1574,6 @@ $PANEL_HTTPS_VARS
 WantedBy=multi-user.target
 EOF
 
-    # ── ML service — встроен в основной Go бинарник (модуль mlserver, порт 8000) ──
     log_info "ML engine is built into the main Whispera binary (no Python required)"
     _enable_ml_in_config
 
@@ -1522,7 +1623,6 @@ WEOF
     log_success "ML engine runs inside main Whispera process (port 8000)"
 }
 
-# Прописывает ml.enabled=true в config.yaml после успешного запуска ML сервиса
 _enable_ml_in_config() {
     local cfg="${CONF_PATH}/config.yaml"
     [[ -f "$cfg" ]] || return
@@ -1564,24 +1664,31 @@ setup_network() {
 
 setup_firewall() {
     log_info "Configuring firewall..."
-    
+
     if command -v ufw &>/dev/null; then
+        ufw default deny incoming >/dev/null 2>&1 || true
+        ufw default allow outgoing >/dev/null 2>&1 || true
+
         ufw allow ssh >/dev/null 2>&1 || true
         ufw allow 8443/tcp >/dev/null 2>&1 || true
         ufw allow 8443/udp >/dev/null 2>&1 || true
         ufw allow 8080/tcp >/dev/null 2>&1 || true
         ufw allow 80/tcp >/dev/null 2>&1 || true
         ufw allow 443/tcp >/dev/null 2>&1 || true
-        ufw allow 3000/tcp >/dev/null 2>&1 || true
+
+        ufw allow from 127.0.0.1 to any port 3000 >/dev/null 2>&1 || true
+        ufw deny 3000/tcp >/dev/null 2>&1 || true
+
         ufw --force enable >/dev/null 2>&1 || true
-        log_success "UFW configured"
+        log_success "UFW configured (default deny incoming)"
+        log_info "Panel port 3000 restricted to localhost only"
     elif command -v firewall-cmd &>/dev/null; then
         firewall-cmd --permanent --add-port=8443/tcp >/dev/null 2>&1 || true
         firewall-cmd --permanent --add-port=8443/udp >/dev/null 2>&1 || true
         firewall-cmd --permanent --add-port=8080/tcp >/dev/null 2>&1 || true
         firewall-cmd --permanent --add-port=80/tcp >/dev/null 2>&1 || true
         firewall-cmd --permanent --add-port=443/tcp >/dev/null 2>&1 || true
-        firewall-cmd --permanent --add-port=3000/tcp >/dev/null 2>&1 || true
+        firewall-cmd --permanent --add-rich-rule='rule family="ipv4" source address="127.0.0.1" port protocol="tcp" port="3000" accept' >/dev/null 2>&1 || true
         firewall-cmd --reload >/dev/null 2>&1 || true
         log_success "Firewalld configured"
     else
@@ -1633,13 +1740,11 @@ EOF
     chmod +x "$BIN_PATH/whispera-mgmt"
     
     cat > "$BIN_PATH/menu" <<EOF
-#!/bin/bash
 bash /opt/whispera/update.sh extras
 EOF
     chmod +x "$BIN_PATH/menu"
     
     cat > "$WORK_DIR/menu" <<EOF
-#!/bin/bash
 bash /opt/whispera/update.sh extras
 EOF
     chmod +x "$WORK_DIR/menu"

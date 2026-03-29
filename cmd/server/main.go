@@ -103,7 +103,13 @@ var (
 	printVersion   = flag.Bool("version", false, "Print version and exit")
 	validateConfig = flag.Bool("validate-config", false, "Validate configuration and exit")
 	pprofAddr      = flag.String("pprof", "localhost:6060", "Pprof server listen address")
+	p2pAddr        = flag.String("p2p-addr", "", "P2P relay listen address (e.g. :8445), empty = disabled")
+	p2pSecret      = flag.String("p2p-secret", "", "P2P relay HMAC secret; auto-generated if empty")
+	clusterAddr    = flag.String("cluster-addr", ":8082", "Bridge cluster HTTP listen address (served by bridge agent)")
+	selfAddr       = flag.String("self-addr", "", "Public address of this bridge node (host:port), used in cluster election")
 )
+
+var globalP2PRelay *relay.P2PRelay
 
 var (
 	globalHandshake      *handshake.Handler
@@ -115,6 +121,7 @@ var (
 	globalCryptoProvider interfaces.CryptoProvider
 	globalServerConfig   *modconfig.ServerConfig
 	globalBridgeAgent    *bridgeagent.Agent
+	globalBridge         *relay.Bridge
 	globalCorrelation    *evasion.CorrelationDefense
 	globalUpdater        *update.Updater
 
@@ -317,6 +324,7 @@ func StartInbound(inbound modconfig.InboundConfig, serverConfig *modconfig.Serve
 		}
 		if globalProbeDetector != nil {
 			phantomHandler.SetProbeDetector(globalProbeDetector)
+			phantomHandler.SetConnGuard(globalProbeDetector.Guard)
 		}
 		log.Printf("  ✨ [Dynamic] Enabled Phantom/Reality on inbound %s", inbound.Tag)
 	} else {
@@ -563,8 +571,6 @@ func StopInbound(tag string) error {
 	return nil
 }
 
-// StartReverseInbound dials remoteAddr in a loop and treats each connection as
-// an inbound client connection (server-as-client / reverse-connect mode).
 func StartReverseInbound(inbound modconfig.InboundConfig, serverConfig *modconfig.ServerConfig, stopCh <-chan struct{}) {
 	remoteAddr := inbound.RemoteAddr
 	if remoteAddr == "" {
@@ -925,6 +931,15 @@ func createModules(manager *lifecycle.Manager, ctx context.Context) error {
 			return fmt.Errorf("failed to create bridge: %w", err)
 		}
 
+		bridge.OnFailover(func(active bool) {
+			if active {
+				log.Printf("[Failover] Upstream %s unreachable — bridge is now operating as master", serverConfig.UpstreamServer)
+			} else {
+				log.Printf("[Failover] Upstream %s recovered — returning to relay mode", serverConfig.UpstreamServer)
+			}
+		})
+		globalBridge = bridge
+
 		if err := bridge.Start(serverConfig.Server.ListenAddr); err != nil {
 			return fmt.Errorf("failed to start bridge: %w", err)
 		}
@@ -935,6 +950,12 @@ func createModules(manager *lifecycle.Manager, ctx context.Context) error {
 		agentCfg.BridgeID = serverConfig.Bridge.Region + "-" + serverConfig.Server.ListenAddr
 		agentCfg.UpstreamServer = serverConfig.UpstreamServer
 		agentCfg.RegistrationToken = serverConfig.Bridge.RegistrationToken
+		agentCfg.ClusterListenAddr = *clusterAddr
+		if *selfAddr != "" {
+			agentCfg.SelfAddress = *selfAddr
+		} else {
+			agentCfg.SelfAddress = serverConfig.Server.ListenAddr
+		}
 		globalBridgeAgent = bridgeagent.NewAgent(agentCfg)
 		globalBridgeAgent.OnConfigUpdate(func(cfg map[string]interface{}) {
 			log.Printf("[BridgeAgent] Config update received: %v", cfg)
@@ -1110,6 +1131,25 @@ func createModules(manager *lifecycle.Manager, ctx context.Context) error {
 	}
 	log.Printf("  ✓ Relay server enabled (TCP+UDP+L3)")
 
+	if *p2pAddr != "" {
+		secret := []byte(*p2pSecret)
+		if len(secret) == 0 {
+			secret = make([]byte, 32)
+			rand.Read(secret)
+			log.Printf("  [P2P] Auto-generated secret: %x", secret)
+		}
+		p2pCfg := relay.DefaultP2PRelayConfig()
+		p2pCfg.ListenAddr = *p2pAddr
+		p2pCfg.Secret = secret
+		p2pRelay := relay.NewP2PRelay(p2pCfg)
+		if err := p2pRelay.Start(); err != nil {
+			log.Printf("  ⚠ P2P relay failed to start on %s: %v", *p2pAddr, err)
+		} else {
+			globalP2PRelay = p2pRelay
+			log.Printf("  ✓ P2P relay started on %s", *p2pAddr)
+		}
+	}
+
 	if len(serverConfig.Inbounds) > 0 {
 		log.Printf("[Server] Starting %d inbounds...", len(serverConfig.Inbounds))
 		for _, inbound := range serverConfig.Inbounds {
@@ -1189,6 +1229,32 @@ func createModules(manager *lifecycle.Manager, ctx context.Context) error {
 		if err := manager.Register(apiServer); err != nil {
 			return err
 		}
+
+		apiServer.Handle("/api/bridge/failover", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			if globalBridge == nil {
+				json.NewEncoder(w).Encode(map[string]interface{}{"mode": "master", "failover": false})
+				return
+			}
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"mode":             "bridge",
+				"upstream_alive":   globalBridge.IsUpstreamAlive(),
+				"failover_active":  globalBridge.IsFailoverActive(),
+				"active_conns":     globalBridge.GetActiveConnections(),
+			})
+		})
+
+		apiServer.Handle("/api/p2p/stats", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			if globalP2PRelay == nil {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				fmt.Fprintf(w, `{"error":"p2p relay not running"}`)
+				return
+			}
+			stats := globalP2PRelay.Stats()
+			data, _ := json.Marshal(stats)
+			w.Write(data)
+		})
 
 		globalProbeDetector = probedetector.New(probedetector.DefaultConfig())
 		globalProbeDetector.Start()

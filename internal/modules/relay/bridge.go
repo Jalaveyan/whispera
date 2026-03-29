@@ -22,12 +22,19 @@ type Bridge struct {
 	running    int32
 	activeConn int32
 	wg         sync.WaitGroup
+
+	upstreamAlive   int32
+	failoverActive  int32
+	failoverHandler func(conn net.Conn)
+	failoverMu      sync.RWMutex
+	onFailover      []func(active bool)
 }
 
 type BridgeConfig struct {
 	ListenAddr     string
 	UpstreamServer string
 	PhantomConfig  *phantom.Config
+	FailoverHandler func(conn net.Conn)
 }
 
 func NewBridge(cfg *BridgeConfig) (*Bridge, error) {
@@ -36,11 +43,28 @@ func NewBridge(cfg *BridgeConfig) (*Bridge, error) {
 		return nil, err
 	}
 
-	return &Bridge{
-		upstreamAddr:   cfg.UpstreamServer,
-		phantomHandler: ph,
-		log:            logger.Module("bridge"),
-	}, nil
+	b := &Bridge{
+		upstreamAddr:    cfg.UpstreamServer,
+		phantomHandler:  ph,
+		log:             logger.Module("bridge"),
+		failoverHandler: cfg.FailoverHandler,
+	}
+	atomic.StoreInt32(&b.upstreamAlive, 1)
+	return b, nil
+}
+
+func (b *Bridge) OnFailover(fn func(active bool)) {
+	b.failoverMu.Lock()
+	b.onFailover = append(b.onFailover, fn)
+	b.failoverMu.Unlock()
+}
+
+func (b *Bridge) IsUpstreamAlive() bool {
+	return atomic.LoadInt32(&b.upstreamAlive) == 1
+}
+
+func (b *Bridge) IsFailoverActive() bool {
+	return atomic.LoadInt32(&b.failoverActive) == 1
 }
 
 func (b *Bridge) Start(listenAddr string) error {
@@ -54,6 +78,7 @@ func (b *Bridge) Start(listenAddr string) error {
 	b.log.Info("Bridge started on %s -> %s", listenAddr, b.upstreamAddr)
 
 	go b.acceptLoop()
+	go b.healthLoop()
 	return nil
 }
 
@@ -104,6 +129,19 @@ func (b *Bridge) handleConnection(clientConn net.Conn) {
 		return
 	}
 
+	if atomic.LoadInt32(&b.failoverActive) == 1 {
+		b.failoverMu.RLock()
+		handler := b.failoverHandler
+		b.failoverMu.RUnlock()
+		if handler != nil {
+			b.log.Debug("[Failover] Handling connection locally (SNI=%s)", sni)
+			handler(&prependConn{Conn: clientConn, buf: clientHello})
+			return
+		}
+		b.log.Warn("[Failover] No local handler, dropping connection (SNI=%s)", sni)
+		return
+	}
+
 	b.log.Debug("Bridge: forwarding connection with SNI=%s", sni)
 
 	upstreamConn, err := (&tls.Dialer{Config: &tls.Config{
@@ -142,6 +180,54 @@ func (b *Bridge) handleConnection(clientConn net.Conn) {
 
 	<-done
 	<-done
+}
+
+func (b *Bridge) healthLoop() {
+	const (
+		interval    = 10 * time.Second
+		timeout     = 5 * time.Second
+		deadThresh  = 3
+		aliveThresh = 2
+	)
+	deadCount := 0
+	aliveCount := 0
+	for atomic.LoadInt32(&b.running) == 1 {
+		time.Sleep(interval)
+		if atomic.LoadInt32(&b.running) == 0 {
+			return
+		}
+		conn, err := net.DialTimeout("tcp", b.upstreamAddr, timeout)
+		if err == nil {
+			conn.Close()
+			aliveCount++
+			deadCount = 0
+			if aliveCount >= aliveThresh && atomic.LoadInt32(&b.failoverActive) == 1 {
+				atomic.StoreInt32(&b.upstreamAlive, 1)
+				atomic.StoreInt32(&b.failoverActive, 0)
+				b.log.Info("[Failover] Upstream %s recovered — resuming relay mode", b.upstreamAddr)
+				b.fireFailover(false)
+			}
+		} else {
+			deadCount++
+			aliveCount = 0
+			if deadCount >= deadThresh && atomic.LoadInt32(&b.failoverActive) == 0 {
+				atomic.StoreInt32(&b.upstreamAlive, 0)
+				atomic.StoreInt32(&b.failoverActive, 1)
+				b.log.Warn("[Failover] Upstream %s unreachable after %d checks — entering master mode", b.upstreamAddr, deadCount)
+				b.fireFailover(true)
+			}
+		}
+	}
+}
+
+func (b *Bridge) fireFailover(active bool) {
+	b.failoverMu.RLock()
+	cbs := make([]func(bool), len(b.onFailover))
+	copy(cbs, b.onFailover)
+	b.failoverMu.RUnlock()
+	for _, fn := range cbs {
+		go fn(active)
+	}
 }
 
 func (b *Bridge) extractSNI(data []byte) string {
@@ -241,4 +327,19 @@ func (b *Bridge) parseSNIExtension(data []byte) string {
 
 func (b *Bridge) GetActiveConnections() int {
 	return int(atomic.LoadInt32(&b.activeConn))
+}
+
+type prependConn struct {
+	net.Conn
+	buf    []byte
+	offset int
+}
+
+func (pc *prependConn) Read(b []byte) (int, error) {
+	if pc.offset < len(pc.buf) {
+		n := copy(b, pc.buf[pc.offset:])
+		pc.offset += n
+		return n, nil
+	}
+	return pc.Conn.Read(b)
 }

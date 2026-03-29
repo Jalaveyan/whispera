@@ -760,7 +760,7 @@ func NewStreamManager(dialer proxy.Dialer) *StreamManager {
 		dialer:   dialer,
 		ctx:      ctx,
 		cancel:   cancel,
-		connPool: NewConnectionPool(300*time.Second, 64),
+		connPool: NewConnectionPool(1*time.Second, 64),
 	}
 
 	go sm.cleanupLoop()

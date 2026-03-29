@@ -8,12 +8,15 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"whispera/internal/obfuscation/core/types"
 )
+
+const minQualitySamplesBeforeUse = 500
 
 type DataCollector struct {
 	samples      []TrafficSample
@@ -36,11 +39,14 @@ type DataCollector struct {
 
 	onNewSample func(sample TrafficSample)
 
-	// ML server upload
-	mlServerURL  string
-	mlToken      string
-	lastUpload   time.Time
+	mlServerURL   string
+	mlToken       string
+	lastUpload    time.Time
 	uploadedCount uint64
+
+	connectionActive uint32
+	qualitySamples   uint64
+	writeIdx         int
 }
 
 type TrafficSample struct {
@@ -81,9 +87,53 @@ func NewDataCollector(maxSamples int, saveDir string) *DataCollector {
 		featureStats: NewFeatureStatistics(100),
 	}
 
+	dc.loadLatestFromDisk()
+
 	go dc.backgroundSaveLoop()
 
 	return dc
+}
+
+func (dc *DataCollector) loadLatestFromDisk() {
+	if dc.saveDir == "" {
+		return
+	}
+	entries, err := os.ReadDir(dc.saveDir)
+	if err != nil {
+		return
+	}
+
+	var latestFile string
+	for _, e := range entries {
+		if !e.IsDir() && len(e.Name()) > 11 &&
+			e.Name()[:11] == "ml_samples_" &&
+			filepath.Ext(e.Name()) == ".json" {
+			latestFile = e.Name()
+		}
+	}
+	if latestFile == "" {
+		return
+	}
+
+	data, err := os.ReadFile(filepath.Join(dc.saveDir, latestFile))
+	if err != nil {
+		return
+	}
+
+	var loaded []TrafficSample
+	if err := json.Unmarshal(data, &loaded); err != nil {
+		return
+	}
+
+	if len(loaded) > dc.maxSamples {
+		loaded = loaded[len(loaded)-dc.maxSamples:]
+	}
+
+	dc.mu.Lock()
+	dc.samples = append(dc.samples, loaded...)
+	dc.mu.Unlock()
+
+	log.Info("[data_collector] restored %d samples from %s", len(loaded), latestFile)
 }
 
 func NewFeatureStatistics(numFeatures int) *FeatureStatistics {
@@ -96,16 +146,116 @@ func NewFeatureStatistics(numFeatures int) *FeatureStatistics {
 	}
 }
 
+func (dc *DataCollector) SetConnectionActive(active bool) {
+	if active {
+		atomic.StoreUint32(&dc.connectionActive, 1)
+	} else {
+		atomic.StoreUint32(&dc.connectionActive, 0)
+		go dc.SaveToDisk()
+	}
+}
+
+func (dc *DataCollector) IsConnectionActive() bool {
+	return atomic.LoadUint32(&dc.connectionActive) == 1
+}
+
+func (dc *DataCollector) QualitySamplesReady() bool {
+	return atomic.LoadUint64(&dc.qualitySamples) >= minQualitySamplesBeforeUse
+}
+
+func isGarbageSample(sample TrafficSample) bool {
+	if len(sample.Features) == 0 || sample.Size < 8 {
+		return true
+	}
+	if sample.Entropy < 0.5 || sample.Entropy > 7.9 {
+		return true
+	}
+
+	nonZero := 0
+	sum := 0.0
+	for _, f := range sample.Features {
+		if f != 0 {
+			nonZero++
+			sum += f
+		}
+	}
+	n := float64(len(sample.Features))
+	if float64(nonZero) < n*0.25 {
+		return true
+	}
+
+	mean := sum / n
+	variance := 0.0
+	for _, f := range sample.Features {
+		d := f - mean
+		variance += d * d
+	}
+	variance /= n
+	if variance < 1e-9 {
+		return true
+	}
+
+	coverage := float64(nonZero) / n
+	stddev := sqrtDC(variance)
+	if coverage*min64(1.0, stddev/10.0) < 0.01 {
+		return true
+	}
+	return false
+}
+
+func sqrtDC(x float64) float64 {
+	if x <= 0 {
+		return 0
+	}
+	z := x / 2
+	for i := 0; i < 10; i++ {
+		z -= (z*z - x) / (2 * z)
+	}
+	return z
+}
+
+func min64(a, b float64) float64 {
+	if a < b {
+		return a
+	}
+	return b
+}
+
 func (dc *DataCollector) CollectSample(sample TrafficSample) {
+	if !dc.IsConnectionActive() {
+		return
+	}
+	if isGarbageSample(sample) {
+		return
+	}
+
 	dc.mu.Lock()
 	defer dc.mu.Unlock()
 
-	if len(dc.samples) >= dc.maxSamples {
-		dc.samples = dc.samples[1:]
+	if len(dc.samples) < dc.maxSamples {
+		dc.samples = append(dc.samples, sample)
+		dc.writeIdx = len(dc.samples) % dc.maxSamples
+	} else {
+		minConf := dc.samples[dc.writeIdx].Confidence
+		evict := dc.writeIdx
+		for i := 0; i < dc.maxSamples; i++ {
+			if dc.samples[i].Confidence < minConf {
+				minConf = dc.samples[i].Confidence
+				evict = i
+			}
+		}
+		if sample.Confidence <= minConf {
+			return
+		}
+		dc.samples[evict] = sample
+		dc.writeIdx = (evict + 1) % dc.maxSamples
 	}
-	dc.samples = append(dc.samples, sample)
 
 	atomic.AddUint64(&dc.totalCollected, 1)
+
+	if sample.Confidence > 0.7 {
+		atomic.AddUint64(&dc.qualitySamples, 1)
+	}
 
 	if len(sample.Features) > 0 {
 		dc.featureStats.Update(sample.Features)
@@ -259,18 +409,28 @@ func (dc *DataCollector) SetMLServer(url, token string) {
 	dc.mlServerURL = url
 	dc.mlToken = token
 	if url != "" {
+		uploadHTTPClient = buildUploadHTTPClient(url)
 		go dc.backgroundUploadLoop()
 	}
 }
 
-var uploadHTTPClient = &http.Client{
-	Timeout: 10 * time.Second,
-	Transport: &http.Transport{
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-	},
+func buildUploadHTTPClient(mlServerURL string) *http.Client {
+	isLocal := strings.Contains(mlServerURL, "127.0.0.1") ||
+		strings.Contains(mlServerURL, "localhost") ||
+		strings.Contains(mlServerURL, "::1")
+	return &http.Client{
+		Timeout: 10 * time.Second,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{
+				MinVersion:         tls.VersionTLS12,
+				InsecureSkipVerify: isLocal,
+			},
+		},
+	}
 }
 
-// UploadToMLServer sends collected samples to the ML server for centralized learning.
+var uploadHTTPClient = buildUploadHTTPClient("")
+
 func (dc *DataCollector) UploadToMLServer() error {
 	if dc.mlServerURL == "" {
 		return nil
@@ -398,5 +558,8 @@ func (dc *DataCollector) GetFeatureStats() *FeatureStatistics {
 func (dc *DataCollector) Clear() {
 	dc.mu.Lock()
 	defer dc.mu.Unlock()
-	dc.samples = make([]TrafficSample, 0, dc.maxSamples)
+	dc.samples = dc.samples[:0]
+	dc.writeIdx = 0
+	atomic.StoreUint64(&dc.qualitySamples, 0)
+	atomic.StoreUint64(&dc.totalCollected, 0)
 }

@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+
+	"whispera/internal/modules/bridgepool"
 )
 
 func (s *Server) handleBridgeStats(w http.ResponseWriter, r *http.Request) {
@@ -31,6 +33,36 @@ func (s *Server) handleBridgeCheck(w http.ResponseWriter, r *http.Request) {
 		"id":         req.ID,
 		"is_alive":   isAlive,
 		"latency_ms": latency,
+	})
+}
+
+func (s *Server) handleBridgeRollout(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Version   string `json:"version"`
+		BinaryURL string `json:"binary_url"`
+		Checksum  string `json:"checksum"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Version == "" || req.BinaryURL == "" {
+		s.jsonError(w, http.StatusBadRequest, "version and binary_url required")
+		return
+	}
+
+	notifier := bridgepool.NewNotificationManager()
+	delivery := bridgepool.NewUpdateDelivery(s.bridgePool, notifier, 5)
+	results := delivery.DeliverUpdate(req.Version, req.BinaryURL, req.Checksum)
+
+	success := 0
+	for _, r := range results {
+		if r.Success {
+			success++
+		}
+	}
+	s.jsonOK(w, map[string]interface{}{
+		"success":  true,
+		"total":    len(results),
+		"ok":       success,
+		"failed":   len(results) - success,
+		"results":  results,
 	})
 }
 

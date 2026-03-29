@@ -46,9 +46,7 @@ func DefaultConfig() *Config {
 }
 
 func (c *Config) Validate() error {
-	if c.Upstream == "" {
-		c.Upstream = "8.8.8.8:53"
-	}
+	_ = c.Upstream
 	if c.CacheSize <= 0 {
 		c.CacheSize = DefaultCacheSize
 	}
@@ -313,14 +311,22 @@ func (r *Resolver) resolveUpstream(ctx context.Context, domain string) ([]net.IP
 	dialFn := r.dialCtx
 	r.dialCtxMu.RUnlock()
 
+	r.cacheMu.RLock()
+	upstream := r.config.Upstream
+	r.cacheMu.RUnlock()
+
+	if upstream == "" {
+		return net.DefaultResolver.LookupIP(ctx, "ip4", domain)
+	}
+
 	resolver := &net.Resolver{
 		PreferGo: true,
 		Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
 			if dialFn != nil {
-				return dialFn(ctx, network, r.config.Upstream)
+				return dialFn(ctx, network, upstream)
 			}
 			d := net.Dialer{Timeout: 5 * time.Second}
-			return d.DialContext(ctx, "udp4", r.config.Upstream)
+			return d.DialContext(ctx, "udp4", upstream)
 		},
 	}
 
@@ -351,6 +357,18 @@ func (r *Resolver) cleanupCache() {
 			delete(r.cache, key)
 		}
 	}
+}
+
+func (r *Resolver) SetUpstream(upstream string) {
+	r.cacheMu.Lock()
+	r.config.Upstream = upstream
+	r.cacheMu.Unlock()
+}
+
+func (r *Resolver) GetUpstream() string {
+	r.cacheMu.RLock()
+	defer r.cacheMu.RUnlock()
+	return r.config.Upstream
 }
 
 func (r *Resolver) HealthCheck() interfaces.HealthStatus {

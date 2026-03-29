@@ -47,6 +47,15 @@ get_public_ip() {
     echo "${IP:-localhost}"
 }
 
+gen_password() {
+    local len=${1:-30}
+    if command -v openssl &>/dev/null; then
+        openssl rand -base64 40 | tr -dc 'A-Za-z0-9' | head -c "$len"
+    else
+        head -c 64 /dev/urandom | tr -dc 'A-Za-z0-9' | head -c "$len"
+    fi
+}
+
 check_root() {
     if [[ $EUID -ne 0 ]]; then
         log_err "This script must be run as root"
@@ -217,6 +226,42 @@ backend  = systemd
 
 [sshd]
 enabled = true
+
+[whispera]
+enabled   = true
+backend   = systemd
+journalmatch = _SYSTEMD_UNIT=whispera.service
+maxretry  = 5
+findtime  = 1m
+bantime   = 6h
+filter    = whispera
+
+[whispera-panel]
+enabled   = true
+backend   = systemd
+journalmatch = _SYSTEMD_UNIT=whispera-panel.service
+maxretry  = 10
+findtime  = 1m
+bantime   = 1h
+filter    = whispera-panel
+EOF
+
+    mkdir -p /etc/fail2ban/filter.d
+    cat > /etc/fail2ban/filter.d/whispera.conf <<'EOF'
+[Definition]
+failregex = .*handshake failed.*<HOST>
+            .*auth failed.*<HOST>
+            .*invalid key.*<HOST>
+            .*connection rejected.*<HOST>
+ignoreregex =
+EOF
+
+    cat > /etc/fail2ban/filter.d/whispera-panel.conf <<'EOF'
+[Definition]
+failregex = .*401.*<HOST>
+            .*403.*<HOST>
+            .*login failed.*<HOST>
+ignoreregex =
 EOF
 
     systemctl enable fail2ban >/dev/null 2>&1
@@ -224,7 +269,7 @@ EOF
     sleep 2
 
     if systemctl is-active --quiet fail2ban 2>/dev/null; then
-        log_success "Fail2ban installed and running"
+        log_success "Fail2ban installed and running (sshd + whispera + panel jails)"
         log_info "Config: /etc/fail2ban/jail.local"
     else
         log_warn "Fail2ban installed but not running. Check: journalctl -u fail2ban"
@@ -309,7 +354,7 @@ setup_postgres() {
     systemctl start postgresql >/dev/null 2>&1
     sleep 2
     
-    local PG_PASS=$(openssl rand -hex 16)
+    local PG_PASS=$(gen_password 30)
     
     sudo -u postgres psql <<EOF >/dev/null 2>&1
 CREATE USER whispera WITH PASSWORD '$PG_PASS';
@@ -377,7 +422,6 @@ setup_autoupdate() {
     log_info "Setting up auto-update..."
     
     cat > /etc/cron.daily/whispera-update <<'CRONEOF'
-#!/bin/bash
 WORK_DIR="__WORK_DIR__"
 BIN_PATH="__BIN_PATH__"
 BRANCH="__BRANCH__"
@@ -405,19 +449,16 @@ GO_CHANGED=$(echo "$CHANGED" | grep -E '\.(go)$|^go\.(mod|sum)$' || true)
 ML_PY_CHANGED=$(echo "$CHANGED" | grep -E '^(internal/obfuscation/ml|ml_engine)/.*\.py$' || true)
 PANEL_CHANGED=$(echo "$CHANGED" | grep -E '^panel/' || true)
 
-# ML встроен в основной Go бинарник — рестарт основного сервиса достаточно
 if [[ -n "$ML_PY_CHANGED" ]]; then
     echo "ML files updated — restarting whispera (ML is built-in)"
     systemctl restart whispera 2>/dev/null && echo "whispera restarted" || echo "whispera not running"
 fi
 
-# Панель — рестарт
 if [[ -n "$PANEL_CHANGED" ]]; then
     echo "Panel files updated — restarting whispera-panel"
     systemctl restart whispera-panel 2>/dev/null && echo "whispera-panel restarted" || true
 fi
 
-# Go код — пересборка бинаря
 if [[ -n "$GO_CHANGED" ]]; then
     echo "Go files updated — rebuilding whispera-server"
     export PATH=$PATH:/usr/local/go/bin
@@ -432,7 +473,6 @@ if [[ -n "$GO_CHANGED" ]]; then
 fi
 CRONEOF
 
-    # Подставляем реальные пути
     sed -i \
         -e "s|__WORK_DIR__|$WORK_DIR|g" \
         -e "s|__BIN_PATH__|$BIN_PATH|g" \
@@ -609,6 +649,72 @@ setup_telegram() {
     log_success "Telegram notifications enabled for ID $TG_ID"
 }
 
+gen_bridge_ssh_otp() {
+    log_info "Generating one-time SSH access code for bridge..."
+
+    local TTL=${1:-3600}
+    local KEY_DIR=$(mktemp -d)
+    local KEY_FILE="$KEY_DIR/bridge_otp"
+
+    ssh-keygen -t ed25519 -f "$KEY_FILE" -N "" -C "whispera-bridge-otp-$(date +%s)" -q
+
+    local PUB_KEY=$(cat "$KEY_FILE.pub")
+    local PRIV_KEY=$(cat "$KEY_FILE")
+    local EXPIRE_AT=$(date -d "+${TTL} seconds" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || date -v "+${TTL}S" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo "in ${TTL}s")
+    local MARKER="whispera-bridge-otp-$(date +%s)"
+
+    mkdir -p ~/.ssh
+    chmod 700 ~/.ssh
+    echo "${PUB_KEY} ${MARKER}" >> ~/.ssh/authorized_keys
+    chmod 600 ~/.ssh/authorized_keys
+
+    local CLEANUP_SCRIPT="/tmp/whispera-otp-${MARKER}.sh"
+    cat > "$CLEANUP_SCRIPT" <<CLEANSCRIPT
+sed -i "/${MARKER}/d" ~/.ssh/authorized_keys
+rm -f "$CLEANUP_SCRIPT"
+CLEANSCRIPT
+    chmod +x "$CLEANUP_SCRIPT"
+    local SCHEDULED=0
+
+    if command -v at &>/dev/null; then
+        if systemctl is-active --quiet atd 2>/dev/null || service atd status &>/dev/null 2>&1 || pgrep -x atd &>/dev/null; then
+            echo "bash $CLEANUP_SCRIPT" | at "now + $(( TTL / 60 + 1 )) minutes" 2>/dev/null && SCHEDULED=1
+        fi
+    fi
+
+    if [[ "$SCHEDULED" -eq 0 ]] && command -v crontab &>/dev/null; then
+        local CRON_TIME
+        CRON_TIME=$(date -d "+$(( TTL / 60 + 1 )) minutes" '+%M %H %d %m *' 2>/dev/null \
+                 || date -v "+$(( TTL / 60 + 1 ))M" '+%M %H %d %m *' 2>/dev/null)
+        if [[ -n "$CRON_TIME" ]]; then
+            (crontab -l 2>/dev/null | grep -v "$CLEANUP_SCRIPT"; \
+             echo "$CRON_TIME bash $CLEANUP_SCRIPT") | crontab - 2>/dev/null && SCHEDULED=1
+        fi
+    fi
+
+    if [[ "$SCHEDULED" -eq 0 ]]; then
+        nohup bash -c "sleep ${TTL}; bash $CLEANUP_SCRIPT" </dev/null >/dev/null 2>&1 &
+        log_warn "at/cron unavailable — using background process (key removed in ${TTL}s if server stays up)"
+    fi
+
+    rm -rf "$KEY_DIR"
+
+    echo ""
+    echo -e "${YELLOW}┌─── One-time SSH key (valid until: ${EXPIRE_AT}) ───────────────────────────────┐${PLAIN}"
+    echo -e "${YELLOW}│ Expires automatically. Use ONCE to set up the bridge, then key is removed.   │${PLAIN}"
+    echo -e "${YELLOW}└───────────────────────────────────────────────────────────────────────────────┘${PLAIN}"
+    echo ""
+    echo -e "${GREEN}Paste this private key into a file on the bridge server:${PLAIN}"
+    echo ""
+    echo "$PRIV_KEY"
+    echo ""
+    local SRV_IP=$(get_public_ip)
+    echo -e "${GREEN}SSH command to use on the bridge server:${PLAIN}"
+    echo -e "  ssh -i /tmp/bridge_key -o StrictHostKeyChecking=no root@${SRV_IP}"
+    echo ""
+    log_success "Key added to authorized_keys. It will self-remove after ${TTL}s."
+}
+
 setup_backups() {
     log_info "Setting up daily database backups..."
     
@@ -618,7 +724,6 @@ setup_backups() {
     fi
     
     cat > /usr/local/bin/whispera-backup <<'BACKUPEOF'
-#!/bin/bash
 BACKUP_DIR="/var/backups/whispera"
 RETENTION_DAYS=7
 DATE=$(date +%Y%m%d_%H%M%S)
@@ -713,6 +818,7 @@ show_extras_menu() {
         _row " 19.  Show bridge token & install command"
         _row " 20.  Add bridge manually (enter IP + token)"
         _row " 21.  List registered bridges"
+        _row " 22.  SSH OTP       - One-time SSH key for bridge admin (1h)"
         echo -e "${BLUE}╠${SEP}╣${PLAIN}"
         _row "  OPTIONAL EXTRAS"
         _row "  1.  BBR           - Faster TCP (recommended)"
@@ -792,6 +898,9 @@ show_extras_menu() {
                     -H "Authorization: Bearer $(cat $CONF_PATH/admin.token 2>/dev/null)" | \
                     jq . 2>/dev/null || cat || \
                     log_err "Failed to fetch bridges (is Whispera running?)"
+                ;;
+            22)
+                gen_bridge_ssh_otp 3600
                 ;;
             0|"") log_info "Exiting menu."; break ;;
             *) log_warn "Invalid option: $choice" ;;
@@ -964,7 +1073,6 @@ ENVEOF
 
             generate_panel_cert
 
-            # Remove legacy TLS vars from panel service (nginx handles TLS termination)
             sed -i '/^Environment=TLS_CERT\|^Environment=TLS_KEY\|^Environment=HTTP_PORT/d' \
                 /etc/systemd/system/whispera-panel.service 2>/dev/null || true
 
@@ -973,7 +1081,6 @@ ENVEOF
                     /etc/systemd/system/whispera-panel.service
                 log_info "Added CAP_NET_BIND_SERVICE to panel service"
             fi
-            # Ensure whispera backend can manage firewall ports (CAP_NET_ADMIN)
             if ! grep -q "CAP_NET_ADMIN" /etc/systemd/system/whispera.service 2>/dev/null; then
                 sed -i 's/AmbientCapabilities=CAP_NET_BIND_SERVICE$/AmbientCapabilities=CAP_NET_BIND_SERVICE CAP_NET_ADMIN/' \
                     /etc/systemd/system/whispera.service
@@ -994,11 +1101,9 @@ ENVEOF
         log_info "No panel release found, skipping panel update"
     fi
     
-    # Ensure log directory exists (required by ReadWritePaths in systemd namespace)
     mkdir -p /var/log/whispera
     chown whispera:whispera /var/log/whispera 2>/dev/null || true
 
-    # Ensure whispera user can run UFW via sudo (for firewall panel)
     if [[ ! -f /etc/sudoers.d/whispera-ufw ]]; then
         local UFW_BIN
         UFW_BIN=$(command -v ufw 2>/dev/null || echo /usr/sbin/ufw)
@@ -1012,7 +1117,6 @@ ENVEOF
         systemctl daemon-reload
     fi
 
-    # Ensure log file output is configured (needed for panel log viewer)
     if ! grep -q "StandardOutput=append" /etc/systemd/system/whispera.service 2>/dev/null; then
         sed -i '/ReadWritePaths=.*/a StandardOutput=append:\/var\/log\/whispera\/whispera.log\nStandardError=append:\/var\/log\/whispera\/whispera.log' \
             /etc/systemd/system/whispera.service
@@ -1020,17 +1124,14 @@ ENVEOF
         log_info "Enabled file logging for whispera service"
     fi
 
-    # Ensure uploads directory exists and has correct ownership
     if [[ -d "$DAT_PATH/panel" ]]; then
         mkdir -p "$DAT_PATH/panel/public/uploads"
         chown -R whispera:whispera "$DAT_PATH/panel/public" 2>/dev/null || true
     fi
 
-    # Patch whispera.service: remove NoNewPrivileges (blocks sudo for UFW), add missing caps/paths
     local SVC=/etc/systemd/system/whispera.service
     if [[ -f "$SVC" ]]; then
         local RELOAD=false
-        # NoNewPrivileges=true prevents sudo from escalating — must be removed for UFW support
         if grep -q "^NoNewPrivileges=true" "$SVC"; then
             sed -i '/^NoNewPrivileges=true/d' "$SVC"
             RELOAD=true
@@ -1050,7 +1151,6 @@ ENVEOF
         fi
     fi
 
-    # ── ML engine встроен в основной Go бинарник (модуль mlserver, порт 8000) ──
     if [[ -d "/opt/whispera-ml" ]]; then
         log_info "Removing legacy ML repo at /opt/whispera-ml..."
         rm -rf "/opt/whispera-ml"

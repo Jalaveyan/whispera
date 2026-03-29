@@ -132,6 +132,7 @@ type Handler struct {
 	replayCacheCleanupStop chan struct{}
 
 	probeDetector probeDetectorIface
+	connGuard     connGuardIface
 
 	stats Stats
 }
@@ -140,6 +141,12 @@ type probeDetectorIface interface {
 	CheckConnection(clientAddr, sni string) (allowed bool, reason string)
 	RecordAuthFailure(clientAddr string)
 	RecordAuthSuccess(clientAddr string)
+}
+
+type connGuardIface interface {
+	Allow(addr net.Addr) bool
+	Done(addr net.Addr)
+	CheckFirstBytes(conn net.Conn) (peeked []byte, err error)
 }
 
 type Stats struct {
@@ -204,6 +211,10 @@ func New(cfg *Config) (*Handler, error) {
 
 func (h *Handler) SetProbeDetector(d probeDetectorIface) {
 	h.probeDetector = d
+}
+
+func (h *Handler) SetConnGuard(g connGuardIface) {
+	h.connGuard = g
 }
 
 func (h *Handler) RecordDNSQuery(clientAddr, hostname string, resolvedIPs []string) {
@@ -299,6 +310,13 @@ func (h *Handler) acceptLoop() {
 			continue
 		}
 
+		if h.connGuard != nil {
+			if !h.connGuard.Allow(conn.RemoteAddr()) {
+				conn.Close()
+				continue
+			}
+		}
+
 		h.stats.TotalConnections++
 		go h.HandleConnection(conn)
 	}
@@ -308,6 +326,11 @@ func (h *Handler) HandleConnection(conn net.Conn) {
 	defer conn.Close()
 
 	remoteAddr := conn.RemoteAddr().String()
+
+	if h.connGuard != nil {
+		defer h.connGuard.Done(conn.RemoteAddr())
+	}
+
 	h.mu.Lock()
 	h.activeConns[remoteAddr] = conn
 	h.stats.ActiveConnections++
@@ -326,6 +349,16 @@ func (h *Handler) HandleConnection(conn net.Conn) {
 			h.stats.ProxiedConnections++
 			h.handleHTTPFallback(conn)
 			return
+		}
+
+		if h.connGuard != nil {
+			if peeked, fbErr := h.connGuard.CheckFirstBytes(conn); fbErr != nil {
+				log.Debug("[connguard] fast-reject %s: %v (peeked=%x)", remoteAddr, fbErr, peeked)
+				h.probeDetector.RecordAuthFailure(remoteAddr)
+				return
+			} else if len(peeked) > 0 {
+				conn = &prependConn{Conn: conn, buf: peeked}
+			}
 		}
 	}
 
@@ -943,4 +976,18 @@ func randInt(max int) int {
 	rand.Read(b)
 	n := int(binary.BigEndian.Uint16(b))
 	return n % max
+}
+
+type prependConn struct {
+	net.Conn
+	buf []byte
+}
+
+func (p *prependConn) Read(b []byte) (int, error) {
+	if len(p.buf) > 0 {
+		n := copy(b, p.buf)
+		p.buf = p.buf[n:]
+		return n, nil
+	}
+	return p.Conn.Read(b)
 }

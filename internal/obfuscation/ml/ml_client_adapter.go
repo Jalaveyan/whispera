@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"whispera/internal/obfuscation/core/evasion"
@@ -14,6 +15,29 @@ import (
 )
 
 var nativeEngine *NativeMLEngine
+
+var overrideMLServerURL string
+var overrideMLToken string
+var overrideMu sync.RWMutex
+
+func SetMLServerURL(url, token string) {
+	overrideMu.Lock()
+	overrideMLServerURL = url
+	overrideMLToken = token
+	overrideMu.Unlock()
+	if url != "" {
+		os.Setenv("WHISPERA_ML_SERVER", url)
+	}
+}
+
+func GetMLServerURL() string {
+	overrideMu.RLock()
+	defer overrideMu.RUnlock()
+	if overrideMLServerURL != "" {
+		return overrideMLServerURL
+	}
+	return os.Getenv("WHISPERA_ML_SERVER")
+}
 
 func init() {
 	modelDir := os.Getenv("WHISPERA_ML_MODEL_DIR")
@@ -75,6 +99,7 @@ func (a *PythonMLClientEvasionAdapter) LoadModels() error {
 type NativeMLClientEvasionAdapter struct {
 	engine    *NativeMLEngine
 	flowCache sync.Map
+	sampleCount uint64
 }
 
 type nativeFlowProfile struct {
@@ -105,11 +130,25 @@ func (a *NativeMLClientEvasionAdapter) ProcessTraffic(data []byte, context *type
 		fp := cached.(*nativeFlowProfile)
 		if time.Now().Before(fp.expires) {
 			if fp.dpiType > 0 {
-				return applyNativeObfuscation(data, fp.dpiType, fp.confidence)
+				obf, err := applyNativeObfuscation(data, fp.dpiType, fp.confidence)
+				if err != nil {
+					return data, nil
+				}
+				if fp.confidence > adversarialConfTarget {
+					obf = GetAdversarialEngine().PerturbPacket(obf, adversarialBudgetDefault)
+				}
+				return obf, nil
 			}
 			return data, nil
 		}
 		a.flowCache.Delete(key)
+	}
+
+	atomic.AddUint64(&a.sampleCount, 1)
+
+	if !a.engine.QualitySamplesReady() {
+		a.engine.AddSample(data, 0, 0)
+		return data, nil
 	}
 
 	resp := a.engine.Predict(data, protocol, direction)
@@ -128,7 +167,17 @@ func (a *NativeMLClientEvasionAdapter) ProcessTraffic(data []byte, context *type
 	a.flowCache.Store(key, fp)
 
 	if pred.DPIType > 0 && pred.Confidence > 0.5 {
-		return applyNativeObfuscation(data, pred.DPIType, pred.Confidence)
+		if sni := extractTLSSNI(data); sni != "" {
+			a.engine.StoreSNI(sni)
+		}
+		obf, err := applyNativeObfuscation(data, pred.DPIType, pred.Confidence)
+		if err != nil {
+			return data, nil
+		}
+		if pred.Confidence > adversarialConfTarget {
+			obf = GetAdversarialEngine().PerturbPacket(obf, adversarialBudgetDefault)
+		}
+		return obf, nil
 	}
 
 	return data, nil

@@ -2847,7 +2847,7 @@ class WhisperaApp {
             const data = await api.getBridgesAdmin();
             const bridges = Array.isArray(data) ? data : (data.bridges || []);
             if (!bridges.length) {
-                tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;color:#555;padding:32px;">Мостов нет. Добавьте первый мост.</td></tr>';
+                tbody.innerHTML = '<tr><td colspan="10" style="text-align:center;color:#555;padding:32px;">Мостов нет. Добавьте первый мост.</td></tr>';
                 return;
             }
             tbody.innerHTML = bridges.map(b => this._renderBridgeRow(b)).join('');
@@ -2857,8 +2857,14 @@ class WhisperaApp {
             tbody.querySelectorAll('.bridge-delete-btn').forEach(btn => {
                 btn.addEventListener('click', () => this._deleteBridge(btn.dataset.id));
             });
+            tbody.querySelectorAll('.bridge-ping-btn').forEach(btn => {
+                btn.addEventListener('click', () => this._pingBridge(btn.dataset.id, btn));
+            });
+            tbody.querySelectorAll('.bridge-label-btn').forEach(btn => {
+                btn.addEventListener('click', () => this._toggleBridgeLabel(btn.dataset.id, btn.dataset.blacklisted === 'true'));
+            });
         } catch (e) {
-            tbody.innerHTML = `<tr><td colspan="9" style="text-align:center;color:#f87171;padding:32px;">Ошибка загрузки: ${e.message}</td></tr>`;
+            tbody.innerHTML = `<tr><td colspan="10" style="text-align:center;color:#f87171;padding:32px;">Ошибка загрузки: ${e.message}</td></tr>`;
         }
     }
 
@@ -2873,6 +2879,8 @@ class WhisperaApp {
         const shortID = id.length > 8 ? id.slice(0, 8) + '…' : id;
         const lastCheck = b.last_check || b.LastCheck;
         const lastCheckStr = lastCheck ? this._relativeTime(new Date(lastCheck)) : '—';
+        const blacklisted = b.blacklisted || b.Blacklisted || false;
+        const mlScore = b.ml_score || b.MLScore || 0;
 
         const statusDot = alive
             ? '<span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#4ade80;" title="Онлайн"></span>'
@@ -2885,6 +2893,7 @@ class WhisperaApp {
             operator:  '<span style="background:rgba(99,102,241,0.2);color:#a5b4fc;padding:2px 7px;border-radius:4px;font-size:0.8em;">operator</span>',
             community: '<span style="background:rgba(34,197,94,0.15);color:#86efac;padding:2px 7px;border-radius:4px;font-size:0.8em;">community</span>',
             user:      '<span style="background:rgba(234,179,8,0.15);color:#fde047;padding:2px 7px;border-radius:4px;font-size:0.8em;">user</span>',
+            white:     '<span style="background:rgba(255,255,255,0.1);color:#e2e8f0;padding:2px 7px;border-radius:4px;font-size:0.8em;">white</span>',
         }[type] || `<span style="color:#888;font-size:0.85em;">${type}</span>`;
 
         const trustBar = `<div style="display:flex;align-items:center;gap:6px;">
@@ -2894,7 +2903,26 @@ class WhisperaApp {
             <span style="font-size:0.82em;color:#aaa;">${trust}</span>
         </div>`;
 
-        return `<tr data-bridge-id="${id}">
+        const mlBadge = mlScore > 0
+            ? `<span title="${mlScore < 0.3 ? 'Предупреждение: модель может быть недообучена (мало данных)' : 'Оценка нейросетевого отбора'}"
+                style="display:inline-flex;align-items:center;gap:3px;font-size:0.78em;padding:2px 6px;border-radius:4px;
+                background:${mlScore < 0.3 ? 'rgba(250,204,21,0.12)' : 'rgba(99,102,241,0.15)'};
+                color:${mlScore < 0.3 ? '#fde047' : '#a5b4fc'};cursor:help;">
+                ${mlScore < 0.3 ? '⚠' : '▲'} ${mlScore.toFixed(2)}
+               </span>`
+            : '<span style="color:#444;font-size:0.8em;">—</span>';
+
+        const blacklistBtn = blacklisted
+            ? `<button class="btn btn-icon btn-sm bridge-label-btn" data-id="${id}" data-blacklisted="true" title="Снять блокировку" style="color:#facc15;">
+                <i class="fas fa-ban"></i>
+               </button>`
+            : `<button class="btn btn-icon btn-sm bridge-label-btn" data-id="${id}" data-blacklisted="false" title="Заблокировать мост" style="color:#555;">
+                <i class="fas fa-ban"></i>
+               </button>`;
+
+        const rowStyle = blacklisted ? ' style="opacity:0.45;"' : '';
+
+        return `<tr data-bridge-id="${id}"${rowStyle}>
             <td style="text-align:center;">${statusDot}</td>
             <td><code style="font-size:0.85em;" title="${id}">${shortID}</code></td>
             <td style="font-size:0.87em;">${address}</td>
@@ -2902,11 +2930,16 @@ class WhisperaApp {
             <td>${typeBadge}</td>
             <td>${latencyStr}</td>
             <td>${trustBar}</td>
+            <td>${mlBadge}</td>
             <td style="font-size:0.82em;color:#888;">${lastCheckStr}</td>
-            <td style="text-align:right;">
+            <td style="text-align:right;white-space:nowrap;">
                 <button class="btn btn-icon btn-sm bridge-check-btn" data-id="${id}" title="Проверить сейчас">
                     <i class="fas fa-stethoscope"></i>
                 </button>
+                <button class="btn btn-icon btn-sm bridge-ping-btn" data-id="${id}" title="TCP Ping (5 пакетов)">
+                    <i class="fas fa-satellite-dish"></i>
+                </button>
+                ${blacklistBtn}
                 <button class="btn btn-icon btn-sm bridge-delete-btn" data-id="${id}" title="Удалить" style="color:#f87171;">
                     <i class="fas fa-trash-alt"></i>
                 </button>
@@ -2931,7 +2964,7 @@ class WhisperaApp {
                 row.cells[5].innerHTML = res.latency_ms > 0
                     ? `<span style="color:${latencyColor}">${res.latency_ms} мс</span>`
                     : '<span style="color:#555">—</span>';
-                row.cells[7].textContent = 'только что';
+                row.cells[8].textContent = 'только что';
             }
             await this._fetchBridgeStats();
         } catch (e) {
@@ -2948,6 +2981,45 @@ class WhisperaApp {
             await api.deleteBridge(id);
             this.showNotification('Мост удалён', 'success');
             await Promise.all([this._fetchBridgeStats(), this._fetchBridgeList()]);
+        } catch (e) {
+            this.showNotification('Ошибка: ' + e.message, 'error');
+        }
+    }
+
+    async _pingBridge(id, btn) {
+        const icon = btn.querySelector('i');
+        const orig = icon.className;
+        icon.className = 'fas fa-spinner fa-spin';
+        btn.disabled = true;
+        try {
+            const res = await api.pingBridge(id);
+            const loss = res.loss_pct ?? 0;
+            const avg = res.avg_latency ?? 0;
+            this.showNotification(
+                `Ping ${id.slice(0, 8)}: ${res.received}/${res.sent} пакетов, потери ${loss.toFixed(0)}%, задержка ${avg} мс`,
+                loss === 0 ? 'success' : 'warning'
+            );
+            const row = document.querySelector(`tr[data-bridge-id="${id}"]`);
+            if (row && avg > 0) {
+                const latencyColor = avg < 100 ? '#4ade80' : avg < 300 ? '#facc15' : '#f87171';
+                row.cells[5].innerHTML = `<span style="color:${latencyColor}">${avg} мс</span>`;
+            }
+        } catch (e) {
+            this.showNotification('Ошибка ping: ' + e.message, 'error');
+        } finally {
+            icon.className = orig;
+            btn.disabled = false;
+        }
+    }
+
+    async _toggleBridgeLabel(id, currentlyBlacklisted) {
+        const newState = !currentlyBlacklisted;
+        const label = newState ? 'заблокировать' : 'снять блокировку с';
+        if (!await this.showConfirm(`${label.charAt(0).toUpperCase() + label.slice(1)} мост ${id.slice(0, 8)}?`)) return;
+        try {
+            await api.setBridgeLabel(id, newState);
+            this.showNotification(newState ? 'Мост заблокирован' : 'Блокировка снята', 'success');
+            await this._fetchBridgeList();
         } catch (e) {
             this.showNotification('Ошибка: ' + e.message, 'error');
         }
@@ -3517,6 +3589,35 @@ class WhisperaApp {
                         <option value="yandex"     ${user.russianService === 'yandex'        ? 'selected' : ''}>Яндекс</option>
                         <option value="wildberries"${user.russianService === 'wildberries'   ? 'selected' : ''}>Wildberries</option>
                     </select>`)}
+                ${field('Профиль Marionette', `
+                    <select id="eu-marionette" class="form-control">
+                        <option value="" ${!user.marionetteProfile ? 'selected' : ''}>— нет —</option>
+                        <optgroup label="Мессенджеры (Android)">
+                            <option value="telegram"    ${user.marionetteProfile === 'telegram'    ? 'selected' : ''}>Telegram</option>
+                            <option value="vk"          ${user.marionetteProfile === 'vk'          ? 'selected' : ''}>VK Мессенджер</option>
+                            <option value="vkvideo"     ${user.marionetteProfile === 'vkvideo'     ? 'selected' : ''}>VK Видео</option>
+                            <option value="instagram"   ${user.marionetteProfile === 'instagram'   ? 'selected' : ''}>Instagram</option>
+                            <option value="max"         ${user.marionetteProfile === 'max'         ? 'selected' : ''}>MAX (Mail.ru)</option>
+                            <option value="wechat"      ${user.marionetteProfile === 'wechat'      ? 'selected' : ''}>WeChat</option>
+                            <option value="facebook"    ${user.marionetteProfile === 'facebook'    ? 'selected' : ''}>Facebook Messenger</option>
+                        </optgroup>
+                        <optgroup label="Мессенджеры (iOS)">
+                            <option value="telegram_ios"  ${user.marionetteProfile === 'telegram_ios'  ? 'selected' : ''}>Telegram iOS</option>
+                            <option value="vk_ios"        ${user.marionetteProfile === 'vk_ios'        ? 'selected' : ''}>VK iOS</option>
+                            <option value="instagram_ios" ${user.marionetteProfile === 'instagram_ios' ? 'selected' : ''}>Instagram iOS</option>
+                            <option value="wechat_ios"    ${user.marionetteProfile === 'wechat_ios'    ? 'selected' : ''}>WeChat iOS</option>
+                            <option value="facebook_ios"  ${user.marionetteProfile === 'facebook_ios'  ? 'selected' : ''}>Facebook iOS</option>
+                        </optgroup>
+                        <optgroup label="Музыка">
+                            <option value="spotify"      ${user.marionetteProfile === 'spotify'      ? 'selected' : ''}>Spotify</option>
+                            <option value="yandex_music" ${user.marionetteProfile === 'yandex_music' ? 'selected' : ''}>Яндекс Музыка</option>
+                            <option value="vk_music"     ${user.marionetteProfile === 'vk_music'     ? 'selected' : ''}>VK Музыка</option>
+                        </optgroup>
+                        <optgroup label="Видео">
+                            <option value="youtube"          ${user.marionetteProfile === 'youtube'          ? 'selected' : ''}>YouTube</option>
+                            <option value="vk_video_stream"  ${user.marionetteProfile === 'vk_video_stream'  ? 'selected' : ''}>VK Video Stream</option>
+                        </optgroup>
+                    </select>`)}
             </div>
             <div class="modal-footer">
                 <button class="btn btn-secondary" onclick="this.closest('.modal').remove()">Отмена</button>
@@ -3533,6 +3634,7 @@ class WhisperaApp {
         const expiryDate = modal.querySelector('#eu-expiry').value;
         const obfsProfile = modal.querySelector('#eu-obfs').value;
         const russianService = modal.querySelector('#eu-russian').value;
+        const marionetteProfile = modal.querySelector('#eu-marionette')?.value || '';
 
         if (!username) { this.showNotification('Email не может быть пустым', 'error'); return; }
 
@@ -3544,6 +3646,7 @@ class WhisperaApp {
                 expiryDate: expiryDate || '',
                 obfsProfile,
                 russianService,
+                marionetteProfile,
             });
             modal.remove();
             this.showNotification('Пользователь обновлён', 'success');

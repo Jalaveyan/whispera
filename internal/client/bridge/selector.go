@@ -434,3 +434,53 @@ func (s *Selector) BridgeCount() int {
 	defer s.mu.RUnlock()
 	return len(s.bridges)
 }
+
+type ClusterMasterInfo struct {
+	MasterAddress string `json:"master_address"`
+	MasterID      string `json:"master_id"`
+	Term          uint64 `json:"term"`
+}
+
+func (s *Selector) GetClusterMaster(ctx context.Context) *ClusterMasterInfo {
+	s.mu.RLock()
+	bridges := make([]*BridgeInfo, len(s.bridges))
+	copy(bridges, s.bridges)
+	s.mu.RUnlock()
+
+	client := &http.Client{Timeout: 3 * time.Second}
+	type masterResp struct {
+		MasterID      string `json:"master_id"`
+		MasterAddress string `json:"master_address"`
+		Term          uint64 `json:"term"`
+	}
+
+	for _, b := range bridges {
+		if b.Address == "" {
+			continue
+		}
+		scheme := "http"
+		reqURL := scheme + "://" + b.Address + "/cluster/master"
+		req, err := http.NewRequestWithContext(ctx, "GET", reqURL, nil)
+		if err != nil {
+			continue
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			continue
+		}
+		var mr masterResp
+		if err := json.NewDecoder(resp.Body).Decode(&mr); err != nil {
+			resp.Body.Close()
+			continue
+		}
+		resp.Body.Close()
+		if mr.MasterAddress != "" {
+			return &ClusterMasterInfo{
+				MasterAddress: mr.MasterAddress,
+				MasterID:      mr.MasterID,
+				Term:          mr.Term,
+			}
+		}
+	}
+	return nil
+}

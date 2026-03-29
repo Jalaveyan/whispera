@@ -46,7 +46,9 @@ type BridgeInfo struct {
 	Load       float64    `json:"load,omitempty"`
 	MaxUsers   int        `json:"max_users,omitempty"`
 	CurUsers   int        `json:"cur_users,omitempty"`
-	Version    string     `json:"version,omitempty"`
+	Version     string     `json:"version,omitempty"`
+	Blacklisted bool       `json:"blacklisted,omitempty"`
+	LossPct     float64    `json:"loss_pct,omitempty"`
 }
 
 type AccessKey struct {
@@ -272,20 +274,23 @@ func (r *Registry) GetBridgeMap() []map[string]interface{} {
 	result := make([]map[string]interface{}, 0, len(r.bridges))
 	for _, b := range r.bridges {
 		entry := map[string]interface{}{
-			"id":         b.ID,
-			"type":       b.Type,
-			"country":    b.Country,
-			"city":       b.City,
-			"lat":        b.Lat,
-			"lon":        b.Lon,
-			"is_alive":   b.IsAlive,
-			"latency":    b.Latency,
-			"load":       b.Load,
-			"users":      b.CurUsers,
-			"region":     b.Region,
-			"provider":   b.Provider,
-			"version":    b.Version,
-			"last_check": b.LastCheck,
+			"id":          b.ID,
+			"name":        b.Name,
+			"type":        b.Type,
+			"country":     b.Country,
+			"city":        b.City,
+			"lat":         b.Lat,
+			"lon":         b.Lon,
+			"is_alive":    b.IsAlive,
+			"latency":     b.Latency,
+			"load":        b.Load,
+			"users":       b.CurUsers,
+			"region":      b.Region,
+			"provider":    b.Provider,
+			"version":     b.Version,
+			"last_check":  b.LastCheck,
+			"blacklisted": b.Blacklisted,
+			"loss_pct":    b.LossPct,
 		}
 		if b.Type == BridgeWhite {
 			entry["bandwidth"] = b.Bandwidth
@@ -348,6 +353,27 @@ func (r *Registry) ScanAllBridges() []map[string]interface{} {
 		})
 	}
 	return results
+}
+
+func (r *Registry) SetBridgeLabel(id string, blacklisted bool) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	b, exists := r.bridges[id]
+	if !exists {
+		return errors.New("bridge not found")
+	}
+	b.Blacklisted = blacklisted
+	return r.persist()
+}
+
+func (r *Registry) UpdateBridgeLoss(id string, lossPct float64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if b, exists := r.bridges[id]; exists {
+		b.LossPct = lossPct
+	}
 }
 
 func (r *Registry) UpdateBridgeLoad(id string, load float64, curUsers int) {

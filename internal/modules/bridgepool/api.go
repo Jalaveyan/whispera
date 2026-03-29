@@ -26,8 +26,6 @@ func mlBaseURL() string {
 	return "http://127.0.0.1:8000"
 }
 
-// mlRankBridges calls POST /rank/bridges on the ML server and returns a map[bridgeID]mlScore.
-// Returns nil on any error (caller uses original order).
 func mlRankBridges(bridges []*BridgeInfo) map[string]float64 {
 	type payload struct {
 		ID            string  `json:"id"`
@@ -89,9 +87,20 @@ type APIHandler struct {
 	registry          *Registry
 	trustManager      *TrustManager
 	registrationToken string
+	serverCertFP string
 }
 
-// geoInfo holds the result of an ipinfo.io lookup.
+func (h *APIHandler) SetCertFingerprint(fp string) {
+	h.serverCertFP = fp
+}
+
+func (h *APIHandler) curlTLSFlag() string {
+	if h.serverCertFP != "" {
+		return `--pinnedpubkey "` + h.serverCertFP + `"`
+	}
+	return "--insecure # WARNING: configure server cert fingerprint for production"
+}
+
 type geoInfo struct {
 	Country string  `json:"country"`
 	City    string  `json:"city"`
@@ -99,8 +108,6 @@ type geoInfo struct {
 	Lon     float64 `json:"lon"`
 }
 
-// lookupGeo queries ipinfo.io for country, city and coordinates of an IP.
-// Returns zero-value geoInfo on any error (non-fatal).
 func lookupGeo(addr string) geoInfo {
 	host, _, err := net.SplitHostPort(addr)
 	if err != nil {
@@ -133,7 +140,7 @@ func lookupGeo(addr string) geoInfo {
 	var result struct {
 		Country string `json:"country"`
 		City    string `json:"city"`
-		Loc     string `json:"loc"` // "lat,lon"
+		Loc     string `json:"loc"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return geoInfo{}
@@ -176,7 +183,6 @@ func (h *APIHandler) validateToken(token string) bool {
 func (h *APIHandler) HandleGetBridges(w http.ResponseWriter, r *http.Request) {
 	bridges := h.registry.GetAliveBridges()
 
-	// ML-rank bridges when available; falls back to original order silently
 	mlScores := mlRankBridges(bridges)
 	if mlScores != nil {
 		sort.Slice(bridges, func(i, j int) bool {
@@ -215,8 +221,20 @@ func (h *APIHandler) HandleGetBridges(w http.ResponseWriter, r *http.Request) {
 
 func (h *APIHandler) HandleGetBridgesAdmin(w http.ResponseWriter, r *http.Request) {
 	bridges := h.registry.GetAllBridges()
+
+	mlScores := mlRankBridges(bridges)
+
+	type adminBridge struct {
+		*BridgeInfo
+		MLScore float64 `json:"ml_score,omitempty"`
+	}
+	result := make([]adminBridge, len(bridges))
+	for i, b := range bridges {
+		result[i] = adminBridge{BridgeInfo: b, MLScore: mlScores[b.ID]}
+	}
+
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(bridges)
+	json.NewEncoder(w).Encode(result)
 }
 
 func (h *APIHandler) HandleAddBridge(w http.ResponseWriter, r *http.Request) {
@@ -246,7 +264,6 @@ func (h *APIHandler) HandleAddBridge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Auto-fill geo info if not provided by the caller.
 	if req.Lat == 0 && req.Lon == 0 {
 		geo := lookupGeo(req.Address)
 		if req.Country == "" {
@@ -502,7 +519,7 @@ apt-get update -qq && apt-get install -y curl 2>/dev/null || yum install -y curl
 
 # Download install script from main server (falls back to GitHub)
 curl -fsSL "https://${SERVER}/install-bridge.sh" -o /tmp/install-bridge.sh \
-    --insecure --connect-timeout 10 2>/dev/null || \
+    ` + h.curlTLSFlag() + ` --connect-timeout 10 2>/dev/null || \
 curl -fsSL "https://raw.githubusercontent.com/Jalaveyan/Whispera/main/scripts/install-bridge.sh" \
     -o /tmp/install-bridge.sh
 
@@ -762,6 +779,113 @@ func (h *APIHandler) HandleRevokeAccessKey(w http.ResponseWriter, r *http.Reques
 	})
 }
 
+func (h *APIHandler) HandleBridgePing(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		ID    string `json:"id"`
+		Count int    `json:"count"`
+		Mode  string `json:"mode"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+	if req.ID == "" {
+		http.Error(w, "id required", http.StatusBadRequest)
+		return
+	}
+	bridge, err := h.registry.GetBridge(req.ID)
+	if err != nil {
+		http.Error(w, "Bridge not found", http.StatusNotFound)
+		return
+	}
+	if req.Count <= 0 {
+		req.Count = 5
+	}
+	if req.Mode == "" {
+		req.Mode = "tcp"
+	}
+
+	host, port, _ := net.SplitHostPort(bridge.Address)
+	if host == "" {
+		host = bridge.Address
+	}
+	if port == "" {
+		port = "443"
+	}
+	target := net.JoinHostPort(host, port)
+
+	sent := 0
+	received := 0
+	var totalLatency int64
+	var latencies []int
+
+	for i := 0; i < req.Count; i++ {
+		start := time.Now()
+		conn, err := net.DialTimeout("tcp", target, 2*time.Second)
+		sent++
+		if err == nil {
+			conn.Close()
+			ms := int(time.Since(start).Milliseconds())
+			latencies = append(latencies, ms)
+			totalLatency += int64(ms)
+			received++
+		}
+	}
+
+	loss := 0.0
+	if sent > 0 {
+		loss = float64(sent-received) / float64(sent) * 100
+	}
+	avgLatency := 0
+	if received > 0 {
+		avgLatency = int(totalLatency / int64(received))
+	}
+
+	h.registry.UpdateBridgeLoss(req.ID, loss)
+	if received > 0 {
+		h.registry.UpdateBridgeStatus(req.ID, true, avgLatency)
+	} else {
+		h.registry.UpdateBridgeStatus(req.ID, false, 0)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"id":          req.ID,
+		"sent":        sent,
+		"received":    received,
+		"loss_pct":    loss,
+		"avg_latency": avgLatency,
+		"latencies":   latencies,
+		"mode":        req.Mode,
+	})
+}
+
+func (h *APIHandler) HandleSetBridgeLabel(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		ID          string `json:"id"`
+		Blacklisted bool   `json:"blacklisted"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+	if req.ID == "" {
+		http.Error(w, "id required", http.StatusBadRequest)
+		return
+	}
+	if err := h.registry.SetBridgeLabel(req.ID, req.Blacklisted); err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	log.Printf("[BridgePool] Bridge %s label: blacklisted=%v", req.ID, req.Blacklisted)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success":     true,
+		"id":          req.ID,
+		"blacklisted": req.Blacklisted,
+	})
+}
+
 func (h *APIHandler) HandleGetWhiteCloudInit(w http.ResponseWriter, r *http.Request) {
 	if h.registrationToken == "" {
 		h.registrationToken = GenerateRegistrationToken()
@@ -805,16 +929,39 @@ CITY="` + city + `"
 BANDWIDTH="` + bandwidth + `"
 MAX_USERS="` + maxUsers + `"
 
-apt-get update -qq && apt-get install -y curl jq openssh-server 2>/dev/null || true
+apt-get update -qq && apt-get install -y curl jq openssh-server ufw fail2ban 2>/dev/null || \
+  yum install -y curl jq openssh-server ufw fail2ban 2>/dev/null || true
 
 SSH_KEY=$(cat /etc/ssh/ssh_host_ed25519_key.pub 2>/dev/null || ssh-keygen -t ed25519 -f /etc/ssh/ssh_host_ed25519_key -N "" -q && cat /etc/ssh/ssh_host_ed25519_key.pub)
 
+# SSH hardening: key-only, no passwords, allow root with key
 sed -i 's/#\?PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config
 sed -i 's/#\?PubkeyAuthentication.*/PubkeyAuthentication yes/' /etc/ssh/sshd_config
+sed -i 's/#\?PermitRootLogin.*/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config
 systemctl restart sshd 2>/dev/null || service ssh restart 2>/dev/null || true
 
 MY_IP=$(curl -4 -s ifconfig.me || curl -4 -s icanhazip.com)
 MY_PORT=8443
+
+# Firewall: allow SSH + bridge port, deny everything else
+ufw --force reset
+ufw default deny incoming
+ufw default allow outgoing
+ufw allow 22/tcp comment 'SSH'
+ufw allow ${MY_PORT}/tcp comment 'Whispera Bridge'
+ufw --force enable
+
+# Fail2ban: protect SSH from brute-force
+cat > /etc/fail2ban/jail.d/whispera-bridge.conf <<'F2BEOF'
+[sshd]
+enabled = true
+backend = systemd
+bantime = 24h
+findtime = 2m
+maxretry = 3
+F2BEOF
+systemctl enable fail2ban 2>/dev/null || true
+systemctl restart fail2ban 2>/dev/null || true
 
 PAYLOAD=$(jq -n \
   --arg address "${MY_IP}:${MY_PORT}" \
@@ -829,7 +976,7 @@ PAYLOAD=$(jq -n \
 
 RESULT=$(curl -s -X POST "https://${SERVER}/api/bridge-register" \
   -H "Content-Type: application/json" \
-  -d "${PAYLOAD}" --insecure)
+  -d "${PAYLOAD}" ` + h.curlTLSFlag() + `)
 
 BRIDGE_ID=$(echo "${RESULT}" | jq -r '.id // empty')
 if [ -z "${BRIDGE_ID}" ]; then
@@ -841,19 +988,22 @@ mkdir -p /etc/whispera
 echo "${BRIDGE_ID}" > /etc/whispera/bridge-id
 echo "${TOKEN}" > /etc/whispera/bridge-token
 echo "${SERVER}" > /etc/whispera/bridge-server
+echo "` + h.serverCertFP + `" > /etc/whispera/server-cert-fp
 
-cat > /usr/local/bin/whispera-bridge-heartbeat <<'HBEOF'
+cat > /usr/local/bin/whispera-bridge-heartbeat <<HBEOF
 #!/bin/bash
-BRIDGE_ID=$(cat /etc/whispera/bridge-id)
-TOKEN=$(cat /etc/whispera/bridge-token)
-SERVER=$(cat /etc/whispera/bridge-server)
-LOAD=$(awk '{print $1}' /proc/loadavg)
-USERS=$(who | wc -l)
-VERSION=$(whispera --version 2>/dev/null || echo "unknown")
-curl -s -X POST "https://${SERVER}/api/bridge-heartbeat" \
+BRIDGE_ID=\$(cat /etc/whispera/bridge-id)
+TOKEN=\$(cat /etc/whispera/bridge-token)
+SERVER=\$(cat /etc/whispera/bridge-server)
+LOAD=\$(awk '{print \$1}' /proc/loadavg)
+USERS=\$(who | wc -l)
+VERSION=\$(whispera --version 2>/dev/null || echo "unknown")
+PINNED=\$(cat /etc/whispera/server-cert-fp 2>/dev/null)
+CURL_TLS=\${PINNED:+--pinnedpubkey "\$PINNED"}
+curl -s -X POST "https://\${SERVER}/api/bridge-heartbeat" \
   -H "Content-Type: application/json" \
-  -d "{\"id\":\"${BRIDGE_ID}\",\"token\":\"${TOKEN}\",\"load\":${LOAD},\"cur_users\":${USERS},\"version\":\"${VERSION}\"}" \
-  --insecure | jq -r '.authorized_keys[]?' > /tmp/whispera_keys 2>/dev/null
+  -d "{\"id\":\"\${BRIDGE_ID}\",\"token\":\"\${TOKEN}\",\"load\":\${LOAD},\"cur_users\":\${USERS},\"version\":\"\${VERSION}\"}" \
+  \${CURL_TLS} | jq -r '.authorized_keys[]?' > /tmp/whispera_keys 2>/dev/null
 if [ -s /tmp/whispera_keys ]; then
   mkdir -p /root/.ssh
   cp /tmp/whispera_keys /root/.ssh/authorized_keys

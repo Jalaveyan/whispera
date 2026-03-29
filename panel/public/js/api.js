@@ -314,6 +314,20 @@ class WhisperaAPI {
         return this.request('/api/bridge-scan', { method: 'POST' });
     }
 
+    async pingBridge(id, count = 5) {
+        return this.request('/api/bridge-ping', {
+            method: 'POST',
+            body: JSON.stringify({ id, count, mode: 'tcp' })
+        });
+    }
+
+    async setBridgeLabel(id, blacklisted) {
+        return this.request('/api/bridge-label', {
+            method: 'POST',
+            body: JSON.stringify({ id, blacklisted })
+        });
+    }
+
     async setAdminSSHKey(sshKey) {
         return this.request('/api/bridge-ssh-admin', {
             method: 'POST',

@@ -33,7 +33,7 @@ func DefaultDesyncConfig() *DesyncConfig {
 	return &DesyncConfig{
 		Enabled:         false,
 		Strategy:        DesyncSplit,
-		TTL:             3,
+		TTL:             1,
 		SplitPos:        3,
 		FakePayloadSize: 16,
 	}

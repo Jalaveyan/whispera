@@ -478,12 +478,13 @@
                                     <th data-i18n="table.header.type">Тип</th>
                                     <th data-i18n="bridges.table.latency">Задержка</th>
                                     <th data-i18n="bridges.table.trust">Доверие</th>
+                                    <th title="Оценка ML-модели. Значения < 0.3 указывают на недостаточное обучение." style="cursor:help;">ML ℹ</th>
                                     <th data-i18n="bridges.table.last_check">Последняя проверка</th>
-                                    <th style="width:80px;"></th>
+                                    <th style="width:100px;"></th>
                                 </tr>
                             </thead>
                             <tbody id="bridges-tbody">
-                                <tr><td colspan="9" style="text-align:center;color:#555;padding:32px;"><span data-i18n="common.loading">Загрузка...</span></td></tr>
+                                <tr><td colspan="10" style="text-align:center;color:#555;padding:32px;"><span data-i18n="common.loading">Загрузка...</span></td></tr>
                             </tbody>
                         </table>
                     </div>
@@ -913,6 +914,15 @@
                             <option value="instagram_ios">Instagram iOS</option>
                             <option value="wechat_ios">WeChat iOS</option>
                             <option value="facebook_ios">Facebook iOS</option>
+                        </optgroup>
+                        <optgroup label="Музыка">
+                            <option value="spotify">Spotify</option>
+                            <option value="yandex_music">Яндекс Музыка</option>
+                            <option value="vk_music">VK Музыка</option>
+                        </optgroup>
+                        <optgroup label="Видео">
+                            <option value="youtube">YouTube</option>
+                            <option value="vk_video_stream">VK Video Stream</option>
                         </optgroup>
                     </select>
                 </div>

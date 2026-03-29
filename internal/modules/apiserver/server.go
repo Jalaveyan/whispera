@@ -303,6 +303,9 @@ func (s *Server) registerDefaultRoutes() {
 	s.Handle("GET /api/bridge-white-cloudinit", s.bridgeHandler.HandleGetWhiteCloudInit)
 	s.Handle("POST /api/bridge-connect", s.bridgeHandler.HandleBridgeConnect)
 	s.Handle("POST /api/bridge-scan", s.bridgeHandler.HandleBridgeScan)
+	s.Handle("POST /api/bridge-ping", s.bridgeHandler.HandleBridgePing)
+	s.Handle("POST /api/bridge-label", s.bridgeHandler.HandleSetBridgeLabel)
+	s.Handle("POST /api/bridge-rollout", s.handleBridgeRollout)
 
 	s.Handle("GET /api/ml/config", s.handleMLConfig)
 	s.Handle("POST /api/ml/token/rotate", s.handleMLTokenRotate)
