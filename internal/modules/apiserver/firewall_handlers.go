@@ -55,15 +55,23 @@ func ufwPath() string {
 
 func runUFW(args ...string) ([]byte, error) {
 	ufw := ufwPath()
-	// Try directly first — works when process has CAP_NET_ADMIN (AmbientCapabilities in systemd unit).
-	// sudo is blocked when NoNewPrivileges=true is set in the service.
 	out, err := exec.CommandContext(context.Background(), ufw, args...).CombinedOutput()
 	if err == nil {
 		return out, nil
 	}
-	// Fall back to sudo for setups without ambient capabilities.
+	outStr := string(out)
+	if strings.Contains(outStr, "Read-only file system") {
+		return out, fmt.Errorf("ufw unavailable: read-only filesystem (container environment)")
+	}
 	if sudo, serr := exec.LookPath("sudo"); serr == nil {
-		return exec.CommandContext(context.Background(), sudo, append([]string{ufw}, args...)...).CombinedOutput()
+		out2, err2 := exec.CommandContext(context.Background(), sudo, append([]string{ufw}, args...)...).CombinedOutput()
+		if err2 == nil {
+			return out2, nil
+		}
+		if strings.Contains(string(out2), "Read-only file system") {
+			return out2, fmt.Errorf("ufw unavailable: read-only filesystem (container environment)")
+		}
+		return out2, err2
 	}
 	return out, err
 }
@@ -173,7 +181,11 @@ func (s *Server) handleFirewallAddRule(w http.ResponseWriter, r *http.Request) {
 	out, err := runUFW(args...)
 	if err != nil {
 		log.Warn("ufw add rule failed: %s", strings.TrimSpace(string(out)))
-		s.jsonError(w, http.StatusInternalServerError, "firewall rule could not be applied")
+		if strings.Contains(err.Error(), "read-only filesystem") {
+			s.jsonError(w, http.StatusServiceUnavailable, "ufw is not available in this environment (read-only filesystem)")
+		} else {
+			s.jsonError(w, http.StatusInternalServerError, "firewall rule could not be applied")
+		}
 		return
 	}
 	status, _ := getFirewallStatus()
@@ -191,7 +203,11 @@ func (s *Server) handleFirewallDeleteRule(w http.ResponseWriter, r *http.Request
 	out, err := runUFW("--force", "delete", strconv.Itoa(req.Number))
 	if err != nil {
 		log.Warn("ufw delete rule failed: %s", strings.TrimSpace(string(out)))
-		s.jsonError(w, http.StatusInternalServerError, "firewall rule could not be deleted")
+		if strings.Contains(err.Error(), "read-only filesystem") {
+			s.jsonError(w, http.StatusServiceUnavailable, "ufw is not available in this environment (read-only filesystem)")
+		} else {
+			s.jsonError(w, http.StatusInternalServerError, "firewall rule could not be deleted")
+		}
 		return
 	}
 	status, _ := getFirewallStatus()
@@ -214,8 +230,13 @@ func (s *Server) handleFirewallToggle(w http.ResponseWriter, r *http.Request) {
 	}
 	out, err := runUFW(args...)
 	if err != nil {
-		log.Warn("ufw toggle failed: %s", strings.TrimSpace(string(out)))
-		s.jsonError(w, http.StatusInternalServerError, "firewall toggle failed")
+		msg := strings.TrimSpace(string(out))
+		log.Warn("ufw toggle failed: %s", msg)
+		if strings.Contains(err.Error(), "read-only filesystem") {
+			s.jsonError(w, http.StatusServiceUnavailable, "ufw is not available in this environment (read-only filesystem)")
+		} else {
+			s.jsonError(w, http.StatusInternalServerError, "firewall toggle failed")
+		}
 		return
 	}
 	status, _ := getFirewallStatus()

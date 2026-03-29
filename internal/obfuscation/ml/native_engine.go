@@ -10,6 +10,7 @@ import (
 	"math/cmplx"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -1295,6 +1296,7 @@ func (e *NativeMLEngine) Train(epochs int) (int, float64) {
 			_, _ = dpiTrainer.step(xData, yDPI)
 			_, _ = anomalyTrainer.step(xData, yAnomaly)
 			batchCount++
+			runtime.Gosched()
 		}
 
 		if batchCount > 0 {
@@ -1303,6 +1305,7 @@ func (e *NativeMLEngine) Train(epochs int) (int, float64) {
 		e.mu.Lock()
 		e.trainLoss = totalLoss
 		e.mu.Unlock()
+		time.Sleep(2 * time.Millisecond)
 	}
 
 done:

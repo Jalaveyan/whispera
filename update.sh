@@ -1086,14 +1086,17 @@ ENVEOF
                     /etc/systemd/system/whispera.service
                 log_info "Added CAP_NET_ADMIN to whispera service"
             fi
-            if ! grep -q "/run/ufw.lock" /etc/systemd/system/whispera.service 2>/dev/null; then
+            if ! grep -q " /run" /etc/systemd/system/whispera.service 2>/dev/null; then
                 if grep -q "^ReadWritePaths=" /etc/systemd/system/whispera.service 2>/dev/null; then
-                    sed -i 's|^ReadWritePaths=\(.*\)|\1 /run/ufw.lock|' /etc/systemd/system/whispera.service
+                    sed -i 's|^ReadWritePaths=\(.*\)|ReadWritePaths=\1 /run /var/crash|' /etc/systemd/system/whispera.service
                 else
-                    sed -i '/^ProtectSystem=strict/a ReadWritePaths=/run/ufw.lock /run/ufw /etc/ufw /lib/ufw /var/lib/ufw /var/log/whispera' \
+                    sed -i '/^ProtectSystem=strict/a ReadWritePaths=/run /var/crash /etc/ufw /lib/ufw /var/lib/ufw /var/log/whispera' \
                         /etc/systemd/system/whispera.service
                 fi
-                log_info "Added /run/ufw.lock to ReadWritePaths in whispera service"
+                log_info "Added /run to ReadWritePaths in whispera service"
+            fi
+            if grep -q "/run/ufw.lock" /etc/systemd/system/whispera.service 2>/dev/null; then
+                sed -i 's| /run/ufw\.lock||g' /etc/systemd/system/whispera.service
             fi
             systemctl daemon-reload
 
@@ -1151,7 +1154,21 @@ ENVEOF
             RELOAD=true
         fi
         if ! grep -q "/etc/ufw" "$SVC"; then
-            sed -i 's|ReadWritePaths=\(.*\)|ReadWritePaths=\1 /etc/ufw /lib/ufw /var/lib/ufw /run/ufw|' "$SVC"
+            sed -i 's|ReadWritePaths=\(.*\)|ReadWritePaths=\1 /etc/ufw /lib/ufw /var/lib/ufw|' "$SVC"
+            RELOAD=true
+        fi
+        if ! grep -q "$CONF_PATH" "$SVC"; then
+            sed -i "s|ReadWritePaths=\(.*\)|ReadWritePaths=\1 $CONF_PATH|" "$SVC"
+            RELOAD=true
+            log_info "Added $CONF_PATH to ReadWritePaths in whispera.service"
+        fi
+        if ! grep -qE " /run( |$)" "$SVC"; then
+            sed -i 's|ReadWritePaths=\(.*\)|ReadWritePaths=\1 /run /var/crash|' "$SVC"
+            RELOAD=true
+            log_info "Added /run to ReadWritePaths in whispera.service"
+        fi
+        if grep -q "/run/ufw.lock" "$SVC"; then
+            sed -i 's| /run/ufw\.lock||g' "$SVC"
             RELOAD=true
         fi
         if [[ "$RELOAD" == true ]]; then

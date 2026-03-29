@@ -790,16 +790,8 @@ show_extras_menu() {
     while true; do
         clear
 
-        local PUB_KEY=$(cat "$CONF_PATH/server.pub" 2>/dev/null)
         local SRV_IP=$(get_public_ip)
-        if [[ -n "$PUB_KEY" ]]; then
-            echo ""
-            echo -e "${GREEN}═══════════════════════════════════════════════════════════════${PLAIN}"
-            echo -e "${GREEN} CONNECTION KEY${PLAIN}"
-            echo -e "${GREEN}═══════════════════════════════════════════════════════════════${PLAIN}"
-            echo -e "${BLUE}whispera://${SRV_IP}:8443?pub=${PUB_KEY}&transport=tcp&phantom=1&sni=random_ru&asn=1&tls=chrome${PLAIN}"
-            echo -e "${GREEN}═══════════════════════════════════════════════════════════════${PLAIN}"
-        fi
+        local ADMIN_PASS=$(cat "$CONF_PATH/admin.pass" 2>/dev/null)
 
         local BRIDGE_TOKEN=$(cat "$CONF_PATH/bridge.token" 2>/dev/null)
 
@@ -807,7 +799,8 @@ show_extras_menu() {
         echo -e "${BLUE}╔${SEP}╗${PLAIN}"
         _row "          WHISPERA MANAGEMENT MENU"
         echo -e "${BLUE}╠${SEP}╣${PLAIN}"
-        _row "  Web Panel:  https://${SRV_IP}:3000/"
+        _row "  Web Panel:  https://${SRV_IP}/"
+        _row "  Admin Pass: ${ADMIN_PASS}"
         _row "  Config:     /etc/whispera/config.yaml"
         echo -e "${BLUE}╠${SEP}╣${PLAIN}"
         _row "  BRIDGE MANAGEMENT"
@@ -1532,7 +1525,7 @@ LimitNOFILE=65535
 AmbientCapabilities=CAP_NET_BIND_SERVICE CAP_NET_ADMIN CAP_NET_RAW
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=$WORK_DIR $CONF_PATH $DAT_PATH /var/log/whispera /etc/ufw /lib/ufw /var/lib/ufw /run/ufw /run/ufw.lock
+ReadWritePaths=$WORK_DIR $CONF_PATH $DAT_PATH /var/log/whispera /etc/ufw /lib/ufw /var/lib/ufw /run /var/crash
 StandardOutput=append:/var/log/whispera/whispera.log
 StandardError=append:/var/log/whispera/whispera.log
 
@@ -1724,9 +1717,11 @@ case $1 in
     log|logs) journalctl -u whispera -u whispera-panel -f ;;
     config) ${EDITOR:-nano} /etc/whispera/config.yaml ;;
     key)
-        PUBLIC_KEY=$(cat /etc/whispera/server.pub 2>/dev/null)
         SERVER_IP=$(curl -s https://api.ipify.org -m 5 2>/dev/null || echo "YOUR_IP")
-        echo "whispera://${SERVER_IP}:8443?pub=${PUBLIC_KEY}&transport=tcp&phantom=1&sni=random_ru&asn=1&tls=chrome"
+        ADMIN_PASS=$(cat /etc/whispera/admin.pass 2>/dev/null)
+        echo "Web Panel:    https://${SERVER_IP}/"
+        echo "Admin User:   admin"
+        echo "Admin Pass:   ${ADMIN_PASS}"
         ;;
     update)
         bash /opt/whispera/update.sh
@@ -1794,10 +1789,7 @@ main() {
     echo -e "  Config:         ${GREEN}$CONF_PATH/config.yaml${PLAIN}"
     local SERVER_IP
     SERVER_IP=$(get_public_ip)
-    echo -e "  Web Panel:      ${GREEN}https://whispera-ui/${PLAIN}"
-    echo -e "  (или напрямую: ${GREEN}https://${SERVER_IP}:3000/${PLAIN})"
-    echo -e "  ${YELLOW}Чтобы открыть панель по имени, добавьте на своём компьютере:${PLAIN}"
-    echo -e "  ${GREEN}${SERVER_IP} whispera-ui${PLAIN}  → в файл /etc/hosts (Linux/Mac) или C:\\Windows\\System32\\drivers\\etc\\hosts (Windows)"
+    echo -e "  Web Panel:      ${GREEN}https://${SERVER_IP}/${PLAIN}"
     echo -e "  ${YELLOW}(самоподписанный сертификат — в браузере нажмите «Продолжить»)${PLAIN}"
     echo ""
     echo -e "  ${YELLOW}Admin User:${PLAIN}     admin"
@@ -1816,9 +1808,7 @@ main() {
         echo -e "  Install bridge on other servers:"
         echo -e "  ${GREEN}curl -sL https://$(get_public_ip):8080/install-bridge.sh | bash -s -- $(get_public_ip):8443 $BRIDGE_TOKEN${PLAIN}"
     fi
-    
-    show_connection_key
-    
+
     setup_dns_discovery
     
     show_extras_menu
@@ -1830,10 +1820,16 @@ case "${1:-}" in
         generate_keys
         generate_config
         systemctl restart whispera 2>/dev/null || true
-        show_connection_key
+        SERVER_IP=$(get_public_ip)
+        ADMIN_PASS=$(cat "$CONF_PATH/admin.pass" 2>/dev/null)
+        log_success "Keys regenerated. Panel: https://${SERVER_IP}/ (admin / ${ADMIN_PASS})"
         ;;
     key|showkey)
-        show_connection_key
+        SERVER_IP=$(get_public_ip)
+        ADMIN_PASS=$(cat "$CONF_PATH/admin.pass" 2>/dev/null)
+        echo "Web Panel:  https://${SERVER_IP}/"
+        echo "Admin User: admin"
+        echo "Admin Pass: ${ADMIN_PASS}"
         ;;
     update)
         log_info "Updating Whispera..."
