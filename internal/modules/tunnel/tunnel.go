@@ -29,6 +29,7 @@ import (
 	"whispera/internal/logger"
 	"whispera/internal/modules/killswitch"
 	"whispera/internal/modules/phantom"
+	"whispera/internal/modules/transport"
 	asnbypass "whispera/internal/modules/transport/asn_bypass"
 	"whispera/internal/modules/transport/domainfront"
 	h2c_transport "whispera/internal/modules/transport/h2c"
@@ -721,8 +722,12 @@ func (m *Manager) connectInternal(ctx context.Context, isRotation bool) error {
 			return
 		}
 
+		var controlStream net.Conn = stream
+		if m.config.EnablePhantom {
+			controlStream = transport.WrapStreamTLS(stream)
+		}
 		mc := &managedConn{
-			Conn:      stream,
+			Conn:      controlStream,
 			session:   muxSess,
 			id:        fmt.Sprintf("pool-%d-%d", start.Unix(), idx),
 			createdAt: time.Now(),
@@ -2145,6 +2150,11 @@ func (m *Manager) OpenStream(ctx context.Context, proto byte, addr string, port 
 		return nil, fmt.Errorf("open stream: %w", err)
 	}
 
+	var proxyStream net.Conn = stream
+	if m.config.EnablePhantom {
+		proxyStream = transport.WrapStreamTLS(stream)
+	}
+
 	addrBytes := []byte(addr)
 	header := make([]byte, 1+2+len(addrBytes)+2)
 	header[0] = proto
@@ -2152,13 +2162,13 @@ func (m *Manager) OpenStream(ctx context.Context, proto byte, addr string, port 
 	copy(header[3:], addrBytes)
 	binary.BigEndian.PutUint16(header[3+len(addrBytes):], port)
 
-	if _, err := stream.Write(header); err != nil {
+	if _, err := proxyStream.Write(header); err != nil {
 		stream.Close()
 		return nil, fmt.Errorf("write connect header: %w", err)
 	}
 
 	resp := make([]byte, 1)
-	if _, err := io.ReadFull(stream, resp); err != nil {
+	if _, err := io.ReadFull(proxyStream, resp); err != nil {
 		stream.Close()
 		return nil, fmt.Errorf("read connect response: %w", err)
 	}
@@ -2167,7 +2177,7 @@ func (m *Manager) OpenStream(ctx context.Context, proto byte, addr string, port 
 		return nil, fmt.Errorf("relay refused connection")
 	}
 
-	return stream, nil
+	return proxyStream, nil
 }
 
 func (m *Manager) Send(data []byte) error {

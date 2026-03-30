@@ -16,6 +16,7 @@ import (
 	"whispera/internal/core/interfaces"
 	"whispera/internal/core/registry"
 	"whispera/internal/logger"
+	"whispera/internal/modules/transport"
 	"whispera/internal/mux"
 
 	"golang.org/x/net/proxy"
@@ -312,7 +313,7 @@ func (s *Server) HealthCheck() interfaces.HealthStatus {
 	return status
 }
 
-func (s *Server) ServeTunnel(conn net.Conn, obfuscator interfaces.Obfuscator) {
+func (s *Server) ServeTunnel(conn net.Conn, streamObf bool) {
 	defer conn.Close()
 	clientID := conn.RemoteAddr().String()
 	s.log.Info("Starting tunnel session for %s", clientID)
@@ -350,10 +351,18 @@ func (s *Server) ServeTunnel(conn net.Conn, obfuscator interfaces.Obfuscator) {
 		}
 		if firstStream {
 			firstStream = false
-			go io.Copy(io.Discard, stream)
+			if streamObf {
+				go io.Copy(io.Discard, transport.WrapStreamTLS(stream))
+			} else {
+				go io.Copy(io.Discard, stream)
+			}
 			continue
 		}
-		go s.handleProxyStream(stream)
+		var proxyConn net.Conn = stream
+		if streamObf {
+			proxyConn = transport.WrapStreamTLS(stream)
+		}
+		go s.handleProxyStream(proxyConn)
 	}
 }
 

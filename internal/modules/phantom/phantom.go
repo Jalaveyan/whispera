@@ -175,7 +175,8 @@ func New(cfg *Config) (*Handler, error) {
 		}
 	}
 
-	integrationMgr := obfuscation.NewIntegrationManager()
+	integrationMgr := obfuscation.NewIntegrationManagerWithOptions(false, true)
+	integrationMgr.GetMarionetteAdapter().GetCore().MlSystem = nil
 	if cfg.EnableObfuscation && cfg.ObfuscationProfile != "" {
 		if err := integrationMgr.SetProfile(cfg.ObfuscationProfile); err != nil {
 			log.Printf("[Phantom] Warning: failed to set obfuscation profile %q: %v", cfg.ObfuscationProfile, err)

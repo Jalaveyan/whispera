@@ -315,7 +315,7 @@ func StartInbound(inbound modconfig.InboundConfig, serverConfig *modconfig.Serve
 							defer session.Close()
 						}
 					}
-					globalRelay.ServeTunnel(conn, nil)
+					globalRelay.ServeTunnel(conn, true)
 				} else {
 					conn.Close()
 				}
@@ -394,7 +394,7 @@ func StartInbound(inbound modconfig.InboundConfig, serverConfig *modconfig.Serve
 					continue
 				}
 				if globalRelay != nil {
-					go globalRelay.ServeTunnel(conn, nil)
+					go globalRelay.ServeTunnel(conn, false)
 				} else {
 					conn.Close()
 				}
@@ -437,7 +437,7 @@ func StartInbound(inbound modconfig.InboundConfig, serverConfig *modconfig.Serve
 					continue
 				}
 				if globalRelay != nil {
-					go globalRelay.ServeTunnel(conn, nil)
+					go globalRelay.ServeTunnel(conn, false)
 				} else {
 					conn.Close()
 				}
@@ -476,7 +476,7 @@ func StartInbound(inbound modconfig.InboundConfig, serverConfig *modconfig.Serve
 					continue
 				}
 				if globalRelay != nil {
-					go globalRelay.ServeTunnel(conn, nil)
+					go globalRelay.ServeTunnel(conn, false)
 				} else {
 					conn.Close()
 				}
@@ -520,7 +520,7 @@ func StartInbound(inbound modconfig.InboundConfig, serverConfig *modconfig.Serve
 					continue
 				}
 				if globalRelay != nil {
-					go globalRelay.ServeTunnel(conn, nil)
+					go globalRelay.ServeTunnel(conn, false)
 				} else {
 					conn.Close()
 				}
@@ -627,7 +627,7 @@ func StartReverseInbound(inbound modconfig.InboundConfig, serverConfig *modconfi
 			if hsHandler != nil {
 				handleTCPConnection(conn, hsHandler)
 			} else {
-				globalRelay.ServeTunnel(conn, nil)
+				globalRelay.ServeTunnel(conn, false)
 			}
 		} else {
 			conn.Close()
@@ -1528,14 +1528,14 @@ func handleTCPConnection(conn net.Conn, hsHandler *handshake.Handler) {
 			}
 		}
 		if globalRelay != nil {
-			globalRelay.ServeTunnel(conn, nil)
+			globalRelay.ServeTunnel(conn, false)
 		}
 	} else {
 		if *debug {
 			log.Printf("[TCP] No handshake from %v (first byte=0x%02x), routing directly to smux", addr, firstByte[0])
 		}
 		if globalRelay != nil {
-			globalRelay.ServeTunnel(&prependConn{Conn: conn, prepend: []byte{firstByte[0]}}, nil)
+			globalRelay.ServeTunnel(&prependConn{Conn: conn, prepend: []byte{firstByte[0]}}, false)
 		}
 	}
 }
