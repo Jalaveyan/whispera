@@ -15,6 +15,7 @@ export declare class BridgesService {
     addBridge(token: string, bridge: Partial<Bridge>): Promise<Bridge>;
     deleteBridge(token: string, id: string): Promise<void>;
     getCloudInit(token: string): Promise<string>;
+    getWhiteCloudInit(query: Record<string, string>): Promise<string>;
     getBridgesAdmin(token: string): Promise<any>;
     getBridgeStats(token: string): Promise<any>;
     checkBridge(token: string, id: string): Promise<any>;

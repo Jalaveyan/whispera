@@ -18,4 +18,5 @@ export declare class BridgesController {
     connectToBridge(auth: string, bridgeId: string, res: Response): Promise<Response<any, Record<string, any>>>;
     scanBridges(auth: string, res: Response): Promise<Response<any, Record<string, any>>>;
     getBridgeCloudinit(auth: string, res: Response): Promise<Response<any, Record<string, any>>>;
+    getWhiteBridgeCloudinit(query: Record<string, string>, res: Response): Promise<Response<any, Record<string, any>>>;
 }

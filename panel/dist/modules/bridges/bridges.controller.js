@@ -185,6 +185,18 @@ let BridgesController = class BridgesController {
             return res.status(status).send('Failed to generate cloud-init');
         }
     }
+    async getWhiteBridgeCloudinit(query, res) {
+        try {
+            const script = await this.bridgesService.getWhiteCloudInit(query);
+            res.setHeader('Content-Type', 'text/plain');
+            res.setHeader('Content-Disposition', 'attachment; filename="install-white-bridge.sh"');
+            return res.send(script);
+        }
+        catch (err) {
+            const status = err?.response?.status || common_1.HttpStatus.INTERNAL_SERVER_ERROR;
+            return res.status(status).send('Failed to generate white cloud-init');
+        }
+    }
 };
 exports.BridgesController = BridgesController;
 __decorate([
@@ -313,6 +325,14 @@ __decorate([
     __metadata("design:paramtypes", [String, Object]),
     __metadata("design:returntype", Promise)
 ], BridgesController.prototype, "getBridgeCloudinit", null);
+__decorate([
+    (0, common_1.Get)('api/bridge-white-cloudinit'),
+    __param(0, (0, common_1.Query)()),
+    __param(1, (0, common_1.Res)()),
+    __metadata("design:type", Function),
+    __metadata("design:paramtypes", [Object, Object]),
+    __metadata("design:returntype", Promise)
+], BridgesController.prototype, "getWhiteBridgeCloudinit", null);
 exports.BridgesController = BridgesController = __decorate([
     (0, common_1.Controller)(),
     __metadata("design:paramtypes", [bridges_service_1.BridgesService])

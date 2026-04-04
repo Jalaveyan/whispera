@@ -42,6 +42,12 @@ let BridgesService = class BridgesService {
         }));
         return response.data;
     }
+    async getWhiteCloudInit(query) {
+        const params = new URLSearchParams(query).toString();
+        const url = `${this.backendUrl}/api/bridge-white-cloudinit${params ? '?' + params : ''}`;
+        const response = await (0, rxjs_1.firstValueFrom)(this.httpService.get(url, { responseType: 'text' }));
+        return response.data;
+    }
     async getBridgesAdmin(token) {
         const response = await (0, rxjs_1.firstValueFrom)(this.httpService.get(`${this.backendUrl}/api/bridge-admin`, {
             headers: { Authorization: `Bearer ${token}` },

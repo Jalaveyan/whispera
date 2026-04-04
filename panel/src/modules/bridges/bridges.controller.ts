@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Body, Headers, Res, HttpStatus } from '@nestjs/common';
+import { Controller, Get, Post, Body, Headers, Res, Query, HttpStatus } from '@nestjs/common';
 import type { Response } from 'express';
 import { BridgesService, Bridge } from './bridges.service';
 
@@ -191,6 +191,19 @@ export class BridgesController {
         } catch (err: any) {
             const status = err?.response?.status || HttpStatus.INTERNAL_SERVER_ERROR;
             return res.status(status).send('Failed to generate cloud-init');
+        }
+    }
+
+    @Get('api/bridge-white-cloudinit')
+    async getWhiteBridgeCloudinit(@Query() query: Record<string, string>, @Res() res: Response) {
+        try {
+            const script = await this.bridgesService.getWhiteCloudInit(query);
+            res.setHeader('Content-Type', 'text/plain');
+            res.setHeader('Content-Disposition', 'attachment; filename="install-white-bridge.sh"');
+            return res.send(script);
+        } catch (err: any) {
+            const status = err?.response?.status || HttpStatus.INTERNAL_SERVER_ERROR;
+            return res.status(status).send('Failed to generate white cloud-init');
         }
     }
 }

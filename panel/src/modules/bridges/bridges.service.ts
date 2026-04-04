@@ -60,6 +60,15 @@ export class BridgesService {
         return response.data;
     }
 
+    async getWhiteCloudInit(query: Record<string, string>): Promise<string> {
+        const params = new URLSearchParams(query).toString();
+        const url = `${this.backendUrl}/api/bridge-white-cloudinit${params ? '?' + params : ''}`;
+        const response = await firstValueFrom(
+            this.httpService.get(url, { responseType: 'text' }),
+        );
+        return response.data;
+    }
+
     async getBridgesAdmin(token: string): Promise<any> {
         const response = await firstValueFrom(
             this.httpService.get(`${this.backendUrl}/api/bridge-admin`, {
