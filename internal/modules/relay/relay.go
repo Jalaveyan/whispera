@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/url"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -346,7 +347,14 @@ func (s *Server) ServeTunnel(conn net.Conn, streamObf bool) {
 	for {
 		stream, err := session.AcceptStream()
 		if err != nil {
-			s.log.Info("Tunnel session closed for %s: %v", clientID, err)
+			errStr := err.Error()
+			if strings.Contains(errStr, "keepalive timeout") ||
+				strings.Contains(errStr, "session closed") ||
+				strings.Contains(errStr, "EOF") {
+				s.log.Debug("Tunnel session closed for %s: %v", clientID, err)
+			} else {
+				s.log.Info("Tunnel session closed for %s: %v", clientID, err)
+			}
 			return
 		}
 		if firstStream {
