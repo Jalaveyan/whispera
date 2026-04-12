@@ -36,6 +36,8 @@ type Module struct {
 	tunnel   TunnelManager
 	mu       sync.RWMutex
 	running  int32
+	authUser string
+	authPass string
 }
 
 type TunnelManager interface {
@@ -69,6 +71,11 @@ func (m *Module) Start() error {
 	}
 
 	m.server = proxy.NewSOCKS5Server(m.config.ListenAddr, m.handleConnection)
+	if m.authUser != "" {
+		m.server.SetAuthHandler(func(u, p string) bool {
+			return u == m.authUser && p == m.authPass
+		})
+	}
 	m.server.SetUDPRelayHandler(m.handleUDPRelay)
 
 	atomic.StoreInt32(&m.running, 1)
@@ -114,6 +121,11 @@ func (m *Module) Stop() error {
 	}
 	m.mu.Unlock()
 	return m.Module.Stop()
+}
+
+func (m *Module) SetAuthHandler(username, password string) {
+	m.authUser = username
+	m.authPass = password
 }
 
 func (m *Module) SetTunnel(tunnel TunnelManager) {

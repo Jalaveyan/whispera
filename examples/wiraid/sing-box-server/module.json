@@ -1,0 +1,56 @@
+{
+  "capabilities": {
+    "transport": true
+  },
+  "module": {
+    "description": "sing-box server (SagerNet/sing-box) — trojan+TLS",
+    "lang": "binary",
+    "name": "sing-box-server",
+    "pair_exports": {
+      "password": "{params.password}",
+      "server_host": "{server_host}",
+      "server_port": "{listen_port}",
+      "sni": "{server_host}"
+    },
+    "peer": {
+      "id": "sing-box-client"
+    },
+    "platforms": [
+      "linux-x86_64"
+    ],
+    "uri_export_template": "trojan://{params.password}@{server_host}:{listen_port}?security=tls\u0026sni={server_host}\u0026allowInsecure=1#sing-box-trojan",
+    "version": "0.1.0",
+    "wiraid_id": "sing-box-server"
+  },
+  "params_schema": {
+    "cert_path": {
+      "generator": "self_signed_cert"
+    },
+    "key_path": {
+      "generator": "fixed",
+      "value": "tls.key"
+    },
+    "password": {
+      "generator": "random_hex",
+      "length": 32
+    }
+  },
+  "runtime": {
+    "cmd": [
+      "{binary}",
+      "run",
+      "-c",
+      "{config_path}",
+      "-D",
+      "{module_dir}"
+    ],
+    "config_path": "config.json",
+    "config_template": "{\n  \"log\": { \"level\": \"warn\" },\n  \"inbounds\": [{\n    \"type\": \"trojan\",\n    \"listen\": \"0.0.0.0\",\n    \"listen_port\": {listen_port},\n    \"users\": [{ \"password\": \"{params.password}\" }],\n    \"tls\": {\n      \"enabled\": true,\n      \"server_name\": \"{server_host}\",\n      \"certificate_path\": \"{params.cert_path}\",\n      \"key_path\": \"{params.key_path}\"\n    }\n  }],\n  \"outbounds\": [{ \"type\": \"direct\" }]\n}\n",
+    "protocol": "tcp",
+    "ready_signal": {
+      "mode": "tcp_connect",
+      "timeout_ms": 5000
+    }
+  },
+  "schema": 2
+}

@@ -6,6 +6,7 @@ import (
 	"flag"
 	"io"
 	stdlog "log"
+	mrand "math/rand"
 	"net"
 	"os"
 	"os/signal"
@@ -253,6 +254,9 @@ func main() {
 		VPNServerAddr: cfg.Server,
 		MTU:           cfg.MTU,
 	})
+	generateSocksAuth()
+	socksMod.SetAuthHandler(socksUser, socksPass)
+	stdlog.Printf("SOCKS5 auth enabled (user=%s)", socksUser)
 	lc.Register(socksMod)
 
 	dnsUpstreamAddr := "1.1.1.1:53"
@@ -367,6 +371,9 @@ func main() {
 	if len(transports) == 0 {
 		transports = []string{"tcp"}
 	}
+	mrand.Shuffle(len(transports), func(i, j int) {
+		transports[i], transports[j] = transports[j], transports[i]
+	})
 
 	newTunnelMod := func(tr string) *tunnel.Manager {
 		m, _ := tunnel.New(&tunnel.Config{
@@ -550,7 +557,6 @@ func main() {
 	lc.Register(tunnelMod)
 	tunnelMod.SetObfuscator(obfsMod)
 
-	// MultiRouter wraps the primary tunnel; extra bridge tunnels can be added at runtime.
 	multiRouter := socks5.NewMultiRouter(tunnelMod)
 	globalMultiRouter = multiRouter
 	socksMod.SetTunnel(multiRouter)
@@ -576,7 +582,7 @@ func main() {
 		lc.Register(m)
 		m.SetObfuscator(obfsMod)
 
-		connCtx, connCancel := context.WithCancel(ctx)
+		_, connCancel := context.WithCancel(ctx)
 		entry := &TransportEntry{
 			ID:               pool.NextID(),
 			Transport:        tr,
@@ -584,73 +590,13 @@ func main() {
 			Enabled:          true,
 			Obfuscated:       true,
 			ForceObfuscation: true,
-			Status:           connStatusConnecting,
+			Status:           connStatusStandby,
 			mgr:              m,
 			cancel:           connCancel,
 		}
 		pool.Add(entry)
 		wireEncapsulate(entry)
 		extraTunnels = append(extraTunnels, m)
-
-		go func(m *tunnel.Manager, e *TransportEntry, connCtx context.Context) {
-			connStart := time.Now()
-			if err := m.Connect(connCtx); err != nil {
-				stdlog.Printf("Extra transport %s failed: %v", e.Transport, err)
-				e.mu.Lock()
-				e.Status = connStatusFailed
-				e.Error = err.Error()
-				e.mu.Unlock()
-				if globalAgent != nil {
-					globalAgent.ReportResult(proxyagent.ProbeResult{
-						Transport: e.Transport, Server: serverAddress,
-						Success: false, Error: err.Error(), Timestamp: time.Now(),
-					})
-				}
-			} else {
-				e.mu.Lock()
-				e.Status = connStatusConnected
-				e.ConnectedAt = time.Now()
-				e.mu.Unlock()
-				stdlog.Printf("Extra transport %s connected", e.Transport)
-				if globalAgent != nil {
-					globalAgent.ReportResult(proxyagent.ProbeResult{
-						Transport: e.Transport, Server: serverAddress,
-						Success: true, Latency: time.Since(connStart), Timestamp: time.Now(),
-					})
-				}
-			}
-
-			backoff := 5 * time.Second
-			for {
-				select {
-				case <-ctx.Done():
-					return
-				case <-time.After(backoff):
-				}
-				e.mu.Lock()
-				enabled := e.Enabled
-				status := e.Status
-				curMgr := e.mgr
-				e.mu.Unlock()
-				if !enabled {
-					return
-				}
-				if status == connStatusConnected && curMgr != nil && curMgr.IsConnected() {
-					backoff = 5 * time.Second
-					continue
-				}
-				if backoff < 60*time.Second {
-					backoff *= 2
-				}
-				stdlog.Printf("Reconnecting extra transport %s (backoff %v)...", e.Transport, backoff)
-				restartEntry(e, buildBaseCfg(e))
-				e.mu.Lock()
-				if e.Status == connStatusConnected {
-					backoff = 5 * time.Second
-				}
-				e.mu.Unlock()
-			}
-		}(m, entry, connCtx)
 	}
 
 	agentCfg := proxyagent.DefaultAgentConfig()
@@ -724,7 +670,6 @@ func main() {
 		restartEntry(e, buildBaseCfg(e))
 	}
 
-	// newMultiBridgeTunnel builds a tunnel to an extra bridge and attaches it to the MultiRouter.
 	newMultiBridgeTunnel = func(bridgeCtx context.Context, bridgeID, bridgeAddr string, rules []string) {
 		m, err := tunnel.New(&tunnel.Config{
 			ServerAddr:          bridgeAddr,
@@ -870,7 +815,7 @@ func main() {
 	log.Println("Obfuscation: FTE + Marionette + ML enabled")
 
 	go func() {
-		ticker := time.NewTicker(5 * time.Second)
+		ticker := time.NewTicker(3 * time.Second)
 		defer ticker.Stop()
 		var primaryReconnecting int32
 		for {
@@ -878,47 +823,93 @@ func main() {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				if !tunnelMod.IsConnected() {
-					entries := pool.List()
+				if tunnelMod.IsConnected() {
+					continue
+				}
+
+				primaryEntry.mu.Lock()
+				wasConnected := primaryEntry.Status == connStatusConnected
+				primaryEntry.mu.Unlock()
+
+				isRST := wasConnected && !tunnelMod.IsConnected()
+				if isRST {
+					primaryEntry.mu.Lock()
+					primaryEntry.Status = connStatusRST
+					primaryEntry.Error = "connection reset by peer"
+					primaryEntry.mu.Unlock()
+					stdlog.Printf("Transport watchdog: primary %s got RST", transports[0])
+				}
+
+				activated := false
+				entries := pool.List()
+				for _, e := range entries {
+					e.mu.Lock()
+					status := e.Status
+					mgr := e.mgr
+					e.mu.Unlock()
+
+					if status == connStatusConnected && mgr != nil && mgr.IsConnected() && mgr != tunnelMod {
+						socksMod.SetTunnel(mgr)
+						stdlog.Printf("Transport watchdog: switched SOCKS to %s", e.Transport)
+						activated = true
+						break
+					}
+				}
+
+				if !activated {
 					for _, e := range entries {
 						e.mu.Lock()
-						alive := e.Status == connStatusConnected && e.Enabled && e.mgr != nil && e.mgr.IsConnected()
+						status := e.Status
 						mgr := e.mgr
+						tr := e.Transport
 						e.mu.Unlock()
-						if alive && mgr != tunnelMod {
-							socksMod.SetTunnel(mgr)
-							stdlog.Printf("Transport watchdog: primary down, switched SOCKS to %s", e.Transport)
+
+						if status == connStatusStandby && mgr != nil {
+							stdlog.Printf("Transport watchdog: activating standby transport %s", tr)
+							go func(entry *TransportEntry) {
+								entry.mu.Lock()
+								entry.Status = connStatusConnecting
+								entry.mu.Unlock()
+								restartEntry(entry, buildBaseCfg(entry))
+								entry.mu.Lock()
+								if entry.Status == connStatusConnected && entry.mgr != nil && entry.mgr.IsConnected() {
+									socksMod.SetTunnel(entry.mgr)
+									stdlog.Printf("Transport watchdog: standby %s now active", entry.Transport)
+								}
+								entry.mu.Unlock()
+							}(e)
 							break
 						}
 					}
-					primaryEntry.mu.Lock()
-					enabled := primaryEntry.Enabled
-					primaryEntry.mu.Unlock()
-					if enabled && atomic.CompareAndSwapInt32(&primaryReconnecting, 0, 1) {
-						go func() {
-							defer atomic.StoreInt32(&primaryReconnecting, 0)
-							stdlog.Printf("Transport watchdog: reconnecting primary %s...", transports[0])
+				}
 
-							targetCfg := buildBaseCfg(primaryEntry)
-							if globalBridgeSel != nil && globalBridgeSel.HasBridges() {
-								queryCtx, qcancel := context.WithTimeout(ctx, 5*time.Second)
-								if master := globalBridgeSel.GetClusterMaster(queryCtx); master != nil && master.MasterAddress != "" {
-									stdlog.Printf("Transport watchdog: cluster master elected — %s (%s, term %d)", master.MasterID, master.MasterAddress, master.Term)
-									targetCfg.ServerAddr = master.MasterAddress
-									targetCfg.ServerAddrTCP = master.MasterAddress
-								}
-								qcancel()
-							}
+				primaryEntry.mu.Lock()
+				enabled := primaryEntry.Enabled
+				primaryEntry.mu.Unlock()
+				if enabled && atomic.CompareAndSwapInt32(&primaryReconnecting, 0, 1) {
+					go func() {
+						defer atomic.StoreInt32(&primaryReconnecting, 0)
+						time.Sleep(2 * time.Second)
+						stdlog.Printf("Transport watchdog: reconnecting primary %s...", transports[0])
 
-							restartEntry(primaryEntry, targetCfg)
-							primaryEntry.mu.Lock()
-							if primaryEntry.Status == connStatusConnected && primaryEntry.mgr != nil {
-								socksMod.SetTunnel(primaryEntry.mgr)
-								stdlog.Printf("Transport watchdog: primary reconnected, SOCKS restored")
+						targetCfg := buildBaseCfg(primaryEntry)
+						if globalBridgeSel != nil && globalBridgeSel.HasBridges() {
+							queryCtx, qcancel := context.WithTimeout(ctx, 5*time.Second)
+							if master := globalBridgeSel.GetClusterMaster(queryCtx); master != nil && master.MasterAddress != "" {
+								targetCfg.ServerAddr = master.MasterAddress
+								targetCfg.ServerAddrTCP = master.MasterAddress
 							}
-							primaryEntry.mu.Unlock()
-						}()
-					}
+							qcancel()
+						}
+
+						restartEntry(primaryEntry, targetCfg)
+						primaryEntry.mu.Lock()
+						if primaryEntry.Status == connStatusConnected && primaryEntry.mgr != nil {
+							socksMod.SetTunnel(primaryEntry.mgr)
+							stdlog.Printf("Transport watchdog: primary reconnected, SOCKS restored")
+						}
+						primaryEntry.mu.Unlock()
+					}()
 				}
 			}
 		}
@@ -952,14 +943,13 @@ func main() {
 					stdlog.Printf("SNI sync: fed %d Russian SNIs into %d tunnel managers", len(snIs), len(allMgrs))
 				}
 
-				// ML-driven obfuscation profile advisor: check DPI level and switch profile
 				dpiType, conf := eng.GetCurrentDPILevel()
 				if conf > 0.5 {
 					var profile string
 					switch {
-					case dpiType >= 6: // very aggressive TSPU/deep inspection
+					case dpiType >= 6:
 						profile = "high_threat"
-					case dpiType >= 3: // moderate DPI
+					case dpiType >= 3:
 						profile = "telegram"
 					default:
 						profile = "default"

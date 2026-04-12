@@ -1,0 +1,28 @@
+{
+  "schema": 2,
+  "module": {
+    "name": "brook-client",
+    "version": "0.1.0",
+    "description": "brook client (txthinking/brook) — flags-only",
+    "lang": "binary",
+    "platforms": ["linux-x86_64", "windows-x86_64"],
+    "wiraid_id": "brook-client",
+    "peer": { "id": "brook-server" }
+  },
+  "capabilities": { "transport": true },
+  "runtime": {
+    "cmd": [
+      "{binary}", "client",
+      "-s", "{params.server}",
+      "-p", "{params.password}",
+      "--socks5", "{listen_host}:{listen_port}"
+    ],
+    "protocol": "socks5",
+    "port_discovery": { "mode": "fixed" },
+    "ready_signal": { "mode": "tcp_connect", "timeout_ms": 5000 }
+  },
+  "params_schema": {
+    "server": { "type": "string", "required": true, "description": "host:port" },
+    "password": { "type": "string", "required": true }
+  }
+}

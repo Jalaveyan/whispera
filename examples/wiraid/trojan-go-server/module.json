@@ -1,0 +1,53 @@
+{
+  "capabilities": {
+    "transport": true
+  },
+  "module": {
+    "description": "trojan-go server (p4gefau1t/trojan-go)",
+    "lang": "binary",
+    "name": "trojan-go-server",
+    "pair_exports": {
+      "password": "{params.password}",
+      "remote_addr": "{server_host}",
+      "remote_port": "{listen_port}",
+      "sni": "{server_host}"
+    },
+    "peer": {
+      "id": "trojan-go-client"
+    },
+    "platforms": [
+      "linux-x86_64"
+    ],
+    "uri_export_template": "trojan://{params.password}@{server_host}:{listen_port}?sni={server_host}\u0026allowInsecure=1#trojan-go",
+    "version": "0.1.0",
+    "wiraid_id": "trojan-go-server"
+  },
+  "params_schema": {
+    "cert_path": {
+      "generator": "self_signed_cert"
+    },
+    "key_path": {
+      "generator": "fixed",
+      "value": "tls.key"
+    },
+    "password": {
+      "generator": "random_hex",
+      "length": 32
+    }
+  },
+  "runtime": {
+    "cmd": [
+      "{binary}",
+      "-config",
+      "{config_path}"
+    ],
+    "config_path": "config.json",
+    "config_template": "{\n  \"run_type\": \"server\",\n  \"local_addr\": \"0.0.0.0\",\n  \"local_port\": {listen_port},\n  \"remote_addr\": \"127.0.0.1\",\n  \"remote_port\": 80,\n  \"password\": [\"{params.password}\"],\n  \"ssl\": {\n    \"cert\": \"{params.cert_path}\",\n    \"key\": \"{params.key_path}\",\n    \"sni\": \"{server_host}\"\n  }\n}\n",
+    "protocol": "tcp",
+    "ready_signal": {
+      "mode": "tcp_connect",
+      "timeout_ms": 5000
+    }
+  },
+  "schema": 2
+}

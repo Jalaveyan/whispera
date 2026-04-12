@@ -1086,8 +1086,8 @@ func (e *NativeMLEngine) RankBridges(bridges []map[string]interface{}) []map[str
 		load, _ := bridges[i]["load"].(float64)
 		score += load * 25
 
-		users, _ := bridges[i]["current_users"].(float64)
-		maxUsers, _ := bridges[i]["max_users"].(float64)
+		users := floatFromMap(bridges[i], "cur_users", "current_users")
+		maxUsers := floatFromMap(bridges[i], "max_users")
 		if maxUsers > 0 {
 			utilization := users / maxUsers
 			if utilization > 0.8 {
@@ -1112,11 +1112,21 @@ func (e *NativeMLEngine) RankBridges(bridges []map[string]interface{}) []map[str
 		score += math.Min(distance/666.0, 15)
 
 		isWhite, _ := bridges[i]["is_white"].(bool)
+		if !isWhite {
+			if tp, ok := bridges[i]["type"].(string); ok && tp == "white" {
+				isWhite = true
+			}
+		}
 		if isWhite {
 			score -= 8
 		}
 
 		dead, _ := bridges[i]["is_dead"].(bool)
+		if !dead {
+			if alive, ok := bridges[i]["alive"].(bool); ok && !alive {
+				dead = true
+			}
+		}
 		if dead {
 			score = 100
 		}
@@ -1147,6 +1157,18 @@ func (e *NativeMLEngine) RankBridges(bridges []map[string]interface{}) []map[str
 	}
 
 	return bridges
+}
+
+func floatFromMap(m map[string]interface{}, keys ...string) float64 {
+	for _, k := range keys {
+		if v, ok := m[k].(float64); ok {
+			return v
+		}
+		if v, ok := m[k].(int); ok {
+			return float64(v)
+		}
+	}
+	return 0
 }
 
 func (e *NativeMLEngine) SetConnectionActive(active bool) {

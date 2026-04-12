@@ -326,8 +326,6 @@ func (s *Server) ServeTunnel(conn net.Conn, streamObf bool) {
 		_ = tcpConn.SetKeepAlivePeriod(30 * time.Second)
 	}
 
-	conn = mux.NewPaddedConn(conn, 128)
-
 	kaBase := 30 + mrand.Intn(61)
 	muxCfg := &mux.Config{
 		MaxFrameSize:         65535,
@@ -338,7 +336,9 @@ func (s *Server) ServeTunnel(conn net.Conn, streamObf bool) {
 		MaxConcurrentStreams: 1024,
 	}
 
-	session, err := mux.Server(conn, muxCfg)
+	paddedConn := mux.NewPaddedConn(conn, 128)
+
+	session, err := mux.Server(paddedConn, muxCfg)
 	if err != nil {
 		s.log.Error("Failed to create SMUX session for %s: %v", clientID, err)
 		return

@@ -1,0 +1,41 @@
+{
+  "schema": 2,
+  "module": {
+    "name": "hysteria2-client",
+    "version": "0.1.0",
+    "description": "hysteria2 client (apernet/hysteria)",
+    "lang": "binary",
+    "platforms": ["linux-x86_64", "windows-x86_64"],
+    "wiraid_id": "hysteria2-client",
+    "peer": { "id": "hysteria2-server" },
+    "uri": {
+      "schemes": ["hy2", "hysteria2"],
+      "style": "url",
+      "userinfo_to": "auth",
+      "host_to": "server_host",
+      "port_to": "server_port",
+      "fragment_to": "remark",
+      "query_map": {
+        "sni":    "sni",
+        "insecure": "insecure",
+        "obfs":   "obfs",
+        "obfs-password": "obfs_password"
+      }
+    }
+  },
+  "capabilities": { "transport": true },
+  "runtime": {
+    "cmd": ["{binary}", "client", "-c", "{config_path}"],
+    "config_template": "server: {params.server_host}:{params.server_port}\nauth: {params.auth}\ntls:\n  sni: {params.sni}\n  insecure: true\nsocks5:\n  listen: {listen_host}:{listen_port}\nbandwidth:\n  up: 100 mbps\n  down: 200 mbps\n",
+    "config_path": "config.yaml",
+    "protocol": "socks5",
+    "port_discovery": { "mode": "fixed" },
+    "ready_signal": { "mode": "tcp_connect", "timeout_ms": 5000 }
+  },
+  "params_schema": {
+    "server_host": { "type": "string", "required": true },
+    "server_port": { "type": "string", "required": true },
+    "auth":        { "type": "string", "required": true },
+    "sni":         { "type": "string", "required": true }
+  }
+}

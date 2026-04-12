@@ -16,7 +16,9 @@ import (
 	"whispera/internal/core/registry"
 	"whispera/internal/db"
 	"whispera/internal/logger"
+	"whispera/internal/modules/bridgepool"
 	"whispera/internal/modules/config"
+	"whispera/internal/modules/wiraid"
 )
 
 func init() {
@@ -30,10 +32,13 @@ const (
 
 type Bot struct {
 	*base.Module
-	config *config.BotConfig
-	api    *tgbotapi.BotAPI
-	db     *db.DB
-	log    *logger.Logger
+	config     *config.BotConfig
+	api        *tgbotapi.BotAPI
+	db         *db.DB
+	log        *logger.Logger
+	bridgePool   *bridgepool.Registry
+	wiraidEngine *wiraid.Engine
+	mu           sync.Mutex
 
 	stopCh chan struct{}
 	wg     sync.WaitGroup
@@ -136,6 +141,16 @@ func (b *Bot) Stop() error {
 	return b.Module.Stop()
 }
 
+func (b *Bot) SetWiraidEngine(eng *wiraid.Engine) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.wiraidEngine = eng
+}
+
+func (b *Bot) SetBridgePool(bp *bridgepool.Registry) {
+	b.bridgePool = bp
+}
+
 func (b *Bot) updateLoop() {
 	defer b.wg.Done()
 
@@ -221,6 +236,22 @@ func (b *Bot) handleMessage(msg *tgbotapi.Message) {
 		b.handleSysinfo(msg)
 	case "logs":
 		b.handleLogs(msg, args)
+	case "bridges":
+		b.handleBridges(msg)
+	case "bridge":
+		b.handleBridgeInfo(msg, args)
+	case "bridgescan":
+		b.handleBridgeScan(msg)
+	case "wiraid_list":
+		b.handleWiraidList(msg)
+	case "wiraid_install":
+		b.handleWiraidInstall(msg, args)
+	case "wiraid_uninstall":
+		b.handleWiraidUninstall(msg, args)
+	case "wiraid_enable":
+		b.handleWiraidEnable(msg, args, true)
+	case "wiraid_disable":
+		b.handleWiraidEnable(msg, args, false)
 	default:
 		b.reply(msg.Chat.ID, "Unknown command. Use /help")
 	}
@@ -263,7 +294,10 @@ func (b *Bot) handleStart(msg *tgbotapi.Message) {
 			"/unban <email> — reactivate user\n" +
 			"/broadcast <msg> — send to all monitors\n" +
 			"/restart <service> — restart service\n" +
-			"/logs [lines] — recent system logs\n"
+			"/logs [lines] — recent system logs\n" +
+			"/bridges — bridge pool overview\n" +
+			"/bridge <id> — bridge details & health check\n" +
+			"/bridgescan — scan all bridges now\n"
 	}
 
 	b.reply(msg.Chat.ID, txt)
@@ -733,6 +767,176 @@ func (b *Bot) handleLogs(msg *tgbotapi.Message, args string) {
 	b.reply(msg.Chat.ID, fmt.Sprintf("*Logs (last %s)*\n\n```\n%s\n```", n, text))
 }
 
+func (b *Bot) handleBridges(msg *tgbotapi.Message) {
+	if !b.isAdmin(msg.From.ID) {
+		b.reply(msg.Chat.ID, "Access denied.")
+		return
+	}
+	if b.bridgePool == nil {
+		b.reply(msg.Chat.ID, "Bridge pool not available.")
+		return
+	}
+
+	stats := b.bridgePool.BridgeStats()
+	all := b.bridgePool.GetAllBridges()
+
+	txt := fmt.Sprintf("*Bridge Pool*\n\nTotal: %v | Alive: %v | Dead: %v | Avg latency: %vms\n\n",
+		stats["total"], stats["alive"], stats["dead"], stats["avg_latency"])
+
+	for i, br := range all {
+		status := "DEAD"
+		if br.IsAlive {
+			status = "OK"
+		}
+		name := br.ID
+		if br.Name != "" {
+			name = br.Name
+		}
+		region := br.Region
+		if br.Country != "" {
+			region = br.Country
+		}
+		if region == "" {
+			region = "-"
+		}
+		txt += fmt.Sprintf("%d. `%s` [%s] %s %dms load=%.0f%% %d/%d users\n",
+			i+1, name, status, region, br.Latency,
+			br.Load*100, br.CurUsers, br.MaxUsers)
+		if len(txt) > 3500 {
+			txt += fmt.Sprintf("\n... and %d more", len(all)-i-1)
+			break
+		}
+	}
+
+	keyboard := tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("Refresh", "bridges_refresh"),
+			tgbotapi.NewInlineKeyboardButtonData("Scan All", "bridges_scan"),
+		),
+	)
+	b.replyWithKeyboard(msg.Chat.ID, txt, keyboard)
+}
+
+func (b *Bot) handleBridgeInfo(msg *tgbotapi.Message, args string) {
+	if !b.isAdmin(msg.From.ID) {
+		b.reply(msg.Chat.ID, "Access denied.")
+		return
+	}
+	if b.bridgePool == nil {
+		b.reply(msg.Chat.ID, "Bridge pool not available.")
+		return
+	}
+
+	id := strings.TrimSpace(args)
+	if id == "" {
+		b.reply(msg.Chat.ID, "Usage: /bridge <id>")
+		return
+	}
+
+	br, err := b.bridgePool.GetBridge(id)
+	if err != nil {
+		b.reply(msg.Chat.ID, fmt.Sprintf("Bridge `%s` not found.", id))
+		return
+	}
+
+	status := "DEAD"
+	if br.IsAlive {
+		status = "ALIVE"
+	}
+
+	txt := fmt.Sprintf("*Bridge*: `%s`\n", br.ID)
+	if br.Name != "" {
+		txt += fmt.Sprintf("Name: `%s`\n", br.Name)
+	}
+	txt += fmt.Sprintf("Address: `%s`\n", br.Address)
+	txt += fmt.Sprintf("Type: `%s`\n", br.Type)
+	txt += fmt.Sprintf("Status: %s | Latency: %dms\n", status, br.Latency)
+	txt += fmt.Sprintf("Load: %.0f%% | Users: %d/%d\n", br.Load*100, br.CurUsers, br.MaxUsers)
+	txt += fmt.Sprintf("Trust: %d | Loss: %.1f%%\n", br.TrustLevel, br.LossPct)
+	if br.Region != "" {
+		txt += fmt.Sprintf("Region: %s\n", br.Region)
+	}
+	if br.Country != "" {
+		txt += fmt.Sprintf("Location: %s %s\n", br.Country, br.City)
+	}
+	if br.Provider != "" {
+		txt += fmt.Sprintf("Provider: %s\n", br.Provider)
+	}
+	if br.Version != "" {
+		txt += fmt.Sprintf("Version: `%s`\n", br.Version)
+	}
+	if br.Blacklisted {
+		txt += "Blacklisted: YES\n"
+	}
+	txt += fmt.Sprintf("Last check: %s\n", br.LastCheck.Format("2006-01-02 15:04:05"))
+	txt += fmt.Sprintf("Created: %s\n", br.CreatedAt.Format("2006-01-02"))
+
+	isAlive, latency, checkErr := b.bridgePool.CheckBridgeNow(id)
+	if checkErr == nil {
+		checkStatus := "DEAD"
+		if isAlive {
+			checkStatus = "ALIVE"
+		}
+		txt += fmt.Sprintf("\nLive check: %s (%dms)\n", checkStatus, latency)
+	}
+
+	keys := b.bridgePool.GetAccessKeysForBridge(id)
+	if len(keys) > 0 {
+		txt += fmt.Sprintf("Access keys: %d\n", len(keys))
+	}
+
+	keyboard := tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("Check Now", "bridge_check_"+id),
+			tgbotapi.NewInlineKeyboardButtonData("Blacklist", "bridge_bl_"+id),
+		),
+	)
+	b.replyWithKeyboard(msg.Chat.ID, txt, keyboard)
+}
+
+func (b *Bot) handleBridgeScan(msg *tgbotapi.Message) {
+	if !b.isAdmin(msg.From.ID) {
+		b.reply(msg.Chat.ID, "Access denied.")
+		return
+	}
+	if b.bridgePool == nil {
+		b.reply(msg.Chat.ID, "Bridge pool not available.")
+		return
+	}
+
+	b.reply(msg.Chat.ID, "Scanning all bridges...")
+
+	go func() {
+		results := b.bridgePool.ScanAllBridges()
+		alive := 0
+		for _, r := range results {
+			if a, ok := r["is_alive"].(bool); ok && a {
+				alive++
+			}
+		}
+
+		txt := fmt.Sprintf("*Scan complete*\n\nTotal: %d | Alive: %d | Dead: %d\n\n",
+			len(results), alive, len(results)-alive)
+
+		for i, r := range results {
+			id, _ := r["id"].(string)
+			isAlive, _ := r["is_alive"].(bool)
+			latency, _ := r["latency"].(int)
+			status := "DEAD"
+			if isAlive {
+				status = "OK"
+			}
+			txt += fmt.Sprintf("`%s` [%s] %dms\n", id, status, latency)
+			if len(txt) > 3500 {
+				txt += fmt.Sprintf("\n... and %d more", len(results)-i-1)
+				break
+			}
+		}
+
+		b.reply(msg.Chat.ID, txt)
+	}()
+}
+
 func (b *Bot) handleCallback(cb *tgbotapi.CallbackQuery) {
 	ack := tgbotapi.NewCallback(cb.ID, "")
 	_, _ = b.api.Request(ack)
@@ -771,6 +975,41 @@ func (b *Bot) handleCallback(cb *tgbotapi.CallbackQuery) {
 			From: cb.From,
 		}
 		b.handleBan(fakeMsg, email)
+
+	case data == "bridges_refresh":
+		if !b.isAdmin(cb.From.ID) {
+			return
+		}
+		fakeMsg := &tgbotapi.Message{Chat: cb.Message.Chat, From: cb.From}
+		b.handleBridges(fakeMsg)
+
+	case data == "bridges_scan":
+		if !b.isAdmin(cb.From.ID) {
+			return
+		}
+		fakeMsg := &tgbotapi.Message{Chat: cb.Message.Chat, From: cb.From}
+		b.handleBridgeScan(fakeMsg)
+
+	case strings.HasPrefix(data, "bridge_check_"):
+		if !b.isAdmin(cb.From.ID) {
+			return
+		}
+		id := strings.TrimPrefix(data, "bridge_check_")
+		fakeMsg := &tgbotapi.Message{Chat: cb.Message.Chat, From: cb.From}
+		b.handleBridgeInfo(fakeMsg, id)
+
+	case strings.HasPrefix(data, "bridge_bl_"):
+		if !b.isAdmin(cb.From.ID) {
+			return
+		}
+		id := strings.TrimPrefix(data, "bridge_bl_")
+		if b.bridgePool != nil {
+			if err := b.bridgePool.SetBridgeLabel(id, true); err != nil {
+				b.reply(cb.Message.Chat.ID, fmt.Sprintf("Failed: %v", err))
+			} else {
+				b.reply(cb.Message.Chat.ID, fmt.Sprintf("Bridge `%s` blacklisted.", id))
+			}
+		}
 	}
 }
 
@@ -810,4 +1049,91 @@ func uptime() string {
 
 func Factory(cfg interface{}) (interfaces.Module, error) {
 	return New(cfg, db.Global())
+}
+
+func (b *Bot) handleWiraidList(msg *tgbotapi.Message) {
+	if b.wiraidEngine == nil {
+		b.reply(msg.Chat.ID, "WIRAID engine not initialized")
+		return
+	}
+	mods := b.wiraidEngine.Summaries()
+	if len(mods) == 0 {
+		b.reply(msg.Chat.ID, "No WIRAID modules installed")
+		return
+	}
+	var sb strings.Builder
+	sb.WriteString("*WIRAID modules:*\n")
+	for _, m := range mods {
+		state := "off"
+		if m.Running {
+			state = fmt.Sprintf("running:%d", m.Port)
+		} else if m.Enabled {
+			state = "enabled"
+		}
+		sb.WriteString(fmt.Sprintf("• `%s` v%s [%s] — %s\n", m.Name, m.Version, m.Lang, state))
+	}
+	b.reply(msg.Chat.ID, sb.String())
+}
+
+func (b *Bot) handleWiraidInstall(msg *tgbotapi.Message, args string) {
+	if b.wiraidEngine == nil {
+		b.reply(msg.Chat.ID, "WIRAID engine not initialized")
+		return
+	}
+	url := strings.TrimSpace(args)
+	if url == "" {
+		b.reply(msg.Chat.ID, "Usage: /wiraid_install <url>")
+		return
+	}
+	b.reply(msg.Chat.ID, "Installing... this may take a minute")
+	go func() {
+		name, err := b.wiraidEngine.InstallFromURL(url)
+		if err != nil {
+			b.reply(msg.Chat.ID, fmt.Sprintf("Install failed:\n```\n%s\n```", err.Error()))
+			return
+		}
+		b.reply(msg.Chat.ID, fmt.Sprintf("Installed: `%s`", name))
+	}()
+}
+
+func (b *Bot) handleWiraidUninstall(msg *tgbotapi.Message, args string) {
+	if b.wiraidEngine == nil {
+		b.reply(msg.Chat.ID, "WIRAID engine not initialized")
+		return
+	}
+	name := strings.TrimSpace(args)
+	if name == "" {
+		b.reply(msg.Chat.ID, "Usage: /wiraid_uninstall <name>")
+		return
+	}
+	if err := b.wiraidEngine.Uninstall(name); err != nil {
+		b.reply(msg.Chat.ID, fmt.Sprintf("Uninstall failed: %v", err))
+		return
+	}
+	b.reply(msg.Chat.ID, fmt.Sprintf("Removed: `%s`", name))
+}
+
+func (b *Bot) handleWiraidEnable(msg *tgbotapi.Message, args string, enabled bool) {
+	if b.wiraidEngine == nil {
+		b.reply(msg.Chat.ID, "WIRAID engine not initialized")
+		return
+	}
+	name := strings.TrimSpace(args)
+	if name == "" {
+		verb := "enable"
+		if !enabled {
+			verb = "disable"
+		}
+		b.reply(msg.Chat.ID, fmt.Sprintf("Usage: /wiraid_%s <name>", verb))
+		return
+	}
+	if err := b.wiraidEngine.Registry.SetEnabled(name, enabled); err != nil {
+		b.reply(msg.Chat.ID, fmt.Sprintf("Failed: %v", err))
+		return
+	}
+	state := "enabled"
+	if !enabled {
+		state = "disabled"
+	}
+	b.reply(msg.Chat.ID, fmt.Sprintf("`%s` %s", name, state))
 }

@@ -1,0 +1,35 @@
+{
+  "schema": 2,
+  "module": {
+    "name": "mieru-client",
+    "version": "0.1.0",
+    "description": "mieru client (enfein/mieru) — mieru daemon, multi-step apply config",
+    "lang": "binary",
+    "platforms": ["linux-x86_64", "windows-x86_64"],
+    "wiraid_id": "mieru-client",
+    "peer": { "id": "mieru-server" }
+  },
+  "capabilities": { "transport": true },
+  "runtime": {
+    "pre_cmd": [
+      ["{binary}", "apply", "config", "{config_path}"]
+    ],
+    "cmd": ["{binary}", "start"],
+    "post_cmd": [
+      ["{binary}", "stop"]
+    ],
+    "config_template": "{\n  \"profiles\": [{\n    \"profileName\": \"default\",\n    \"user\": { \"name\": \"{params.username}\", \"password\": \"{params.password}\" },\n    \"servers\": [{\n      \"ipAddress\": \"{params.server_host}\",\n      \"portBindings\": [{ \"port\": {params.server_port}, \"protocol\": \"{params.protocol}\" }]\n    }],\n    \"mtu\": 1400\n  }],\n  \"activeProfile\": \"default\",\n  \"rpcPort\": {params.rpc_port},\n  \"socks5Port\": {listen_port},\n  \"loggingLevel\": \"INFO\"\n}\n",
+    "config_path": "client.json",
+    "protocol": "socks5",
+    "port_discovery": { "mode": "fixed" },
+    "ready_signal": { "mode": "tcp_connect", "timeout_ms": 8000 }
+  },
+  "params_schema": {
+    "server_host": { "type": "string", "required": true },
+    "server_port": { "type": "string", "required": true },
+    "username": { "type": "string", "required": true },
+    "password": { "type": "string", "required": true },
+    "protocol": { "type": "string", "default": "TCP" },
+    "rpc_port": { "generator": "fixed", "value": "8964" }
+  }
+}

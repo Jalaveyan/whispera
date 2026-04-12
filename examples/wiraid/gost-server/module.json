@@ -1,0 +1,45 @@
+{
+  "capabilities": {
+    "transport": true
+  },
+  "module": {
+    "description": "gost server (go-gost/gost) — relay+tls flags-only",
+    "lang": "binary",
+    "name": "gost-server",
+    "pair_exports": {
+      "forward": "relay+tls://{params.username}:{params.password}@{server_host}:{listen_port}"
+    },
+    "peer": {
+      "id": "gost-client"
+    },
+    "platforms": [
+      "linux-x86_64"
+    ],
+    "uri_export_template": "relay+tls://{params.username}:{params.password}@{server_host}:{listen_port}",
+    "version": "0.1.0",
+    "wiraid_id": "gost-server"
+  },
+  "params_schema": {
+    "password": {
+      "generator": "random_hex",
+      "length": 24
+    },
+    "username": {
+      "generator": "random_hex",
+      "length": 8
+    }
+  },
+  "runtime": {
+    "cmd": [
+      "{binary}",
+      "-L",
+      "relay+tls://{params.username}:{params.password}@:{listen_port}"
+    ],
+    "protocol": "tcp",
+    "ready_signal": {
+      "mode": "tcp_connect",
+      "timeout_ms": 5000
+    }
+  },
+  "schema": 2
+}

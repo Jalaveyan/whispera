@@ -1,0 +1,59 @@
+{
+  "capabilities": {
+    "transport": true
+  },
+  "module": {
+    "description": "v2ray-core server (v2fly) — VMess+WS+TLS",
+    "lang": "binary",
+    "name": "v2ray-server",
+    "pair_exports": {
+      "path": "{params.ws_path}",
+      "server_host": "{server_host}",
+      "server_port": "{listen_port}",
+      "sni": "{server_host}",
+      "uuid": "{params.uuid}"
+    },
+    "peer": {
+      "id": "v2ray-client"
+    },
+    "platforms": [
+      "linux-x86_64"
+    ],
+    "uri_export_template": "vmess://eyJhZGQiOiJ7c2VydmVyX2hvc3R9IiwicG9ydCI6IntlbHNlfSIsImlkIjoie3BhcmFtcy51dWlkfSIsImFsdGVySWQiOjAsInBzIjoidjJyYXktd3MiLCJuZXQiOiJ3cyIsInBhdGgiOiJ7cGFyYW1zLndzX3BhdGh9IiwidGxzIjoidGxzIiwic25pIjoie3NlcnZlcl9ob3N0fSJ9",
+    "version": "0.1.0",
+    "wiraid_id": "v2ray-server"
+  },
+  "params_schema": {
+    "cert_path": {
+      "generator": "self_signed_cert"
+    },
+    "key_path": {
+      "generator": "fixed",
+      "value": "tls.key"
+    },
+    "uuid": {
+      "generator": "random_hex",
+      "length": 16
+    },
+    "ws_path": {
+      "generator": "fixed",
+      "value": "/ws"
+    }
+  },
+  "runtime": {
+    "cmd": [
+      "{binary}",
+      "run",
+      "-c",
+      "{config_path}"
+    ],
+    "config_path": "config.json",
+    "config_template": "{\n  \"log\": { \"loglevel\": \"warning\" },\n  \"inbounds\": [{\n    \"listen\": \"0.0.0.0\",\n    \"port\": {listen_port},\n    \"protocol\": \"vmess\",\n    \"settings\": { \"clients\": [{ \"id\": \"{params.uuid}\", \"alterId\": 0 }] },\n    \"streamSettings\": {\n      \"network\": \"ws\",\n      \"security\": \"tls\",\n      \"tlsSettings\": {\n        \"certificates\": [{ \"certificateFile\": \"{params.cert_path}\", \"keyFile\": \"{params.key_path}\" }]\n      },\n      \"wsSettings\": { \"path\": \"{params.ws_path}\" }\n    }\n  }],\n  \"outbounds\": [{ \"protocol\": \"freedom\" }]\n}\n",
+    "protocol": "tcp",
+    "ready_signal": {
+      "mode": "tcp_connect",
+      "timeout_ms": 5000
+    }
+  },
+  "schema": 2
+}

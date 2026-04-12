@@ -11,6 +11,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	_ "net/http/pprof"
 	"os"
 	"strings"
@@ -34,6 +35,7 @@ import (
 
 	"whispera/internal/modules/apiserver"
 	"whispera/internal/modules/bot"
+	"whispera/internal/modules/bridgepool"
 	modconfig "whispera/internal/modules/config"
 	"whispera/internal/modules/crypto"
 	"whispera/internal/modules/dataplane"
@@ -42,6 +44,7 @@ import (
 	"whispera/internal/modules/obfuscator"
 	"whispera/internal/modules/phantom"
 	"whispera/internal/modules/probedetector"
+	"whispera/internal/modules/wiraid"
 	"whispera/internal/modules/relay"
 	"whispera/internal/modules/router"
 	"whispera/internal/modules/session"
@@ -111,6 +114,8 @@ var (
 )
 
 var globalP2PRelay *relay.P2PRelay
+var globalBridgePool *bridgepool.Registry
+var globalWiraidEngine *wiraid.Engine
 
 var (
 	globalHandshake      *handshake.Handler
@@ -715,6 +720,9 @@ func main() {
 			}
 			fmt.Printf("User %s is now an admin\n", *email)
 			os.Exit(0)
+		case "wiraid":
+			runWiraidCLI(os.Args[2:])
+			os.Exit(0)
 		case "update-checksum":
 			cfgPath := "/etc/whispera/config.yaml"
 			if len(os.Args) >= 3 {
@@ -1259,6 +1267,7 @@ func createModules(manager *lifecycle.Manager, ctx context.Context) error {
 			return err
 		}
 		apiServer.SetRegistry(manager.Registry())
+		globalBridgePool = apiServer.BridgePool()
 		if err := manager.Register(apiServer); err != nil {
 			return err
 		}
@@ -1289,6 +1298,25 @@ func createModules(manager *lifecycle.Manager, ctx context.Context) error {
 			w.Write(data)
 		})
 
+		wiraidBaseDir := os.Getenv("WHISPERA_WIRAID_DIR")
+		if wiraidBaseDir == "" {
+			wiraidBaseDir = "/var/lib/whispera/wiraid"
+		}
+		if os.Getenv("WHISPERA_PUBLIC_HOST") == "" && serverConfig.Server.PublicURL != "" {
+			if u, err := url.Parse(serverConfig.Server.PublicURL); err == nil && u.Hostname() != "" {
+				os.Setenv("WHISPERA_PUBLIC_HOST", u.Hostname())
+				log.Printf("[wiraid] public host from config: %s", u.Hostname())
+			}
+		}
+		if eng, err := wiraid.NewEngine(wiraidBaseDir); err != nil {
+			log.Printf("[wiraid] init failed: %v", err)
+		} else {
+			globalWiraidEngine = eng
+			eng.RegisterRoutes(apiServer.Handle)
+			log.Printf("[wiraid] engine ready (base=%s, modules=%d)", wiraidBaseDir, len(eng.Registry.List()))
+			go eng.StartEnabled()
+		}
+
 		globalProbeDetector = probedetector.New(probedetector.DefaultConfig())
 		globalProbeDetector.Start()
 		apiServer.SetProbeDetector(globalProbeDetector)
@@ -1309,7 +1337,13 @@ func createModules(manager *lifecycle.Manager, ctx context.Context) error {
 			if err != nil {
 				log.Printf("⚠ Warning: Failed to create Telegram Bot: %v", err)
 			} else {
-				if err := manager.Register(botModule); err != nil {
+				if globalWiraidEngine != nil {
+						botModule.SetWiraidEngine(globalWiraidEngine)
+					}
+					if globalBridgePool != nil {
+						botModule.SetBridgePool(globalBridgePool)
+					}
+					if err := manager.Register(botModule); err != nil {
 					return err
 				}
 				log.Printf("  ✓ Telegram Bot enabled (Admin ID: %d)", serverConfig.Bot.AdminID)

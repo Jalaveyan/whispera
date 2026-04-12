@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	stdlog "log"
@@ -26,6 +28,8 @@ const (
 	connStatusConnected    connStatus = "connected"
 	connStatusDisconnected connStatus = "disconnected"
 	connStatusFailed       connStatus = "failed"
+	connStatusStandby      connStatus = "standby"
+	connStatusRST          connStatus = "rst"
 )
 
 type TransportEntry struct {
@@ -88,6 +92,16 @@ var globalP2P = &p2pState{}
 var globalDNS *dnsmodule.Resolver
 var globalMITM *mitm.Proxy
 var globalMultiRouter *socks5.MultiRouter
+
+var socksUser string
+var socksPass string
+
+func generateSocksAuth() {
+	b := make([]byte, 16)
+	rand.Read(b)
+	socksUser = "w"
+	socksPass = hex.EncodeToString(b)
+}
 
 var newMultiBridgeTunnel func(ctx context.Context, bridgeID, bridgeAddr string, rules []string)
 
@@ -177,6 +191,14 @@ func toView(e *TransportEntry) entryView {
 
 func startControlServer(ctx context.Context) {
 	mux := http.NewServeMux()
+
+	mux.HandleFunc("/auth", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{
+			"username": socksUser,
+			"password": socksPass,
+		})
+	})
 
 	mux.HandleFunc("/connections", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

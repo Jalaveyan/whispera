@@ -1,0 +1,45 @@
+{
+  "capabilities": {
+    "transport": true
+  },
+  "module": {
+    "description": "brook server (txthinking/brook) — flags-only",
+    "lang": "binary",
+    "name": "brook-server",
+    "pair_exports": {
+      "password": "{params.password}",
+      "server": "{server_host}:{listen_port}"
+    },
+    "peer": {
+      "id": "brook-client"
+    },
+    "platforms": [
+      "linux-x86_64"
+    ],
+    "uri_export_template": "brook://server?server={server_host}:{listen_port}\u0026password={params.password}",
+    "version": "0.1.0",
+    "wiraid_id": "brook-server"
+  },
+  "params_schema": {
+    "password": {
+      "generator": "random_hex",
+      "length": 24
+    }
+  },
+  "runtime": {
+    "cmd": [
+      "{binary}",
+      "server",
+      "-l",
+      ":{listen_port}",
+      "-p",
+      "{params.password}"
+    ],
+    "protocol": "tcp",
+    "ready_signal": {
+      "mode": "tcp_connect",
+      "timeout_ms": 5000
+    }
+  },
+  "schema": 2
+}

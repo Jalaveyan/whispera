@@ -701,10 +701,10 @@ func (m *Manager) connectInternal(ctx context.Context, isRotation bool) error {
 
 		log.Debug("[%s] Upgrading connection %d to SMUX...", op, idx)
 
-		conn = mux.NewPaddedConn(conn, 128)
+		paddedConn := mux.NewPaddedConn(conn, 128)
 
 		muxCfg := m.getMuxConfig()
-		muxSess, err := mux.Client(conn, muxCfg)
+		muxSess, err := mux.Client(paddedConn, muxCfg)
 		if err != nil {
 			log.Warn("[%s] Failed to create SMUX session for conn %d: %v", op, idx, err)
 			conn.Close()

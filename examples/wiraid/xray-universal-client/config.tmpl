@@ -1,0 +1,63 @@
+{
+  "log": { "loglevel": "warning" },
+  "inbounds": [{
+    "listen": "{listen_host}",
+    "port": {listen_port},
+    "protocol": "socks",
+    "settings": { "auth": "noauth", "udp": true }
+  }],
+  "outbounds": [{
+    "protocol": "vless",
+    "settings": {
+      "vnext": [{
+        "address": "{params.server_host}",
+        "port": {params.server_port},
+        "users": [{
+          "id": "{params.uuid}",
+          "encryption": "none"{?if params.flow},
+          "flow": "{params.flow}"{?endif}
+        }]
+      }]
+    },
+    "streamSettings": {
+      "network": "{params.network}",
+      "security": "{params.security}",
+{?if params.security == "reality"}
+      "realitySettings": {
+        "fingerprint": "{params.fingerprint}",
+        "serverName": "{params.sni}",
+        "publicKey": "{params.reality_pbk}",
+        "shortId": "{params.reality_sid}"
+      },
+{?elif params.security == "tls"}
+      "tlsSettings": {
+        "serverName": "{params.sni}",
+        "fingerprint": "{params.fingerprint}",
+        "allowInsecure": true
+      },
+{?endif}
+{?if params.network == "ws"}
+      "wsSettings": {
+        "path": "{params.path}"{?if params.host_header},
+        "headers": { "Host": "{params.host_header}" }{?endif}
+      }
+{?elif params.network == "xhttp"}
+      "xhttpSettings": {
+        "path": "{params.path}",
+        "host": "{params.host_header}",
+        "xPaddingBytes": "{params.xhttp_padding}"
+      }
+{?elif params.network == "splithttp"}
+      "splithttpSettings": {
+        "path": "{params.path}"{?if params.host_header},
+        "host": "{params.host_header}"{?endif}
+      }
+{?elif params.network == "grpc"}
+      "grpcSettings": {
+        "serviceName": "{params.grpc_service}",
+        "multiMode": false
+      }
+{?endif}
+    }
+  }]
+}

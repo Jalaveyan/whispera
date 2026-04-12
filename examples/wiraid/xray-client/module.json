@@ -1,0 +1,46 @@
+{
+  "schema": 2,
+  "module": {
+    "name": "xray-client",
+    "version": "0.1.0",
+    "description": "xray-core client (XTLS/Xray-core)",
+    "lang": "binary",
+    "platforms": ["linux-x86_64", "windows-x86_64"],
+    "wiraid_id": "xray-client",
+    "peer": { "id": "xray-server" },
+    "uri": {
+      "schemes": ["vless"],
+      "style": "url",
+      "userinfo_to": "uuid",
+      "host_to": "server_host",
+      "port_to": "server_port",
+      "fragment_to": "remark",
+      "query_map": {
+        "sni":      "sni",
+        "pbk":      "public_key",
+        "sid":      "short_id",
+        "fp":       "fingerprint",
+        "type":     "network",
+        "security": "security",
+        "flow":     "flow"
+      }
+    }
+  },
+  "capabilities": { "transport": true },
+  "runtime": {
+    "cmd": ["{binary}", "run", "-c", "{config_path}"],
+    "config_template": "{\n  \"log\": { \"loglevel\": \"warning\" },\n  \"inbounds\": [{\n    \"listen\": \"{listen_host}\",\n    \"port\": {listen_port},\n    \"protocol\": \"socks\",\n    \"settings\": { \"auth\": \"noauth\", \"udp\": true }\n  }],\n  \"outbounds\": [{\n    \"protocol\": \"vless\",\n    \"settings\": {\n      \"vnext\": [{\n        \"address\": \"{params.server_host}\",\n        \"port\": {params.server_port},\n        \"users\": [{ \"id\": \"{params.uuid}\", \"encryption\": \"none\", \"flow\": \"xtls-rprx-vision\" }]\n      }]\n    },\n    \"streamSettings\": {\n      \"network\": \"tcp\",\n      \"security\": \"reality\",\n      \"realitySettings\": {\n        \"fingerprint\": \"chrome\",\n        \"serverName\": \"{params.sni}\",\n        \"publicKey\": \"{params.public_key}\",\n        \"shortId\": \"{params.short_id}\"\n      }\n    }\n  }]\n}\n",
+    "config_path": "config.json",
+    "protocol": "socks5",
+    "port_discovery": { "mode": "fixed" },
+    "ready_signal": { "mode": "tcp_connect", "timeout_ms": 5000 }
+  },
+  "params_schema": {
+    "server_host": { "type": "string", "required": true },
+    "server_port": { "type": "string", "required": true },
+    "uuid":        { "type": "string", "required": true },
+    "sni":         { "type": "string", "required": true },
+    "public_key":  { "type": "string", "required": true },
+    "short_id":    { "type": "string", "required": true }
+  }
+}

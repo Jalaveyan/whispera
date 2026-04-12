@@ -1,0 +1,39 @@
+{
+  "schema": 2,
+  "module": {
+    "name": "sing-box-client",
+    "version": "0.1.0",
+    "description": "sing-box client (SagerNet/sing-box) — trojan+TLS",
+    "lang": "binary",
+    "platforms": ["linux-x86_64", "windows-x86_64"],
+    "wiraid_id": "sing-box-client",
+    "peer": { "id": "sing-box-server" },
+    "uri": {
+      "schemes": ["trojan"],
+      "style": "url",
+      "userinfo_to": "password",
+      "host_to": "server_host",
+      "port_to": "server_port",
+      "fragment_to": "remark",
+      "query_map": {
+        "sni":  "sni",
+        "peer": "sni"
+      }
+    }
+  },
+  "capabilities": { "transport": true },
+  "runtime": {
+    "cmd": ["{binary}", "run", "-c", "{config_path}", "-D", "{module_dir}"],
+    "config_template": "{\n  \"log\": { \"level\": \"warn\" },\n  \"inbounds\": [{\n    \"type\": \"socks\",\n    \"listen\": \"{listen_host}\",\n    \"listen_port\": {listen_port}\n  }],\n  \"outbounds\": [{\n    \"type\": \"trojan\",\n    \"server\": \"{params.server_host}\",\n    \"server_port\": {params.server_port},\n    \"password\": \"{params.password}\",\n    \"tls\": { \"enabled\": true, \"server_name\": \"{params.sni}\", \"insecure\": true }\n  }]\n}\n",
+    "config_path": "config.json",
+    "protocol": "socks5",
+    "port_discovery": { "mode": "fixed" },
+    "ready_signal": { "mode": "tcp_connect", "timeout_ms": 5000 }
+  },
+  "params_schema": {
+    "server_host": { "type": "string", "required": true },
+    "server_port": { "type": "string", "required": true },
+    "password":    { "type": "string", "required": true },
+    "sni":         { "type": "string", "required": true }
+  }
+}

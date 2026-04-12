@@ -1,0 +1,32 @@
+{
+  "schema": 2,
+  "module": {
+    "name": "xray-vmess-ws-server",
+    "version": "0.1.0",
+    "description": "xray-core server — VMess + WebSocket + TLS",
+    "lang": "binary",
+    "platforms": ["linux-x86_64"],
+    "wiraid_id": "xray-vmess-ws-server",
+    "peer": { "id": "xray-vmess-ws-client" },
+    "pair_exports": {
+      "server_host": "{server_host}",
+      "server_port": "{listen_port}",
+      "uuid": "{params.uuid}",
+      "ws_path": "{params.ws_path}",
+      "sni": "{server_host}"
+    }
+  },
+  "capabilities": { "transport": true },
+  "runtime": {
+    "cmd": ["{binary}", "run", "-c", "{config_path}"],
+    "config_template": "{\n  \"log\": { \"loglevel\": \"warning\" },\n  \"inbounds\": [{\n    \"listen\": \"0.0.0.0\",\n    \"port\": {listen_port},\n    \"protocol\": \"vmess\",\n    \"settings\": { \"clients\": [{ \"id\": \"{params.uuid}\", \"alterId\": 0 }] },\n    \"streamSettings\": {\n      \"network\": \"ws\",\n      \"security\": \"tls\",\n      \"tlsSettings\": {\n        \"certificates\": [{\n          \"certificateFile\": \"{params.cert_path}\",\n          \"keyFile\": \"{params.key_path}\"\n        }]\n      },\n      \"wsSettings\": { \"path\": \"{params.ws_path}\" }\n    }\n  }],\n  \"outbounds\": [{ \"protocol\": \"freedom\" }]\n}\n",
+    "config_path": "config.json",
+    "ready_signal": { "mode": "tcp_connect", "timeout_ms": 5000 }
+  },
+  "params_schema": {
+    "uuid": { "generator": "random_hex", "length": 16 },
+    "ws_path": { "generator": "fixed", "value": "/vmws" },
+    "cert_path": { "generator": "self_signed_cert" },
+    "key_path": { "generator": "fixed", "value": "tls.key" }
+  }
+}

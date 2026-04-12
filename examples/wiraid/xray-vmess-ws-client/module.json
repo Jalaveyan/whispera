@@ -1,0 +1,48 @@
+{
+  "schema": 2,
+  "module": {
+    "name": "xray-vmess-ws-client",
+    "version": "0.1.0",
+    "description": "xray-core client — VMess + WebSocket + TLS (vmess:// base64 URI)",
+    "lang": "binary",
+    "platforms": ["linux-x86_64", "windows-x86_64"],
+    "wiraid_id": "xray-vmess-ws-client",
+    "peer": { "id": "xray-vmess-ws-server" },
+    "uri": {
+      "schemes": ["vmess"],
+      "style": "base64_json",
+      "query_conditions": {},
+      "json_map": {
+        "add":  "server_host",
+        "port": "server_port",
+        "id":   "uuid",
+        "aid":  "alter_id",
+        "net":  "network",
+        "path": "ws_path",
+        "host": "ws_host",
+        "tls":  "security",
+        "sni":  "sni",
+        "ps":   "remark"
+      },
+      "fragment_to": "remark"
+    }
+  },
+  "capabilities": { "transport": true },
+  "runtime": {
+    "cmd": ["{binary}", "run", "-c", "{config_path}"],
+    "config_template": "{\n  \"log\": { \"loglevel\": \"warning\" },\n  \"inbounds\": [{\n    \"listen\": \"{listen_host}\",\n    \"port\": {listen_port},\n    \"protocol\": \"socks\",\n    \"settings\": { \"auth\": \"noauth\", \"udp\": true }\n  }],\n  \"outbounds\": [{\n    \"protocol\": \"vmess\",\n    \"settings\": {\n      \"vnext\": [{\n        \"address\": \"{params.server_host}\",\n        \"port\": {params.server_port},\n        \"users\": [{ \"id\": \"{params.uuid}\", \"alterId\": 0, \"security\": \"auto\" }]\n      }]\n    },\n    \"streamSettings\": {\n      \"network\": \"ws\",\n      \"security\": \"tls\",\n      \"tlsSettings\": { \"serverName\": \"{params.sni}\", \"allowInsecure\": true },\n      \"wsSettings\": { \"path\": \"{params.ws_path}\", \"headers\": { \"Host\": \"{params.ws_host}\" } }\n    }\n  }]\n}\n",
+    "config_path": "config.json",
+    "ready_signal": { "mode": "tcp_connect", "timeout_ms": 5000 }
+  },
+  "params_schema": {
+    "server_host": { "required": true },
+    "server_port": { "required": true },
+    "uuid":        { "required": true },
+    "sni":         { "default": "" },
+    "ws_path":     { "default": "/" },
+    "ws_host":     { "default": "" },
+    "alter_id":    { "default": "0" },
+    "network":     { "default": "ws" },
+    "security":    { "default": "tls" }
+  }
+}

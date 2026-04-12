@@ -1,0 +1,30 @@
+{
+  "schema": 2,
+  "module": {
+    "name": "gost-client",
+    "version": "0.1.0",
+    "description": "gost client (go-gost/gost) — flags-only, no config file",
+    "lang": "binary",
+    "platforms": ["linux-x86_64", "windows-x86_64"],
+    "wiraid_id": "gost-client",
+    "peer": { "id": "gost-server" }
+  },
+  "capabilities": { "transport": true },
+  "runtime": {
+    "cmd": [
+      "{binary}",
+      "-L", "socks5://{listen_host}:{listen_port}",
+      "-F", "{params.forward}"
+    ],
+    "protocol": "socks5",
+    "port_discovery": { "mode": "fixed" },
+    "ready_signal": { "mode": "tcp_connect", "timeout_ms": 5000 }
+  },
+  "params_schema": {
+    "forward": {
+      "type": "string",
+      "required": true,
+      "description": "gost -F URL, e.g. relay+tls://user:pass@host:port"
+    }
+  }
+}

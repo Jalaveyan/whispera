@@ -1,0 +1,53 @@
+{
+  "capabilities": {
+    "transport": true
+  },
+  "module": {
+    "description": "hysteria2 server (apernet/hysteria)",
+    "lang": "binary",
+    "name": "hysteria2-server",
+    "pair_exports": {
+      "auth": "{params.auth}",
+      "server": "{server_host}:{listen_port}",
+      "sni": "{server_host}"
+    },
+    "peer": {
+      "id": "hysteria2-client"
+    },
+    "platforms": [
+      "linux-x86_64"
+    ],
+    "uri_export_template": "hysteria2://{params.auth}@{server_host}:{listen_port}?sni={server_host}\u0026insecure=1#{module.name}",
+    "version": "0.1.0",
+    "wiraid_id": "hysteria2-server"
+  },
+  "params_schema": {
+    "auth": {
+      "generator": "random_hex",
+      "length": 32
+    },
+    "cert_path": {
+      "generator": "self_signed_cert"
+    },
+    "key_path": {
+      "generator": "fixed",
+      "value": "tls.key"
+    }
+  },
+  "runtime": {
+    "cmd": [
+      "{binary}",
+      "server",
+      "-c",
+      "{config_path}"
+    ],
+    "config_path": "config.yaml",
+    "config_template": "listen: :{listen_port}\ntls:\n  cert: {params.cert_path}\n  key: {params.key_path}\nauth:\n  type: password\n  password: {params.auth}\nmasquerade:\n  type: proxy\n  proxy:\n    url: https://cloudflare.com\n    rewriteHost: true\n",
+    "protocol": "https",
+    "ready_signal": {
+      "mode": "tcp_connect",
+      "timeout_ms": 5000
+    }
+  },
+  "schema": 2
+}

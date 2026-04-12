@@ -1,0 +1,63 @@
+{
+  "capabilities": {
+    "transport": true
+  },
+  "module": {
+    "description": "mieru server (enfein/mieru) — mita daemon, multi-step apply config",
+    "lang": "binary",
+    "name": "mieru-server",
+    "pair_exports": {
+      "password": "{params.password}",
+      "protocol": "TCP",
+      "server_host": "{server_host}",
+      "server_port": "{listen_port}",
+      "username": "{params.username}"
+    },
+    "peer": {
+      "id": "mieru-client"
+    },
+    "platforms": [
+      "linux-x86_64"
+    ],
+    "version": "0.1.0",
+    "wiraid_id": "mieru-server"
+  },
+  "params_schema": {
+    "password": {
+      "generator": "random_hex",
+      "length": 24
+    },
+    "username": {
+      "generator": "random_hex",
+      "length": 8
+    }
+  },
+  "runtime": {
+    "cmd": [
+      "{binary}",
+      "start"
+    ],
+    "config_path": "server.json",
+    "config_template": "{\n  \"portBindings\": [{ \"port\": {listen_port}, \"protocol\": \"TCP\" }],\n  \"users\": [{ \"name\": \"{params.username}\", \"password\": \"{params.password}\" }],\n  \"loggingLevel\": \"INFO\",\n  \"mtu\": 1400\n}\n",
+    "post_cmd": [
+      [
+        "{binary}",
+        "stop"
+      ]
+    ],
+    "pre_cmd": [
+      [
+        "{binary}",
+        "apply",
+        "config",
+        "{config_path}"
+      ]
+    ],
+    "protocol": "tcp",
+    "ready_signal": {
+      "mode": "tcp_connect",
+      "timeout_ms": 8000
+    }
+  },
+  "schema": 2
+}

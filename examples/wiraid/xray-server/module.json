@@ -1,0 +1,45 @@
+{
+  "schema": 2,
+  "module": {
+    "name": "xray-server",
+    "version": "0.1.0",
+    "description": "xray-core server (XTLS/Xray-core) — VLESS+Reality",
+    "lang": "binary",
+    "platforms": ["linux-x86_64"],
+    "wiraid_id": "xray-server",
+    "peer": { "id": "xray-client" },
+    "pair_exports": {
+      "server_host": "{server_host}",
+      "server_port": "{listen_port}",
+      "uuid": "{params.uuid}",
+      "sni": "{params.dest_sni}",
+      "public_key": "{params.public_key}",
+      "short_id": "{params.short_id}"
+    },
+    "uri_export_template": "vless://{params.uuid}@{server_host}:{listen_port}?type=tcp&security=reality&pbk={params.public_key}&sid={params.short_id}&fp=chrome&sni={params.dest_sni}&flow=xtls-rprx-vision#xray-reality"
+  },
+  "capabilities": { "transport": true },
+  "runtime": {
+    "cmd": ["{binary}", "run", "-c", "{config_path}"],
+    "config_template": "{\n  \"log\": { \"loglevel\": \"warning\" },\n  \"inbounds\": [{\n    \"listen\": \"0.0.0.0\",\n    \"port\": {listen_port},\n    \"protocol\": \"vless\",\n    \"settings\": {\n      \"clients\": [{ \"id\": \"{params.uuid}\", \"flow\": \"xtls-rprx-vision\" }],\n      \"decryption\": \"none\"\n    },\n    \"streamSettings\": {\n      \"network\": \"tcp\",\n      \"security\": \"reality\",\n      \"realitySettings\": {\n        \"dest\": \"{params.dest_sni}:443\",\n        \"serverNames\": [\"{params.dest_sni}\"],\n        \"privateKey\": \"{params.private_key}\",\n        \"shortIds\": [\"{params.short_id}\"]\n      }\n    }\n  }],\n  \"outbounds\": [{ \"protocol\": \"freedom\" }]\n}\n",
+    "config_path": "config.json",
+    "ready_signal": { "mode": "tcp_connect", "timeout_ms": 5000 }
+  },
+  "params_schema": {
+    "uuid": { "generator": "random_hex", "length": 16, "description": "use xray uuid for real deploy" },
+    "dest_sni": { "generator": "fixed", "value": "www.microsoft.com" },
+    "private_key": {
+      "generator": "exec",
+      "exec_cmd": ["{binary}", "x25519"],
+      "exec_regex": "Private key:\\s*(\\S+)",
+      "exec_group": 1
+    },
+    "public_key": {
+      "generator": "exec",
+      "exec_cmd": ["{binary}", "x25519"],
+      "exec_regex": "Public key:\\s*(\\S+)",
+      "exec_group": 1
+    },
+    "short_id": { "generator": "random_hex", "length": 4 }
+  }
+}

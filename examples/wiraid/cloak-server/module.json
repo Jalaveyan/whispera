@@ -1,0 +1,86 @@
+{
+  "capabilities": {
+    "transport": true
+  },
+  "module": {
+    "description": "Cloak server (cbeuw/Cloak) — traffic obfuscator, wraps upstream TCP proxy (reference manifest)",
+    "lang": "binary",
+    "name": "cloak-server",
+    "pair_exports": {
+      "public_key": "{params.public_key}",
+      "server_host": "{server_host}",
+      "server_name": "{params.server_name}",
+      "server_port": "{listen_port}",
+      "uid": "{params.uid}"
+    },
+    "peer": {
+      "id": "cloak-client"
+    },
+    "platforms": [
+      "linux-x86_64"
+    ],
+    "version": "0.1.0",
+    "wiraid_id": "cloak-server"
+  },
+  "params_schema": {
+    "admin_uid": {
+      "generator": "random_alnum",
+      "length": 22
+    },
+    "private_key": {
+      "exec_cmd": [
+        "{binary}",
+        "-key"
+      ],
+      "exec_group": 1,
+      "exec_regex": "[Pp]rivate[^:]*:\\s*(\\S+)",
+      "generator": "exec"
+    },
+    "public_key": {
+      "exec_cmd": [
+        "{binary}",
+        "-key"
+      ],
+      "exec_group": 1,
+      "exec_regex": "[Pp]ublic[^:]*:\\s*(\\S+)",
+      "generator": "exec"
+    },
+    "redir_addr": {
+      "generator": "fixed",
+      "value": "www.bing.com"
+    },
+    "server_name": {
+      "generator": "fixed",
+      "value": "www.bing.com"
+    },
+    "uid": {
+      "exec_cmd": [
+        "{binary}",
+        "-uid"
+      ],
+      "exec_group": 1,
+      "exec_regex": "UID[^:]*:\\s*(\\S+)",
+      "generator": "exec"
+    },
+    "upstream": {
+      "description": "upstream proxy host:port Cloak forwards decoded traffic to",
+      "required": true,
+      "type": "string"
+    }
+  },
+  "runtime": {
+    "cmd": [
+      "{binary}",
+      "-c",
+      "{config_path}"
+    ],
+    "config_path": "ckserver.json",
+    "config_template": "{\n  \"ProxyBook\": { \"shadowsocks\": [\"tcp\", \"{params.upstream}\"] },\n  \"BypassUID\": [\"{params.uid}\"],\n  \"RedirAddr\": \"{params.redir_addr}\",\n  \"PrivateKey\": \"{params.private_key}\",\n  \"AdminUID\": \"{params.admin_uid}\",\n  \"DatabasePath\": \"userinfo.db\",\n  \"BindAddr\": [\":{listen_port}\"]\n}\n",
+    "protocol": "tcp",
+    "ready_signal": {
+      "mode": "tcp_connect",
+      "timeout_ms": 5000
+    }
+  },
+  "schema": 2
+}

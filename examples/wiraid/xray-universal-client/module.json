@@ -1,0 +1,57 @@
+{
+  "schema": 2,
+  "module": {
+    "name": "xray-universal-client",
+    "version": "0.1.0",
+    "description": "xray-core universal client — VLESS/VMess × TCP/WS/xHTTP/gRPC × Reality/TLS/none",
+    "lang": "binary",
+    "platforms": ["linux-x86_64", "windows-x86_64", "darwin-x86_64", "darwin-arm64"],
+    "wiraid_id": "xray-universal-client",
+    "uri": {
+      "schemes": ["vless", "vmess", "trojan"],
+      "style": "url",
+      "query_conditions": {},
+      "userinfo_to": "uuid",
+      "host_to": "server_host",
+      "port_to": "server_port",
+      "fragment_to": "remark",
+      "query_map": {
+        "type":          "network",
+        "security":      "security",
+        "sni":           "sni",
+        "pbk":           "reality_pbk",
+        "sid":           "reality_sid",
+        "fp":            "fingerprint",
+        "flow":          "flow",
+        "path":          "path",
+        "host":          "host_header",
+        "serviceName":   "grpc_service",
+        "mode":          "grpc_mode",
+        "xPaddingBytes": "xhttp_padding"
+      }
+    }
+  },
+  "capabilities": { "transport": true },
+  "runtime": {
+    "cmd": ["{binary}", "run", "-c", "{config_path}"],
+    "config_path": "config.json",
+    "config_template_file": "config.tmpl",
+    "ready_signal": { "mode": "tcp_connect", "timeout_ms": 5000 }
+  },
+  "params_schema": {
+    "server_host":   { "required": true },
+    "server_port":   { "required": true },
+    "uuid":          { "required": true },
+    "network":       { "default": "tcp" },
+    "security":      { "default": "none" },
+    "sni":           { "default": "" },
+    "fingerprint":   { "default": "chrome" },
+    "flow":          { "default": "" },
+    "path":          { "default": "/" },
+    "host_header":   { "default": "" },
+    "reality_pbk":   { "default": "" },
+    "reality_sid":   { "default": "" },
+    "grpc_service":  { "default": "grpc" },
+    "xhttp_padding": { "default": "100-1000" }
+  }
+}

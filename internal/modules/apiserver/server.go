@@ -194,6 +194,10 @@ func New(cfg *Config) (*Server, error) {
 	return s, nil
 }
 
+func (s *Server) BridgePool() *bridgepool.Registry {
+	return s.bridgePool
+}
+
 func (s *Server) registerDefaultRoutes() {
 	s.Handle("POST /api/login", s.handleLogin)
 	s.Handle("POST /api/logout", s.handleLogout)
@@ -660,6 +664,7 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 			r.URL.Path == "/api/bridge-access-validate" ||
 			r.URL.Path == "/api/bridge-map" ||
 			r.URL.Path == "/api/keys/check" ||
+			r.URL.Path == "/api/wiraid/public/list" ||
 			r.URL.Path == "/install-bridge.sh" ||
 			strings.HasSuffix(r.URL.Path, "/health") {
 			next.ServeHTTP(w, r)

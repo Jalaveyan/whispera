@@ -9,6 +9,7 @@ import (
 	"net"
 	"strings"
 	"sync"
+	"time"
 
 	"whispera/internal/logger"
 )
@@ -138,6 +139,8 @@ func (s *SOCKS5Server) ListenAndServe() error {
 func (s *SOCKS5Server) handleConnection(conn net.Conn) {
 	defer conn.Close()
 
+	conn.SetDeadline(time.Now().Add(30 * time.Second))
+
 	fmt.Printf("[SOCKS5] New connection from %s\n", conn.RemoteAddr())
 
 	if err := s.handleHandshake(conn); err != nil {
@@ -153,11 +156,15 @@ func (s *SOCKS5Server) handleConnection(conn net.Conn) {
 		return
 	}
 
+	conn.SetDeadline(time.Time{})
+
 	fmt.Printf("[SOCKS5] Request: addr=%s port=%d\n", addr, port)
 
 	if addr == "" {
 		fmt.Printf("[SOCKS5] UDP ASSOCIATE handled\n")
-		select {}
+		buf := make([]byte, 1)
+		conn.Read(buf)
+		return
 	}
 
 	if err := s.handler(conn, addr, port); err != nil {
@@ -201,8 +208,10 @@ func (s *SOCKS5Server) handleHandshake(conn net.Conn) error {
 		}
 	}
 
-	if s.authHandler != nil && hasUsernamePass {
-		selectedMethod = socks5MethodUsernamePass
+	if s.authHandler != nil {
+		if hasUsernamePass {
+			selectedMethod = socks5MethodUsernamePass
+		}
 	} else if hasNoAuth {
 		selectedMethod = socks5MethodNoAuth
 	}

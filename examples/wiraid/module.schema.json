@@ -1,0 +1,353 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/Jalaveyan/Whispera/wiraid/module.schema.json",
+  "title": "Whispera WIRAID Module Manifest",
+  "description": "Schema for module.json — defines a WIRAID plugin binary (v2)",
+  "type": "object",
+  "required": ["schema", "module"],
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "type": "integer",
+      "const": 2,
+      "description": "Manifest schema version. Always 2."
+    },
+    "module": { "$ref": "#/definitions/ModuleInfo" },
+    "capabilities": { "$ref": "#/definitions/Capabilities" },
+    "runtime": { "$ref": "#/definitions/Runtime" },
+    "params_schema": {
+      "type": "object",
+      "description": "Declares parameters the module needs. Keys are param names used as {params.KEY} in templates.",
+      "additionalProperties": { "$ref": "#/definitions/ParamSchema" }
+    }
+  },
+  "definitions": {
+    "ModuleInfo": {
+      "type": "object",
+      "required": ["name"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Unique module name (snake_case). Used as directory name.",
+          "pattern": "^[a-z0-9_-]+$"
+        },
+        "version": {
+          "type": "string",
+          "description": "Semver module version.",
+          "default": "0.1.0"
+        },
+        "description": { "type": "string" },
+        "author":      { "type": "string" },
+        "source":      { "type": "string", "description": "URL to source repo or release page." },
+        "lang": {
+          "type": "string",
+          "enum": ["binary", "go", "rust", "python"],
+          "description": "Runtime type. Use 'binary' for pre-compiled executables.",
+          "default": "binary"
+        },
+        "entry": {
+          "type": "string",
+          "description": "For go/rust: path to build entry point (e.g. './cmd/server'). Not needed for binary."
+        },
+        "platforms": {
+          "type": "array",
+          "description": "Supported platforms. Omit to support all.",
+          "items": {
+            "type": "string",
+            "enum": ["linux-x86_64", "linux-arm64", "windows-x86_64", "darwin-x86_64", "darwin-arm64"]
+          }
+        },
+        "wiraid_id": {
+          "type": "string",
+          "description": "Stable public ID used in pair endpoints (/api/wiraid/public/pair/{wiraid_id}). Must be unique across modules.",
+          "pattern": "^[a-z0-9_-]+$"
+        },
+        "peer": {
+          "type": "object",
+          "description": "ID of the counterpart module on the other side (server←→client). Enables pair-config exchange.",
+          "required": ["id"],
+          "additionalProperties": false,
+          "properties": {
+            "id": { "type": "string", "description": "wiraid_id of the peer module." },
+            "min_version": { "type": "string", "description": "Minimum compatible peer version (semver)." }
+          }
+        },
+        "pair_exports": {
+          "type": "object",
+          "description": "Server-only. Values are templates rendered with server params and pushed to the peer client. Available placeholders: {server_host}, {params.KEY}.",
+          "additionalProperties": { "type": "string" }
+        },
+        "uri": { "$ref": "#/definitions/URISpec" }
+      }
+    },
+    "Capabilities": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "transport": { "type": "boolean", "description": "Module provides a socks5/tcp proxy upstream.", "default": false },
+        "dns":       { "type": "boolean", "default": false },
+        "filter":    { "type": "boolean", "default": false },
+        "analyzer":  { "type": "boolean", "default": false },
+        "tool":      { "type": "boolean", "default": false }
+      }
+    },
+    "Runtime": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "pre_cmd": {
+          "type": "array",
+          "description": "Commands to run before the main process starts (e.g. 'apply config'). Each item is an argv array. Run sequentially; failure aborts start.",
+          "items": {
+            "type": "array",
+            "items": { "type": "string" },
+            "minItems": 1
+          }
+        },
+        "cmd": {
+          "type": "array",
+          "description": "Main process command. First element is the executable. Runs as a long-lived process.",
+          "items": { "type": "string" },
+          "minItems": 1
+        },
+        "post_cmd": {
+          "type": "array",
+          "description": "Commands to run after the process is stopped (cleanup). Each item is an argv array.",
+          "items": {
+            "type": "array",
+            "items": { "type": "string" },
+            "minItems": 1
+          }
+        },
+        "env": {
+          "type": "object",
+          "description": "Extra environment variables. Values support template placeholders.",
+          "additionalProperties": { "type": "string" }
+        },
+        "config_template": {
+          "type": "string",
+          "description": "Config file content template. Written to config_path before start. Supports all placeholders."
+        },
+        "config_path": {
+          "type": "string",
+          "description": "Relative path for the rendered config file inside the module dir.",
+          "default": "config.json"
+        },
+        "protocol": {
+          "type": "string",
+          "description": "Protocol the module exposes locally.",
+          "enum": ["socks5", "tcp", "udp", "http", "https"],
+          "default": "socks5"
+        },
+        "port_discovery": { "$ref": "#/definitions/PortDiscovery" },
+        "ready_signal":   { "$ref": "#/definitions/ReadySignal" }
+      }
+    },
+    "PortDiscovery": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": ["fixed", "stdout_regex", "file"],
+          "description": "fixed: use the port assigned by the engine. stdout_regex: parse port from stdout. file: read port from a file.",
+          "default": "fixed"
+        },
+        "pattern": {
+          "type": "string",
+          "description": "Regex with one capture group containing the port number. Required for stdout_regex mode. Example: 'listening on :(\\d+)'"
+        },
+        "file": {
+          "type": "string",
+          "description": "Relative path to the file containing the port number. Required for file mode."
+        }
+      }
+    },
+    "ReadySignal": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": ["tcp_connect", "stdout_contains", "delay"],
+          "description": "How to detect that the module is ready to accept connections. tcp_connect: try to connect to the listen port. stdout_contains: wait for a line containing 'value'. delay: sleep timeout_ms.",
+          "default": "delay"
+        },
+        "value": {
+          "type": "string",
+          "description": "String to look for in stdout. Required for stdout_contains mode."
+        },
+        "timeout_ms": {
+          "type": "integer",
+          "description": "Timeout in milliseconds.",
+          "default": 5000,
+          "minimum": 100,
+          "maximum": 60000
+        }
+      }
+    },
+    "ParamSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Declares a single module parameter. Used in templates as {params.NAME}.",
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["string", "int", "bool"],
+          "description": "Value type. Currently informational only.",
+          "default": "string"
+        },
+        "required": {
+          "type": "boolean",
+          "description": "If true and no generator/default and param is not supplied, start will fail.",
+          "default": false
+        },
+        "default": {
+          "type": "string",
+          "description": "Default value used if no generator and param not explicitly set."
+        },
+        "description": {
+          "type": "string",
+          "description": "Human-readable description shown in the UI."
+        },
+        "generator": {
+          "type": "string",
+          "enum": ["random_hex", "random_alnum", "fixed", "env", "self_signed_cert", "exec"],
+          "description": "Auto-generation strategy run at install/enable time:\n• random_hex — hex string of 'length' bytes\n• random_alnum — alphanumeric string of 'length' chars\n• fixed — constant 'value'\n• env — value of environment variable 'env'\n• self_signed_cert — writes tls.crt + tls.key to module dir, sets param to cert path\n• exec — runs 'exec_cmd', applies 'exec_regex' to stdout"
+        },
+        "length": {
+          "type": "integer",
+          "description": "Byte length for random_hex / char length for random_alnum.",
+          "minimum": 1
+        },
+        "value": {
+          "type": "string",
+          "description": "Constant value for 'fixed' generator."
+        },
+        "env": {
+          "type": "string",
+          "description": "Environment variable name for 'env' generator."
+        },
+        "exec_cmd": {
+          "type": "array",
+          "description": "Command argv for 'exec' generator. Supports {binary} and {module_dir} placeholders. Multiple params sharing the same exec_cmd run it only once (cached).",
+          "items": { "type": "string" },
+          "minItems": 1
+        },
+        "exec_regex": {
+          "type": "string",
+          "description": "Regex applied to the combined stdout+stderr of exec_cmd. First matching group (or exec_group) is used as the value."
+        },
+        "exec_group": {
+          "type": "integer",
+          "description": "Capture group index to use from exec_regex. Default: 1.",
+          "default": 1,
+          "minimum": 1
+        }
+      }
+    },
+    "URISpec": {
+      "type": "object",
+      "description": "Declares that this module can parse a share-link URI and fill its params automatically. Enables 'paste key → connect' UX.",
+      "required": ["schemes", "style"],
+      "additionalProperties": false,
+      "properties": {
+        "schemes": {
+          "type": "array",
+          "description": "URI schemes this module handles (without '://'). Examples: ['vless'], ['vmess'], ['hy2', 'hysteria2'], ['naive+https', 'naive+quic'].",
+          "items": { "type": "string" },
+          "minItems": 1
+        },
+        "style": {
+          "type": "string",
+          "enum": ["url", "base64_json"],
+          "description": "url: standard RFC 3986 URL (vless/trojan/hy2/naive). base64_json: base64-encoded JSON body (vmess)."
+        },
+        "scheme_to": {
+          "type": "string",
+          "description": "url style: store the scheme (after stripping any 'naive+' prefix) into this param. Useful for naive transport selection (https/quic/http)."
+        },
+        "userinfo_to": {
+          "type": "string",
+          "description": "url style: store the full userinfo (user:pass or just token/uuid) into this param."
+        },
+        "userinfo_user_to": {
+          "type": "string",
+          "description": "url style: store only the username part of userinfo into this param."
+        },
+        "userinfo_pass_to": {
+          "type": "string",
+          "description": "url style: store only the password part of userinfo into this param."
+        },
+        "host_to": {
+          "type": "string",
+          "description": "url style: store the hostname into this param. Used for server_host (also drives bypass logic)."
+        },
+        "port_to": {
+          "type": "string",
+          "description": "url style: store the port number into this param."
+        },
+        "path_to": {
+          "type": "string",
+          "description": "url style: store the URL path (without leading /) into this param. Used for WebSocket paths."
+        },
+        "fragment_to": {
+          "type": "string",
+          "description": "url style: store the fragment (#...) into this param. Usually the human-readable remark/name."
+        },
+        "raw_to": {
+          "type": "string",
+          "description": "url style: store the entire normalized URI string into this param."
+        },
+        "query_map": {
+          "type": "object",
+          "description": "url style: maps query param names to module param names. Example: {\"sni\": \"sni\", \"pbk\": \"public_key\"}.",
+          "additionalProperties": { "type": "string" }
+        },
+        "json_map": {
+          "type": "object",
+          "description": "base64_json style: maps JSON field names to module param names. Example: {\"add\": \"server_host\", \"id\": \"uuid\"}.",
+          "additionalProperties": { "type": "string" }
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "schema": 2,
+      "module": {
+        "name": "my-proxy-client",
+        "version": "0.1.0",
+        "description": "My proxy client",
+        "lang": "binary",
+        "platforms": ["linux-x86_64", "windows-x86_64"],
+        "wiraid_id": "my-proxy-client",
+        "peer": { "id": "my-proxy-server" },
+        "uri": {
+          "schemes": ["myproto"],
+          "style": "url",
+          "userinfo_to": "password",
+          "host_to": "server_host",
+          "port_to": "server_port",
+          "query_map": { "sni": "sni" }
+        }
+      },
+      "capabilities": { "transport": true },
+      "runtime": {
+        "cmd": ["{binary}", "-c", "{config_path}"],
+        "config_template": "{\n  \"listen\": \"{listen_host}:{listen_port}\",\n  \"server\": \"{params.server_host}:{params.server_port}\",\n  \"password\": \"{params.password}\",\n  \"sni\": \"{params.sni}\"\n}\n",
+        "config_path": "config.json",
+        "protocol": "socks5",
+        "port_discovery": { "mode": "fixed" },
+        "ready_signal": { "mode": "tcp_connect", "timeout_ms": 5000 }
+      },
+      "params_schema": {
+        "server_host": { "type": "string", "required": true },
+        "server_port": { "type": "string", "required": true },
+        "password":    { "type": "string", "required": true },
+        "sni":         { "type": "string", "required": true }
+      }
+    }
+  ]
+}

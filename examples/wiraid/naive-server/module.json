@@ -1,0 +1,71 @@
+{
+  "capabilities": {
+    "transport": true
+  },
+  "module": {
+    "description": "naiveproxy server — caddy with caddy-forwardproxy plugin (binary must be caddy built with forwardproxy)",
+    "lang": "binary",
+    "name": "naive-server",
+    "pair_exports": {
+      "proxy": "https://{params.username}:{params.password}@{server_host}:{listen_port}"
+    },
+    "peer": {
+      "id": "naiveproxy-client"
+    },
+    "platforms": [
+      "linux-x86_64"
+    ],
+    "uri_export_template": "https://{params.username}:{params.password}@{server_host}:{listen_port}",
+    "version": "0.1.0",
+    "wiraid_id": "naiveproxy-server"
+  },
+  "params_schema": {
+    "cert_path": {
+      "generator": "self_signed_cert"
+    },
+    "key_path": {
+      "generator": "fixed",
+      "value": "tls.key"
+    },
+    "password": {
+      "generator": "random_hex",
+      "length": 32
+    },
+    "password_hash": {
+      "exec_cmd": [
+        "{binary}",
+        "hash-password",
+        "--plaintext",
+        "{params.password}"
+      ],
+      "exec_group": 1,
+      "exec_regex": "^(\\S+)$",
+      "generator": "exec"
+    },
+    "probe_domain": {
+      "generator": "fixed",
+      "value": "cloudflare.com"
+    },
+    "username": {
+      "generator": "random_alnum",
+      "length": 12
+    }
+  },
+  "runtime": {
+    "cmd": [
+      "{binary}",
+      "run",
+      "--config",
+      "{config_path}",
+      "--adapter",
+      "json"
+    ],
+    "config_path": "caddy.json",
+    "config_template": "{\n  \"apps\": {\n    \"http\": {\n      \"servers\": {\n        \"srv0\": {\n          \"listen\": [\":{listen_port}\"],\n          \"tls_connection_policies\": [{}],\n          \"routes\": [{\n            \"handle\": [{\n              \"handler\": \"forward_proxy\",\n              \"basic_auth\": { \"{params.username}\": \"{params.password_hash}\" },\n              \"hide_ip\": true,\n              \"hide_via\": true,\n              \"probe_resistance\": { \"domain\": \"{params.probe_domain}\" }\n            }]\n          }]\n        }\n      }\n    },\n    \"tls\": {\n      \"certificates\": {\n        \"load_files\": [{\n          \"certificate\": \"{params.cert_path}\",\n          \"key\": \"{params.key_path}\"\n        }]\n      }\n    }\n  }\n}\n",
+    "ready_signal": {
+      "mode": "tcp_connect",
+      "timeout_ms": 8000
+    }
+  },
+  "schema": 2
+}

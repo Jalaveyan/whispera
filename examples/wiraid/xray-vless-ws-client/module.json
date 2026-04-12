@@ -1,0 +1,43 @@
+{
+  "schema": 2,
+  "module": {
+    "name": "xray-vless-ws-client",
+    "version": "0.1.0",
+    "description": "xray-core client — VLESS + WebSocket + TLS",
+    "lang": "binary",
+    "platforms": ["linux-x86_64", "windows-x86_64"],
+    "wiraid_id": "xray-vless-ws-client",
+    "peer": { "id": "xray-vless-ws-server" },
+    "uri": {
+      "schemes": ["vless"],
+      "style": "url",
+      "query_conditions": { "type": "ws", "security": "tls" },
+      "userinfo_to": "uuid",
+      "host_to": "server_host",
+      "port_to": "server_port",
+      "fragment_to": "remark",
+      "query_map": {
+        "sni":      "sni",
+        "host":     "ws_host",
+        "path":     "ws_path",
+        "type":     "network",
+        "security": "security"
+      }
+    }
+  },
+  "capabilities": { "transport": true },
+  "runtime": {
+    "cmd": ["{binary}", "run", "-c", "{config_path}"],
+    "config_template": "{\n  \"log\": { \"loglevel\": \"warning\" },\n  \"inbounds\": [{\n    \"listen\": \"{listen_host}\",\n    \"port\": {listen_port},\n    \"protocol\": \"socks\",\n    \"settings\": { \"auth\": \"noauth\", \"udp\": true }\n  }],\n  \"outbounds\": [{\n    \"protocol\": \"vless\",\n    \"settings\": {\n      \"vnext\": [{\n        \"address\": \"{params.server_host}\",\n        \"port\": {params.server_port},\n        \"users\": [{ \"id\": \"{params.uuid}\", \"encryption\": \"none\" }]\n      }]\n    },\n    \"streamSettings\": {\n      \"network\": \"ws\",\n      \"security\": \"tls\",\n      \"tlsSettings\": { \"serverName\": \"{params.sni}\", \"allowInsecure\": true },\n      \"wsSettings\": { \"path\": \"{params.ws_path}\", \"headers\": { \"Host\": \"{params.ws_host}\" } }\n    }\n  }]\n}\n",
+    "config_path": "config.json",
+    "ready_signal": { "mode": "tcp_connect", "timeout_ms": 5000 }
+  },
+  "params_schema": {
+    "server_host": { "required": true },
+    "server_port": { "required": true },
+    "uuid":        { "required": true },
+    "sni":         { "required": true },
+    "ws_path":     { "default": "/ws" },
+    "ws_host":     { "default": "" }
+  }
+}

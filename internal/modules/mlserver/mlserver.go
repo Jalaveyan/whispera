@@ -350,15 +350,25 @@ func (s *MLServer) handlePredictTraffic(w http.ResponseWriter, r *http.Request) 
 }
 
 func (s *MLServer) handleRankBridges(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Bridges []map[string]interface{} `json:"bridges"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid json", http.StatusBadRequest)
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		http.Error(w, "read error", http.StatusBadRequest)
 		return
 	}
 
-	ranked := s.engine.RankBridges(req.Bridges)
+	var bridges []map[string]interface{}
+	if err := json.Unmarshal(body, &bridges); err != nil {
+		var wrapped struct {
+			Bridges []map[string]interface{} `json:"bridges"`
+		}
+		if err2 := json.Unmarshal(body, &wrapped); err2 != nil {
+			http.Error(w, "invalid json", http.StatusBadRequest)
+			return
+		}
+		bridges = wrapped.Bridges
+	}
+
+	ranked := s.engine.RankBridges(bridges)
 
 	for i := range ranked {
 		if sc, ok := ranked[i]["score"].(float64); ok {
@@ -369,7 +379,7 @@ func (s *MLServer) handleRankBridges(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	s.jsonReply(w, map[string]interface{}{"bridges": ranked})
+	s.jsonReply(w, ranked)
 }
 
 func (s *MLServer) handleNetworkAnalyze(w http.ResponseWriter, r *http.Request) {

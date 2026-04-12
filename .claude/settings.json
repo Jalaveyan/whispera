@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(grep -c \"server_host\" /c/Whispera-test/examples/wiraid/*/module.json)",
+      "Bash(grep -rn '\\\\\\\\{server_host\\\\\\\\}' /c/Whispera-test/examples/wiraid/*/module.json)",
+      "Bash(node -e ':*)",
+      "Bash(powershell -Command 'Get-Content '\\\\''C:\\\\Users\\\\Admin\\\\.claude\\\\projects\\\\c--Whispera-test\\\\2a11f433-ade6-4796-8a2f-494a98bb8153.jsonl'\\\\'' -Tail 40 | ForEach-Object { try { $obj = $_ | ConvertFrom-Json; if \\($obj.role\\) { Write-Host \"[$\\($obj.role\\)]: \"; if \\($obj.content -is [array]\\) { $obj.content | ForEach-Object { if \\($_.type -eq '\\\\''text'\\\\''\\) { Write-Host $_.text.Substring\\(0,[Math]::Min\\(400,$_.text.Length\\)\\) } } } elseif \\($obj.content -is [string]\\) { Write-Host $obj.content.Substring\\(0,[Math]::Min\\(400,$obj.content.Length\\)\\) }; Write-Host '\\\\''---'\\\\'' } } catch {} }')",
+      "Bash(find \"c:\\\\Whispera-test\" -type f -name \"*.go\" -exec grep -l \"ping\\\\|latency\\\\|health\" {} \\\\;)",
+      "Bash(grep -n \"bridge-ping\\\\|pingBridge\\\\|bridge.ping\" \"c:\\\\Whispera-test/internal/modules/apiserver\"/*.go)"
+    ]
+  }
+}

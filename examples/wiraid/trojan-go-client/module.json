@@ -1,0 +1,39 @@
+{
+  "schema": 2,
+  "module": {
+    "name": "trojan-go-client",
+    "version": "0.1.0",
+    "description": "trojan-go client (p4gefau1t/trojan-go)",
+    "lang": "binary",
+    "platforms": ["linux-x86_64", "windows-x86_64"],
+    "wiraid_id": "trojan-go-client",
+    "peer": { "id": "trojan-go-server" },
+    "uri": {
+      "schemes": ["trojan"],
+      "style": "url",
+      "userinfo_to": "password",
+      "host_to": "remote_addr",
+      "port_to": "remote_port",
+      "fragment_to": "remark",
+      "query_map": {
+        "sni":  "sni",
+        "peer": "sni"
+      }
+    }
+  },
+  "capabilities": { "transport": true },
+  "runtime": {
+    "cmd": ["{binary}", "-config", "{config_path}"],
+    "config_template": "{\n  \"run_type\": \"client\",\n  \"local_addr\": \"{listen_host}\",\n  \"local_port\": {listen_port},\n  \"remote_addr\": \"{params.remote_addr}\",\n  \"remote_port\": {params.remote_port},\n  \"password\": [\"{params.password}\"],\n  \"ssl\": {\n    \"sni\": \"{params.sni}\",\n    \"verify\": false\n  }\n}\n",
+    "config_path": "config.json",
+    "protocol": "socks5",
+    "port_discovery": { "mode": "fixed" },
+    "ready_signal": { "mode": "tcp_connect", "timeout_ms": 5000 }
+  },
+  "params_schema": {
+    "remote_addr": { "type": "string", "required": true },
+    "remote_port": { "type": "string", "required": true },
+    "password":    { "type": "string", "required": true },
+    "sni":         { "type": "string", "required": true }
+  }
+}
