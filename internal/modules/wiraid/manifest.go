@@ -128,16 +128,7 @@ func (m *Manifest) UpgradeToV2() {
 	}
 	m.Schema = 2
 	if len(m.Runtime.Cmd) == 0 {
-		cmd := []string{"{binary}", "--listen", "127.0.0.1:{listen_port}"}
-		if m.Runtime.ConfigPath != "" || m.Runtime.ConfigTemplate != "" {
-			cmd = append(cmd, "--config", "{config_path}")
-		} else {
-			cmd = append(cmd, "--config", "{config_path}")
-		}
-		for _, a := range m.Module.Args {
-			cmd = append(cmd, a)
-		}
-		m.Runtime.Cmd = cmd
+		m.Runtime.Cmd = []string{"{binary}"}
 	}
 	if m.Runtime.ConfigPath == "" {
 		m.Runtime.ConfigPath = "config.json"
@@ -151,7 +142,7 @@ func (m *Manifest) UpgradeToV2() {
 	if m.Runtime.Ready.Mode == "" {
 		m.Runtime.Ready.Mode = "delay"
 		if m.Runtime.Ready.Timeout == 0 {
-			m.Runtime.Ready.Timeout = 200
+			m.Runtime.Ready.Timeout = 500
 		}
 	}
 }

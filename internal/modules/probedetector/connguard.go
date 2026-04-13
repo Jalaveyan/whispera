@@ -37,6 +37,8 @@ type ConnGuard struct {
 
 	CheckMagics bool
 
+	WhitelistCheck func(ip string) bool
+
 	cleanStop chan struct{}
 }
 
@@ -57,6 +59,10 @@ func (g *ConnGuard) Stop() {
 func (g *ConnGuard) Allow(addr net.Addr) bool {
 	ip := extractIP(addr.String())
 	if ip == "" {
+		return true
+	}
+
+	if g.WhitelistCheck != nil && g.WhitelistCheck(ip) {
 		return true
 	}
 

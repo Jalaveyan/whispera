@@ -87,7 +87,8 @@ type Detector struct {
 
 	banHistory map[string]int
 
-	ownIPs map[string]struct{}
+	ownIPs    map[string]struct{}
+	whitelist map[string]time.Time
 
 	cleanupStop chan struct{}
 
@@ -136,9 +137,17 @@ func New(cfg Config) *Detector {
 		sniCache:       make(map[string]sniCacheEntry),
 		banHistory:     make(map[string]int),
 		ownIPs:         make(map[string]struct{}),
+		whitelist:      make(map[string]time.Time),
 		cleanupStop:    make(chan struct{}),
 		reflectHistory: make(map[string]time.Time),
 		Guard: NewConnGuard(true),
+	}
+
+	d.Guard.WhitelistCheck = func(ip string) bool {
+		d.mu.RLock()
+		_, ok := d.whitelist[ip]
+		d.mu.RUnlock()
+		return ok
 	}
 
 	for _, ip := range cfg.OwnPublicIPs {
@@ -150,6 +159,9 @@ func New(cfg Config) *Detector {
 	if len(d.ownIPs) == 0 {
 		d.autoDetectOwnIPs()
 	}
+
+	d.whitelist["127.0.0.1"] = time.Now()
+	d.whitelist["::1"] = time.Now()
 
 	return d
 }
@@ -183,11 +195,52 @@ func (d *Detector) RecordDNSQuery(clientAddr, hostname string, resolvedIPs []str
 	d.mu.Unlock()
 }
 
+func (d *Detector) IsWhitelisted(clientAddr string) bool {
+	ip := extractIP(clientAddr)
+	if ip == "" {
+		return false
+	}
+	d.mu.RLock()
+	_, ok := d.whitelist[ip]
+	d.mu.RUnlock()
+	return ok
+}
+
+func (d *Detector) Whitelist(clientAddr string) {
+	ip := extractIP(clientAddr)
+	if ip == "" {
+		return
+	}
+	d.mu.Lock()
+	d.whitelist[ip] = time.Now()
+	delete(d.blocked, ip)
+	delete(d.failures, ip)
+	d.mu.Unlock()
+	log.Debug("[probe] whitelisted %s (authenticated)", ip)
+}
+
+func (d *Detector) RemoveFromWhitelist(clientAddr string) {
+	ip := extractIP(clientAddr)
+	if ip == "" {
+		return
+	}
+	d.mu.Lock()
+	delete(d.whitelist, ip)
+	d.mu.Unlock()
+}
+
 func (d *Detector) RecordAuthFailure(clientAddr string) {
 	ip := extractIP(clientAddr)
 	if ip == "" {
 		return
 	}
+
+	d.mu.RLock()
+	if _, wl := d.whitelist[ip]; wl {
+		d.mu.RUnlock()
+		return
+	}
+	d.mu.RUnlock()
 
 	now := time.Now()
 	d.mu.Lock()
@@ -251,7 +304,9 @@ func (d *Detector) RecordAuthSuccess(clientAddr string) {
 	}
 	d.mu.Lock()
 	delete(d.failures, ip)
+	d.whitelist[ip] = time.Now()
 	d.mu.Unlock()
+	log.Debug("[probe] auth success — whitelisted %s", ip)
 }
 
 func (d *Detector) CheckConnection(clientAddr, sni string) (allowed bool, reason string) {
@@ -261,6 +316,10 @@ func (d *Detector) CheckConnection(clientAddr, sni string) (allowed bool, reason
 	}
 
 	d.mu.RLock()
+	if _, wl := d.whitelist[ip]; wl {
+		d.mu.RUnlock()
+		return true, ""
+	}
 	entry, isBlocked := d.blocked[ip]
 	d.mu.RUnlock()
 
@@ -382,6 +441,7 @@ func (d *Detector) Stats() map[string]interface{} {
 	return map[string]interface{}{
 		"blocked_ips":       len(d.blocked),
 		"tracked_ips":       len(d.failures),
+		"whitelisted_ips":   len(d.whitelist),
 		"dns_log_size":      len(d.dnsLog),
 		"sni_cache":         len(d.sniCache),
 		"own_ips":           d.ownIPsList(),

@@ -355,9 +355,11 @@ func (s *Server) ServeTunnel(conn net.Conn, streamObf bool) {
 			if strings.Contains(errStr, "keepalive timeout") ||
 				strings.Contains(errStr, "session closed") ||
 				strings.Contains(errStr, "EOF") {
-				s.log.Debug("Tunnel session closed for %s: %v", clientID, err)
+				s.log.Debug("Tunnel session ended for %s: %v (graceful)", clientID, err)
+			} else if strings.Contains(errStr, "connection reset by peer") {
+				s.log.Debug("Tunnel session ended for %s: client reset (reconnect/network change)", clientID, err)
 			} else {
-				s.log.Info("Tunnel session closed for %s: %v", clientID, err)
+				s.log.Info("Tunnel session closed for %s: accept stream failed: %v", clientID, err)
 			}
 			return
 		}
