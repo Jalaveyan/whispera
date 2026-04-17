@@ -32,6 +32,7 @@ import (
 	"whispera/internal/db"
 	"whispera/internal/modules/apiserver/handlers"
 	"whispera/internal/modules/bridgepool"
+	"whispera/internal/modules/keylimits"
 	"whispera/internal/modules/config"
 	"whispera/internal/modules/dhcp"
 	asn_bypass "whispera/internal/modules/transport/asn_bypass"
@@ -110,6 +111,7 @@ type Server struct {
 	jwtManager    *auth.JWTManager
 	bridgePool    *bridgepool.Registry
 	bridgeHandler *bridgepool.APIHandler
+	keyLimits     *keylimits.Manager
 	probeDetector interface {
 		Stats() map[string]interface{}
 		BlockIP(ip, reason string)
@@ -198,6 +200,10 @@ func (s *Server) BridgePool() *bridgepool.Registry {
 	return s.bridgePool
 }
 
+func (s *Server) SetKeyLimits(m *keylimits.Manager) {
+	s.keyLimits = m
+}
+
 func (s *Server) registerDefaultRoutes() {
 	s.Handle("POST /api/login", s.handleLogin)
 	s.Handle("POST /api/logout", s.handleLogout)
@@ -254,6 +260,13 @@ func (s *Server) registerDefaultRoutes() {
 	s.Handle("POST /api/keys/check", s.handleCheckKey)
 	s.Handle("GET /api/keys/ping", s.handlePingKey)
 	s.Handle("GET /api/keys/ping/all", s.handlePingAllKeys)
+
+	s.Handle("GET /api/key-limits", s.handleKeyLimitsList)
+	s.Handle("GET /api/key-limits/{id}", s.handleKeyLimitsGet)
+	s.Handle("POST /api/key-limits/{id}", s.handleKeyLimitsSet)
+	s.Handle("DELETE /api/key-limits/{id}", s.handleKeyLimitsClear)
+	s.Handle("GET /api/key-limits-defaults", s.handleKeyLimitsDefaults)
+	s.Handle("POST /api/key-limits-defaults", s.handleKeyLimitsSetDefaults)
 
 	s.Handle("GET /api/subscriptions", s.handleGetSubscriptions)
 	s.Handle("POST /api/subscriptions/add", s.handleAddSubscription)

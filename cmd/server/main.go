@@ -42,6 +42,7 @@ import (
 	"whispera/internal/modules/handshake"
 	"whispera/internal/modules/metricscollector"
 	"whispera/internal/modules/obfuscator"
+	"whispera/internal/modules/keylimits"
 	"whispera/internal/modules/phantom"
 	"whispera/internal/modules/probedetector"
 	"whispera/internal/modules/relay"
@@ -116,6 +117,12 @@ var (
 var globalP2PRelay *relay.P2PRelay
 var globalBridgePool *bridgepool.Registry
 var globalWiraidEngine *wiraid.Engine
+var globalKeyLimits = keylimits.New(keylimits.Limits{
+	MaxActiveSessions: 10,
+	SoftIPCap:         50,
+	BurstPerMinute:    30,
+	SessionTTL:        30 * time.Minute,
+})
 
 var (
 	globalHandshake      *handshake.Handler
@@ -287,6 +294,13 @@ func StartInbound(inbound modconfig.InboundConfig, serverConfig *modconfig.Serve
 					entries = append(entries, phantom.UserEntry{UserID: u.UserID, PublicKey: pubKey})
 				}
 				return entries
+			},
+			AdmitSession: func(clientID, sessionID, remoteIP string) (func(), string) {
+				reason, msg := globalKeyLimits.Admit(clientID, sessionID, remoteIP)
+				if reason != keylimits.ReasonNone {
+					return nil, msg
+				}
+				return func() { globalKeyLimits.Release(clientID, sessionID) }, ""
 			},
 			OnAuthenticated: func(conn net.Conn, clientID string) {
 				log.Printf("[Dynamic-Phantom] Authenticated: %s on inbound %s", clientID, inbound.Tag)
@@ -1267,6 +1281,7 @@ func createModules(manager *lifecycle.Manager, ctx context.Context) error {
 			return err
 		}
 		apiServer.SetRegistry(manager.Registry())
+		apiServer.SetKeyLimits(globalKeyLimits)
 		globalBridgePool = apiServer.BridgePool()
 		if err := manager.Register(apiServer); err != nil {
 			return err

@@ -93,6 +93,12 @@ type Config struct {
 
 	OnAuthenticated func(conn net.Conn, clientID string) `yaml:"-"`
 
+	// AdmitSession is consulted right after successful auth. It returns a
+	// short reason string when admission is denied (e.g. per-key session or
+	// IP cap hit); an empty reason means admitted. The release callback MUST
+	// be invoked exactly once when the session ends.
+	AdmitSession func(clientID, sessionID, remoteIP string) (release func(), reason string) `yaml:"-"`
+
 	GetUsers func() []UserEntry `yaml:"-"`
 }
 
@@ -216,6 +222,7 @@ type Stats struct {
 	ProxiedConnections    uint64
 	FailedAuthentications uint64
 	BlockedLocalPeers     uint64
+	AdmissionDenied       uint64
 	ActiveConnections     int32
 }
 
@@ -499,6 +506,25 @@ func (h *Handler) HandleConnection(conn net.Conn) {
 		}
 
 		if h.config.OnAuthenticated != nil {
+			release := func() {}
+			if h.config.AdmitSession != nil {
+				host, _, _ := net.SplitHostPort(remoteAddr)
+				if host == "" {
+					host = remoteAddr
+				}
+				rel, reason := h.config.AdmitSession(clientID, fmt.Sprintf("%x", sessionID), host)
+				if reason != "" {
+					log.Printf("Admission denied for %s (%s): %s", clientID, remoteAddr, reason)
+					h.stats.AdmissionDenied++
+					h.writeAdmissionError(conn, reason)
+					return
+				}
+				if rel != nil {
+					release = rel
+				}
+			}
+			defer release()
+
 			obfuscatedConn := h.WrapWithObfuscation(conn)
 			trackedConn := stats.WrapConn(obfuscatedConn, clientID)
 			h.mu.Lock()
@@ -958,6 +984,18 @@ var _ = (*tls.Config)(nil)
 type ObfuscatedConn struct {
 	net.Conn
 	mgr *obfuscation.IntegrationManager
+}
+
+// writeAdmissionError sends a short admission-denial marker to the client
+// before closing the conn. The format is a single line prefixed with
+// "WHISPERA-DENIED:" and terminated by '\n' so clients can distinguish it
+// from normal smux garbage and surface the message verbatim.
+func (h *Handler) writeAdmissionError(conn net.Conn, reason string) {
+	_ = conn.SetWriteDeadline(time.Now().Add(3 * time.Second))
+	if reason == "" {
+		reason = "admission denied"
+	}
+	_, _ = conn.Write([]byte("WHISPERA-DENIED: " + reason + "\n"))
 }
 
 func (h *Handler) WrapWithObfuscation(conn net.Conn) net.Conn {
