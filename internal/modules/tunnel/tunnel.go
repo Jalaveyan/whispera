@@ -2643,27 +2643,46 @@ func (s *StreamConn) Read(b []byte) (n int, err error) {
 	}
 }
 
+// maxStreamChunk bounds the payload size per tunnel frame. Keeping chunks
+// small enough to fit the outer transport MTU avoids IP fragmentation and
+// reduces the DPI fingerprint of oversized whispera frames.
+const maxStreamChunk = 1300
+
 func (s *StreamConn) Write(b []byte) (n int, err error) {
-	frameLen := FrameHeaderSize + len(b)
-	frame := bufferPool.Get().([]byte)
-	if cap(frame) < frameLen {
-		frame = make([]byte, frameLen)
-	} else {
-		frame = frame[:frameLen]
+	if len(b) == 0 {
+		return 0, nil
 	}
 
-	binary.BigEndian.PutUint16(frame[0:2], s.streamID)
-	frame[2] = 0x02
-	frame[3] = 0x00
-	binary.BigEndian.PutUint32(frame[4:8], uint32(len(b)))
-	copy(frame[8:], b)
+	total := 0
+	for total < len(b) {
+		end := total + maxStreamChunk
+		if end > len(b) {
+			end = len(b)
+		}
+		chunk := b[total:end]
 
-	sendErr := s.manager.Send(frame)
-	bufferPool.Put(frame[:cap(frame)])
-	if sendErr != nil {
-		return 0, sendErr
+		frameLen := FrameHeaderSize + len(chunk)
+		frame := bufferPool.Get().([]byte)
+		if cap(frame) < frameLen {
+			frame = make([]byte, frameLen)
+		} else {
+			frame = frame[:frameLen]
+		}
+
+		binary.BigEndian.PutUint16(frame[0:2], s.streamID)
+		frame[2] = 0x02
+		frame[3] = 0x00
+		binary.BigEndian.PutUint32(frame[4:8], uint32(len(chunk)))
+		copy(frame[8:], chunk)
+
+		sendErr := s.manager.Send(frame)
+		bufferPool.Put(frame[:cap(frame)])
+		if sendErr != nil {
+			return total, sendErr
+		}
+		total = end
 	}
-	return len(b), nil
+	return total, nil
 }
 
 func (s *StreamConn) Close() error {
