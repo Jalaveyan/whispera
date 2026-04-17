@@ -2882,7 +2882,26 @@ func (s *Server) handleGetLogsAPI(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	level := logger.LevelDebug
+	if lvl := r.URL.Query().Get("level"); lvl != "" {
+		level = logger.ParseLevel(lvl)
+	}
+
 	events := RecentEvents(limit)
+
+	if snap := logger.Snapshot(limit, level); len(snap) > 0 {
+		lines := make([]string, len(snap))
+		for i, e := range snap {
+			ts := e.Time.Format("2006-01-02 15:04:05")
+			if e.Module != "" {
+				lines[i] = fmt.Sprintf("[%s] [%-5s] [%s] %s", ts, e.Level, e.Module, e.Message)
+			} else {
+				lines[i] = fmt.Sprintf("[%s] [%-5s] %s", ts, e.Level, e.Message)
+			}
+		}
+		s.jsonOK(w, map[string]interface{}{"success": true, "logs": sanitizeLogLines(lines), "events": events, "source": "ring"})
+		return
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

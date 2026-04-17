@@ -171,6 +171,17 @@ func (l *Logger) log(level Level, msg string, args ...interface{}) {
 		formatted = msg
 	}
 
+	modName := ""
+	if mod, ok := l.fields["module"]; ok {
+		modName = fmt.Sprintf("%v", mod)
+	}
+	ring().push(RingEntry{
+		Time:    now,
+		Level:   level.String(),
+		Module:  modName,
+		Message: formatted,
+	})
+
 	if l.config.JSONMode {
 		entry := map[string]interface{}{
 			"ts":    now.Format(time.RFC3339Nano),
