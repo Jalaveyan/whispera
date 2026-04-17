@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"whispera/internal/modules/wiraid"
+	"whispera/pkg/wiraid"
 )
 
 func wiraidBaseDir() string {

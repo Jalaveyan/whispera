@@ -18,7 +18,7 @@ import (
 	"whispera/internal/logger"
 	"whispera/internal/modules/bridgepool"
 	"whispera/internal/modules/config"
-	"whispera/internal/modules/wiraid"
+	"whispera/pkg/wiraid"
 )
 
 func init() {
