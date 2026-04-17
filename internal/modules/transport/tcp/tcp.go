@@ -39,7 +39,7 @@ func DefaultConfig() *Config {
 		WriteTimeout: 30 * time.Second,
 		KeepAlive:    30 * time.Second,
 		MaxConns:     10000,
-		BufferSize:   8 * 1024 * 1024,
+		BufferSize:   32 * 1024 * 1024,
 	}
 }
 

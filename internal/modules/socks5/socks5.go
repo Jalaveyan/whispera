@@ -159,8 +159,8 @@ func (m *Module) handleConnection(clientConn net.Conn, targetAddr string, target
 	}
 
 	if tcpConn, ok := clientConn.(*net.TCPConn); ok {
-		tcpConn.SetReadBuffer(2 * 1024 * 1024)
-		tcpConn.SetWriteBuffer(2 * 1024 * 1024)
+		tcpConn.SetReadBuffer(4 * 1024 * 1024)
+		tcpConn.SetWriteBuffer(4 * 1024 * 1024)
 		tcpConn.SetNoDelay(true)
 	}
 

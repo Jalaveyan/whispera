@@ -2567,7 +2567,7 @@ func (m *Manager) DialStream(ctx context.Context, network, addr string) (net.Con
 		return nil, fmt.Errorf("failed to allocate stream ID")
 	}
 
-	ch := make(chan []byte, 1024)
+	ch := make(chan []byte, 4096)
 	m.streamChsMu.Lock()
 	m.streamChs[streamID] = ch
 	m.streamChsMu.Unlock()
