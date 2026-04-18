@@ -101,7 +101,7 @@ func (r *Registry) SetEnabled(name string, enabled bool) error {
 	}
 	m.Enabled = enabled
 	if enabled {
-		FillMissingParams(m)
+		_, _ = FillMissingParams(m)
 	}
 	return r.save()
 }

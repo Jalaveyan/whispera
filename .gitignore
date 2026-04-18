@@ -99,3 +99,6 @@ whisp/
 ml_engine/
 internal/obfuscation/ml/*.py
 internal/obfuscation/ml/*.spec
+
+# Local agent / IDE state — must never be committed
+.claude/

@@ -55,6 +55,7 @@ import (
 	"whispera/internal/modules/transport/yatelemost"
 	"whispera/internal/mux"
 	"whispera/internal/obfuscation/core/evasion"
+	"whispera/internal/obfuscation/marionette"
 	"whispera/internal/obfuscation/russian"
 )
 
@@ -156,6 +157,8 @@ type Config struct {
 	ServerAddr           string
 	ServerAddrTCP        string
 	Transport            string
+	TransportWhitelist   []string
+	TransportBlacklist   []string
 	KeepaliveInterval    time.Duration
 	ReconnectInterval    time.Duration
 	ReconnectMaxDelay    time.Duration
@@ -180,6 +183,9 @@ type Config struct {
 	PhantomShortId      string
 	PhantomServerPubKey string
 	PhantomPSK          []byte
+
+	EnableChatFSM        bool
+	ChatFSMCoverInterval time.Duration
 
 	RussianService    string
 	BehavioralProfile string
@@ -1034,7 +1040,36 @@ func (m *Manager) buildCandidates() []dialCandidate {
 		}
 	}
 
-	return cc
+	return m.applyTransportPolicy(cc)
+}
+
+func (m *Manager) applyTransportPolicy(cc []dialCandidate) []dialCandidate {
+	if len(m.config.TransportWhitelist) == 0 && len(m.config.TransportBlacklist) == 0 {
+		return cc
+	}
+	whitelist := make(map[string]bool, len(m.config.TransportWhitelist))
+	for _, n := range m.config.TransportWhitelist {
+		whitelist[strings.TrimSpace(n)] = true
+	}
+	blacklist := make(map[string]bool, len(m.config.TransportBlacklist))
+	for _, n := range m.config.TransportBlacklist {
+		blacklist[strings.TrimSpace(n)] = true
+	}
+	out := cc[:0]
+	for _, c := range cc {
+		base := c.name
+		if i := strings.IndexByte(base, ':'); i > 0 {
+			base = base[:i]
+		}
+		if len(whitelist) > 0 && !whitelist[base] {
+			continue
+		}
+		if blacklist[base] {
+			continue
+		}
+		out = append(out, c)
+	}
+	return out
 }
 
 func (m *Manager) parallelDial(ctx context.Context, candidates []dialCandidate) (net.Conn, error) {
@@ -1220,7 +1255,7 @@ func (m *Manager) dialH2C(ctx context.Context) (net.Conn, error) {
 			return nil, fmt.Errorf("phantom wrap h2c: %w", err)
 		}
 	}
-	return conn, nil
+	return m.wrapChatFSM(conn), nil
 }
 
 func (m *Manager) dialTCP(ctx context.Context) (net.Conn, error) {
@@ -1238,7 +1273,20 @@ func (m *Manager) dialTCP(ctx context.Context) (net.Conn, error) {
 			return nil, fmt.Errorf("phantom wrap: %w", err)
 		}
 	}
-	return conn, nil
+	return m.wrapChatFSM(conn), nil
+}
+
+func (m *Manager) wrapChatFSM(conn net.Conn) net.Conn {
+	if !m.config.EnableChatFSM {
+		return conn
+	}
+	interval := m.config.ChatFSMCoverInterval
+	if interval <= 0 {
+		interval = 8 * time.Second
+	}
+	var chatID [4]byte
+	_, _ = rand.Read(chatID[:])
+	return marionette.NewChatFSMConn(conn, binary.BigEndian.Uint32(chatID[:]), interval)
 }
 
 func (m *Manager) dialSplitHTTP(ctx context.Context) (net.Conn, error) {

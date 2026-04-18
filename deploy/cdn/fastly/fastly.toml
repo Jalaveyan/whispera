@@ -1,0 +1,14 @@
+authors = ["whispera"]
+description = "Whispera CDN edge relay"
+language = "javascript"
+manifest_version = 3
+name = "whispera-cdn"
+service_id = ""
+
+[local_server]
+  [local_server.backends]
+    [local_server.backends.origin]
+      url = "https://origin.example.com:8443"
+
+[scripts]
+  build = "npm run build"

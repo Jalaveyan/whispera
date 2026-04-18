@@ -26,6 +26,7 @@ import (
 	"whispera/internal/core/registry"
 	"whispera/internal/logger"
 	"whispera/internal/obfuscation"
+	"whispera/internal/obfuscation/marionette"
 	"whispera/internal/stats"
 )
 
@@ -83,6 +84,9 @@ type Config struct {
 	SNIRotationInterval int `yaml:"sni_rotation_interval"`
 
 	EnableCoverTraffic bool `yaml:"enable_cover_traffic"`
+
+	EnableChatFSM        bool          `yaml:"enable_chat_fsm"`
+	ChatFSMCoverInterval time.Duration `yaml:"chat_fsm_cover_interval"`
 
 	// BlockLocalPeers rejects inbound connections whose remote address is a
 	// loopback, link-local, or private RFC1918 range unless it matches
@@ -999,14 +1003,25 @@ func (h *Handler) writeAdmissionError(conn net.Conn, reason string) {
 }
 
 func (h *Handler) WrapWithObfuscation(conn net.Conn) net.Conn {
-	if !h.config.EnableObfuscation || h.integrationMgr == nil {
-		return conn
+	wrapped := conn
+	if h.config.EnableObfuscation && h.integrationMgr != nil {
+		log.Printf("Applying Marionette messenger obfuscation to connection")
+		wrapped = &ObfuscatedConn{
+			Conn: wrapped,
+			mgr:  h.integrationMgr,
+		}
 	}
-	log.Printf("Applying Marionette messenger obfuscation to connection")
-	return &ObfuscatedConn{
-		Conn: conn,
-		mgr:  h.integrationMgr,
+	if h.config.EnableChatFSM {
+		interval := h.config.ChatFSMCoverInterval
+		if interval <= 0 {
+			interval = 8 * time.Second
+		}
+		var chatID [4]byte
+		_, _ = rand.Read(chatID[:])
+		wrapped = marionette.NewChatFSMConn(wrapped, binary.BigEndian.Uint32(chatID[:]), interval)
+		log.Printf("Applying chat-FSM framing (cover interval %s)", interval)
 	}
+	return wrapped
 }
 
 func (c *ObfuscatedConn) Read(b []byte) (int, error) {

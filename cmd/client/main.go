@@ -310,6 +310,8 @@ func main() {
 	phantomShortId := ""
 	phantomServerPubKey := "jDwJpsAOm/dizeRNOMyUkoiHzslRkEmSQ/SKvigNtQw="
 	var phantomPSK []byte
+	chatFSMEnabled := false
+	var chatFSMInterval time.Duration
 
 	if cfg.Phantom != nil && cfg.Phantom.Enabled {
 		phantomEnabled = true
@@ -324,6 +326,10 @@ func main() {
 			if pskBytes, err := base64.StdEncoding.DecodeString(cfg.Phantom.PSK); err == nil && len(pskBytes) == 32 {
 				phantomPSK = pskBytes
 			}
+		}
+		chatFSMEnabled = cfg.Phantom.EnableChatFSM
+		if cfg.Phantom.ChatFSMCoverInterval > 0 {
+			chatFSMInterval = time.Duration(cfg.Phantom.ChatFSMCoverInterval) * time.Second
 		}
 	} else if asnBypassEnabled {
 		phantomEnabled = true
@@ -385,6 +391,8 @@ func main() {
 			ServerAddr:          serverAddress,
 			ServerAddrTCP:       fallbackTCP,
 			Transport:           tr,
+			TransportWhitelist:  cfg.TransportWhitelist,
+			TransportBlacklist:  cfg.TransportBlacklist,
 			KeepaliveInterval:   30 * time.Second,
 			EnableASNBypass:     asnBypassEnabled,
 			TLSFingerprint:      asnBypassFingerprint,
@@ -394,6 +402,8 @@ func main() {
 			PhantomShortId:      phantomShortId,
 			PhantomServerPubKey: phantomServerPubKey,
 			PhantomPSK:          phantomPSK,
+			EnableChatFSM:        chatFSMEnabled,
+			ChatFSMCoverInterval: chatFSMInterval,
 			RussianService:      cfg.RussianService,
 			VKToken:             *vkToken,
 			ServerList:          srvList,
@@ -439,6 +449,8 @@ func main() {
 			PhantomShortId:      phantomShortId,
 			PhantomServerPubKey: phantomServerPubKey,
 			PhantomPSK:          phantomPSK,
+			EnableChatFSM:        chatFSMEnabled,
+			ChatFSMCoverInterval: chatFSMInterval,
 			RussianService:      cfg.RussianService,
 			VKToken:             *vkToken,
 			ServerList:          srvList,
@@ -689,6 +701,8 @@ func main() {
 			PhantomShortId:      phantomShortId,
 			PhantomServerPubKey: phantomServerPubKey,
 			PhantomPSK:          phantomPSK,
+			EnableChatFSM:        chatFSMEnabled,
+			ChatFSMCoverInterval: chatFSMInterval,
 			RussianService:      cfg.RussianService,
 			VKToken:             *vkToken,
 			RekeyInterval:       *rekeyInterval,

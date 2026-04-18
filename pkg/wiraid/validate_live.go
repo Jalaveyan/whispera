@@ -1,6 +1,7 @@
 package wiraid
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"os"
@@ -54,14 +55,14 @@ func (e *Engine) LiveValidate(name string) (*LiveReport, error) {
 		return rep, nil
 	}
 
-	// Pick a free port ourselves so mock can bind to it
-	l, err := net.Listen("tcp", "127.0.0.1:0")
+	var lc net.ListenConfig
+	l, err := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		rep.LiveError = "pick port: " + err.Error()
 		return rep, nil
 	}
 	livePort := l.Addr().(*net.TCPAddr).Port
-	l.Close()
+	_ = l.Close()
 	rep.LivePort = livePort
 
 	mockPath := filepath.Join(cloneDir, "mock.sh")
@@ -101,7 +102,7 @@ func (e *Engine) LiveValidate(name string) (*LiveReport, error) {
 		rep.LiveError = "registry add: " + err.Error()
 		return rep, nil
 	}
-	defer e.Registry.Remove(testName)
+	defer func() { _ = e.Registry.Remove(testName) }()
 
 	port, err := e.Start(testName, 0)
 	if err != nil {

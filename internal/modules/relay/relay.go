@@ -357,7 +357,7 @@ func (s *Server) ServeTunnel(conn net.Conn, streamObf bool) {
 				strings.Contains(errStr, "EOF") {
 				s.log.Debug("Tunnel session ended for %s: %v (graceful)", clientID, err)
 			} else if strings.Contains(errStr, "connection reset by peer") {
-				s.log.Debug("Tunnel session ended for %s: client reset (reconnect/network change)", clientID, err)
+				s.log.Debug("Tunnel session ended for %s: client reset (%v)", clientID, err)
 			} else {
 				s.log.Info("Tunnel session closed for %s: accept stream failed: %v", clientID, err)
 			}

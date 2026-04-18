@@ -369,6 +369,9 @@ type PhantomConfig struct {
 	UseRussianService bool `yaml:"use_russian_service" json:"use_russian_service"`
 
 	RussianService string `yaml:"russian_service" json:"russian_service"`
+
+	EnableChatFSM        bool `yaml:"enable_chat_fsm" json:"enable_chat_fsm"`
+	ChatFSMCoverInterval int  `yaml:"chat_fsm_cover_interval_sec" json:"chat_fsm_cover_interval_sec"`
 }
 
 type ServerSettings struct {

@@ -70,6 +70,7 @@ import (
 	ws_transport "whispera/internal/modules/transport/websocket"
 	"whispera/internal/modules/mlserver"
 	_ "whispera/internal/modules/transport/yacloud"
+	"whispera/internal/obfuscation/marionette"
 	mlpkg "whispera/internal/obfuscation/ml"
 	_ "whispera/internal/modules/transport/yadisk"
 	_ "whispera/internal/modules/transport/yatelemost"
@@ -277,6 +278,8 @@ func StartInbound(inbound modconfig.InboundConfig, serverConfig *modconfig.Serve
 			Fingerprint:        serverConfig.Phantom.Fingerprint,
 			EnableObfuscation:  false,
 			ObfuscationProfile: "",
+			EnableChatFSM:      serverConfig.Phantom.EnableChatFSM,
+			ChatFSMCoverInterval: time.Duration(serverConfig.Phantom.ChatFSMCoverInterval) * time.Second,
 			GetUsers: func() []phantom.UserEntry {
 				registered := apiserver.GetRegisteredUsers()
 				entries := make([]phantom.UserEntry, 0, len(registered))
@@ -1299,6 +1302,66 @@ func createModules(manager *lifecycle.Manager, ctx context.Context) error {
 				"failover_active":  globalBridge.IsFailoverActive(),
 				"active_conns":     globalBridge.GetActiveConnections(),
 			})
+		})
+
+		apiServer.Handle("/api/marionette/status", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"live_connections": marionette.LiveCount(),
+				"known_profiles":   marionette.KnownProfiles(),
+			})
+		})
+
+		apiServer.Handle("/api/marionette/profile", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			if r.Method != http.MethodPost {
+				w.WriteHeader(http.StatusMethodNotAllowed)
+				return
+			}
+			var body struct {
+				Profile string `json:"profile"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Profile == "" {
+				w.WriteHeader(http.StatusBadRequest)
+				_ = json.NewEncoder(w).Encode(map[string]string{"error": "profile required"})
+				return
+			}
+			p := marionette.ProfileByName(body.Profile)
+			if p == nil {
+				w.WriteHeader(http.StatusNotFound)
+				_ = json.NewEncoder(w).Encode(map[string]any{"error": "unknown profile", "known": marionette.KnownProfiles()})
+				return
+			}
+			n := marionette.BroadcastSetProfile(p)
+			_ = json.NewEncoder(w).Encode(map[string]any{"updated": n, "profile": body.Profile})
+		})
+
+		apiServer.Handle("/api/marionette/cover", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			if r.Method != http.MethodPost {
+				w.WriteHeader(http.StatusMethodNotAllowed)
+				return
+			}
+			var body struct {
+				Enabled    *bool `json:"enabled,omitempty"`
+				IntervalMs *int  `json:"interval_ms,omitempty"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				_ = json.NewEncoder(w).Encode(map[string]string{"error": "invalid body"})
+				return
+			}
+			resp := map[string]any{}
+			if body.Enabled != nil {
+				resp["cover_toggled"] = marionette.BroadcastSetCoverEnabled(*body.Enabled)
+				resp["enabled"] = *body.Enabled
+			}
+			if body.IntervalMs != nil && *body.IntervalMs >= 0 {
+				d := time.Duration(*body.IntervalMs) * time.Millisecond
+				resp["interval_updated"] = marionette.BroadcastSetCoverInterval(d)
+				resp["interval_ms"] = *body.IntervalMs
+			}
+			_ = json.NewEncoder(w).Encode(resp)
 		})
 
 		apiServer.Handle("/api/p2p/stats", func(w http.ResponseWriter, r *http.Request) {

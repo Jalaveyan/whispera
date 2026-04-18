@@ -59,9 +59,8 @@ func (om *OutboundManager) AddOutbound(cfg config.OutboundConfig) error {
 		EnableRotation:    false,
 	}
 
-	// In Russia mode, exclude direct UDP/TCP and prefer stealth transports only.
 	if russiaMode {
-		tCfg.Transport = "vkwebrtc,yatelemost,okwebrtc,vkbot,cdnworker,russian,asn_bypass,quic"
+		tCfg.Transport = "vkwebrtc,yatelemost,okwebrtc,vkbot,cdnworker,russian,asn_bypass"
 	}
 
 	if pubKey, ok := cfg.Settings["server_pub_key"].(string); ok && pubKey != "" {
@@ -227,6 +226,11 @@ func (om *OutboundManager) ForwardPacket(packet []byte, tag string) error {
 }
 
 func (om *OutboundManager) UpdateOutbounds(configs []config.OutboundConfig) {
+	if err := validateChainGraph(configs); err != nil {
+		om.log.Error("Outbound chain graph rejected: %v", err)
+		return
+	}
+
 	current := make(map[string]bool)
 	for _, c := range configs {
 		current[c.Tag] = true
@@ -250,4 +254,40 @@ func (om *OutboundManager) UpdateOutbounds(configs []config.OutboundConfig) {
 		}
 	}
 	om.mu.Unlock()
+}
+
+func validateChainGraph(configs []config.OutboundConfig) error {
+	known := make(map[string]*config.OutboundConfig, len(configs))
+	for i := range configs {
+		known[configs[i].Tag] = &configs[i]
+	}
+
+	var visit func(tag string, stack map[string]bool) error
+	visit = func(tag string, stack map[string]bool) error {
+		out, ok := known[tag]
+		if !ok {
+			return nil
+		}
+		if stack[tag] {
+			return fmt.Errorf("outbound chain cycle detected at %q", tag)
+		}
+		stack[tag] = true
+		defer delete(stack, tag)
+		for _, hop := range out.Chain {
+			if len(hop) > 7 && hop[:7] == "bridge:" {
+				continue
+			}
+			if err := visit(hop, stack); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	for tag := range known {
+		if err := visit(tag, make(map[string]bool)); err != nil {
+			return err
+		}
+	}
+	return nil
 }

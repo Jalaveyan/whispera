@@ -1,6 +1,7 @@
 package wiraid
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -42,7 +43,7 @@ func (c *GenCtx) runExec(argv []string) (string, error) {
 	if out, ok := c.execCache[key]; ok {
 		return out, nil
 	}
-	cmd := exec.Command(rendered[0], rendered[1:]...)
+	cmd := exec.CommandContext(context.Background(), rendered[0], rendered[1:]...)
 	cmd.Dir = c.ModuleDir
 	out, err := cmd.CombinedOutput()
 	if err != nil {

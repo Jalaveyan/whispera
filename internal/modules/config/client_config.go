@@ -100,6 +100,9 @@ type ClientConfig struct {
 
 	Transport string `yaml:"transport,omitempty" json:"transport,omitempty"`
 
+	TransportWhitelist []string `yaml:"transport_whitelist,omitempty" json:"transport_whitelist,omitempty"`
+	TransportBlacklist []string `yaml:"transport_blacklist,omitempty" json:"transport_blacklist,omitempty"`
+
 	// BridgeDiscoveryURL points to the server's /api/bridge-list endpoint.
 	// When non-empty the client fetches available bridges and picks the fastest one
 	// instead of connecting directly to Server.
@@ -200,6 +203,9 @@ type ClientPhantomConfig struct {
 	ShortId         string `yaml:"short_id" json:"short_id"`
 	ServerPublicKey string `yaml:"server_public_key" json:"server_public_key"`
 	PSK             string `yaml:"psk" json:"psk"`
+
+	EnableChatFSM        bool `yaml:"enable_chat_fsm" json:"enable_chat_fsm"`
+	ChatFSMCoverInterval int  `yaml:"chat_fsm_cover_interval_sec" json:"chat_fsm_cover_interval_sec"`
 }
 
 func LoadClient(path string) (*ClientConfig, error) {

@@ -698,7 +698,7 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 
 		token := auth[len(prefix):]
 
-		if token == s.sessionToken {
+		if s.sessionToken != "" && subtle.ConstantTimeCompare([]byte(token), []byte(s.sessionToken)) == 1 {
 			next.ServeHTTP(w, r)
 			return
 		}

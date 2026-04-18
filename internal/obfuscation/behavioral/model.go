@@ -496,7 +496,7 @@ func (e *BehaviorEngine) NextPacketDelay() time.Duration {
 	if pps <= 0 {
 		pps = 0.1
 	}
-	baseDelay := time.Second / time.Duration(pps)
+	baseDelay := time.Duration(float64(time.Second) / pps)
 
 	jitter := e.profile.Timing.Jitter.BaseJitter * sampleGaussian(0, 1)
 	delay := baseDelay + time.Duration(jitter)*time.Millisecond

@@ -1,6 +1,7 @@
 package wiraid
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -20,7 +21,7 @@ func GitClone(url, dest string) error {
 			return fmt.Errorf("cleanup: %w", err)
 		}
 	}
-	cmd := exec.Command("git", "clone", "--depth=1", url, dest)
+	cmd := exec.CommandContext(context.Background(), "git", "clone", "--depth=1", url, dest)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("git clone failed: %s", string(out))
@@ -59,12 +60,12 @@ func buildC(dir, entry, name string) (string, error) {
 		if err2 := checkTool("cmake"); err2 == nil {
 			buildDir := filepath.Join(dir, "_cmake_build")
 			_ = os.MkdirAll(buildDir, 0o755)
-			cfg := exec.Command("cmake", "..", "-DCMAKE_BUILD_TYPE=Release")
+			cfg := exec.CommandContext(context.Background(), "cmake", "..", "-DCMAKE_BUILD_TYPE=Release")
 			cfg.Dir = buildDir
 			if combined, err3 := cfg.CombinedOutput(); err3 != nil {
 				return "", fmt.Errorf("cmake config failed: %s", string(combined))
 			}
-			bld := exec.Command("cmake", "--build", ".", "--config", "Release")
+			bld := exec.CommandContext(context.Background(), "cmake", "--build", ".", "--config", "Release")
 			bld.Dir = buildDir
 			if combined, err3 := bld.CombinedOutput(); err3 != nil {
 				return "", fmt.Errorf("cmake build failed: %s", string(combined))
@@ -89,7 +90,7 @@ func buildC(dir, entry, name string) (string, error) {
 	makefile := filepath.Join(dir, "Makefile")
 	if _, err := os.Stat(makefile); err == nil {
 		if err2 := checkTool("make"); err2 == nil {
-			cmd := exec.Command("make")
+			cmd := exec.CommandContext(context.Background(), "make")
 			cmd.Dir = dir
 			if combined, err3 := cmd.CombinedOutput(); err3 != nil {
 				return "", fmt.Errorf("make failed: %s", string(combined))
@@ -125,7 +126,7 @@ func buildC(dir, entry, name string) (string, error) {
 	if src == "" {
 		return "", fmt.Errorf("no entry .c file specified and main.c not found")
 	}
-	cmd := exec.Command(compiler, src, "-O2", "-o", out)
+	cmd := exec.CommandContext(context.Background(), compiler, src, "-O2", "-o", out)
 	cmd.Dir = dir
 	if combined, err := cmd.CombinedOutput(); err != nil {
 		return "", fmt.Errorf("%s compile failed: %s", compiler, string(combined))
@@ -172,7 +173,7 @@ func buildGo(dir, entry, name string) (string, error) {
 			target = "./" + entry
 		}
 	}
-	cmd := exec.Command("go", "build", "-trimpath", "-ldflags=-s -w", "-o", out, target)
+	cmd := exec.CommandContext(context.Background(), "go", "build", "-trimpath", "-ldflags=-s -w", "-o", out, target)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "CGO_ENABLED=0")
 	if combined, err := cmd.CombinedOutput(); err != nil {
@@ -185,7 +186,7 @@ func buildRust(dir, name string) (string, error) {
 	if err := checkTool("cargo"); err != nil {
 		return "", err
 	}
-	cmd := exec.Command("cargo", "build", "--release")
+	cmd := exec.CommandContext(context.Background(), "cargo", "build", "--release")
 	cmd.Dir = dir
 	if combined, err := cmd.CombinedOutput(); err != nil {
 		return "", fmt.Errorf("cargo build failed: %s", string(combined))
@@ -243,11 +244,15 @@ func DownloadBinary(url, destDir string) (string, error) {
 	tmpPath := filepath.Join(binDir, fileName)
 
 	client := &http.Client{Timeout: 5 * time.Minute}
-	resp, err := client.Get(url)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, url, nil)
 	if err != nil {
 		return "", fmt.Errorf("download: %w", err)
 	}
-	defer resp.Body.Close()
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("download: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != 200 {
 		return "", fmt.Errorf("download: HTTP %d", resp.StatusCode)
 	}
@@ -285,11 +290,11 @@ func extractAndFind(archive, binDir, tool string, flags ...string) (string, erro
 	} else {
 		args = append(args, archive, "-d", extractDir)
 	}
-	cmd := exec.Command(tool, args...)
+	cmd := exec.CommandContext(context.Background(), tool, args...)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return "", fmt.Errorf("%s extract failed: %s", tool, string(out))
 	}
-	os.Remove(archive)
+	_ = os.Remove(archive)
 	found := findExecutableRecursive(extractDir)
 	if found == "" {
 		return "", fmt.Errorf("no executable found in archive")
@@ -301,13 +306,13 @@ func extractAndFind(archive, binDir, tool string, flags ...string) (string, erro
 	if err := os.Chmod(dest, 0o755); err != nil {
 		return "", err
 	}
-	os.RemoveAll(extractDir)
+	_ = os.RemoveAll(extractDir)
 	return dest, nil
 }
 
 func findExecutableRecursive(dir string) string {
 	var best string
-	filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+	_ = filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
 		if err != nil || info.IsDir() {
 			return nil
 		}
@@ -364,8 +369,25 @@ func RepoNameFromURL(url string) string {
 			name = name[:i]
 		}
 	}
+	name = sanitizeModuleName(name)
 	if name == "" {
 		return "module"
 	}
 	return name
+}
+
+func sanitizeModuleName(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '-', r == '_':
+			b.WriteRune(r)
+		}
+	}
+	out := b.String()
+	out = strings.TrimLeft(out, "-_")
+	if len(out) > 64 {
+		out = out[:64]
+	}
+	return out
 }

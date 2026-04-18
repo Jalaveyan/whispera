@@ -62,7 +62,7 @@ func RunWizard(name, dir string) error {
 	}
 
 	fmt.Fprintf(w.out, "\n=== WIRAID module wizard: %s ===\n\n", name)
-	fmt.Fprintln(w.out, "Press Enter to accept defaults shown in [brackets].\n")
+	fmt.Fprintln(w.out, "Press Enter to accept defaults shown in [brackets].")
 
 	m := Manifest{Schema: 2}
 	m.Module.Name = name

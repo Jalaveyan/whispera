@@ -2,6 +2,7 @@ package wiraid
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -63,7 +64,7 @@ func (e *Engine) InstallFromURL(url string) (string, error) {
 			Dir:      moduleDir,
 			Binary:   bin,
 		}
-		FillMissingParams(im)
+		_, _ = FillMissingParams(im)
 		if err := e.Registry.Add(im); err != nil {
 			return "", err
 		}
@@ -86,7 +87,7 @@ func (e *Engine) InstallFromURL(url string) (string, error) {
 		Dir:      moduleDir,
 		Binary:   binary,
 	}
-	FillMissingParams(im)
+	_, _ = FillMissingParams(im)
 	if err := e.Registry.Add(im); err != nil {
 		return "", err
 	}
@@ -103,7 +104,7 @@ func (e *Engine) Uninstall(name string) error {
 	if err := e.Registry.Remove(name); err != nil {
 		return err
 	}
-	os.RemoveAll(dir)
+	_ = os.RemoveAll(dir)
 	return nil
 }
 
@@ -135,7 +136,7 @@ func (e *Engine) Start(name string, upstreamPort int) (int, error) {
 		return 0, fmt.Errorf("binary missing: %s", m.Binary)
 	}
 	if changed, err := FillMissingParams(m); err == nil && changed {
-		e.Registry.Save()
+		_ = e.Registry.Save()
 	}
 	m.Manifest.UpgradeToV2()
 	rt := m.Manifest.Runtime
@@ -196,7 +197,7 @@ func (e *Engine) Start(name string, upstreamPort int) (int, error) {
 			cfgData[k] = v
 		}
 		if data, err := json.MarshalIndent(cfgData, "", "  "); err == nil {
-			os.WriteFile(configPath, data, 0o644)
+			_ = os.WriteFile(configPath, data, 0o644)
 		}
 	}
 
@@ -205,7 +206,7 @@ func (e *Engine) Start(name string, upstreamPort int) (int, error) {
 		if len(parts) == 0 {
 			continue
 		}
-		pc := exec.Command(parts[0], parts[1:]...)
+		pc := exec.CommandContext(context.Background(), parts[0], parts[1:]...)
 		pc.Dir = m.Dir
 		pc.Stdout = os.Stderr
 		pc.Stderr = os.Stderr
@@ -231,7 +232,7 @@ func (e *Engine) Start(name string, upstreamPort int) (int, error) {
 		args = append([]string{m.Binary}, args...)
 	}
 
-	cmd := exec.Command(exe, args...)
+	cmd := exec.CommandContext(context.Background(), exe, args...)
 	cmd.Dir = m.Dir
 	if len(rt.Env) > 0 {
 		cmd.Env = os.Environ()
@@ -349,10 +350,13 @@ func waitTCP(host string, port int, timeout time.Duration) bool {
 		timeout = 5 * time.Second
 	}
 	deadline := time.Now().Add(timeout)
+	dialer := &net.Dialer{Timeout: 200 * time.Millisecond}
 	for time.Now().Before(deadline) {
-		c, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", host, port), 200*time.Millisecond)
+		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+		c, err := dialer.DialContext(ctx, "tcp", fmt.Sprintf("%s:%d", host, port))
+		cancel()
 		if err == nil {
-			c.Close()
+			_ = c.Close()
 			return true
 		}
 		time.Sleep(100 * time.Millisecond)
@@ -362,7 +366,7 @@ func waitTCP(host string, port int, timeout time.Duration) bool {
 
 func (e *Engine) Stop(name string) error {
 	if e.useSystemd {
-		return exec.Command("systemctl", "stop", "whispera-wiraid@"+name+".service").Run()
+		return exec.CommandContext(context.Background(), "systemctl", "stop", "whispera-wiraid@"+name+".service").Run()
 	}
 	e.mu.Lock()
 	rp, ok := e.running[name]
@@ -388,11 +392,11 @@ func (e *Engine) Stop(name string) error {
 			if len(parts) == 0 {
 				continue
 			}
-			pc := exec.Command(parts[0], parts[1:]...)
+			pc := exec.CommandContext(context.Background(), parts[0], parts[1:]...)
 			pc.Dir = m.Dir
 			pc.Stdout = os.Stderr
 			pc.Stderr = os.Stderr
-			pc.Run()
+			_ = pc.Run()
 		}
 	}
 	return nil
@@ -400,7 +404,7 @@ func (e *Engine) Stop(name string) error {
 
 func (e *Engine) startSystemd(m *InstalledModule) (int, error) {
 	unit := "whispera-wiraid@" + m.Manifest.Module.Name + ".service"
-	if out, err := exec.Command("systemctl", "start", unit).CombinedOutput(); err != nil {
+	if out, err := exec.CommandContext(context.Background(), "systemctl", "start", unit).CombinedOutput(); err != nil {
 		return 0, fmt.Errorf("systemctl start %s: %s", unit, string(out))
 	}
 	port := 0
@@ -410,7 +414,7 @@ func (e *Engine) startSystemd(m *InstalledModule) (int, error) {
 		if json.Unmarshal(data, &cfg) == nil {
 			if listen, ok := cfg["listen"].(string); ok {
 				if i := strings.LastIndex(listen, ":"); i >= 0 {
-					fmt.Sscanf(listen[i+1:], "%d", &port)
+					_, _ = fmt.Sscanf(listen[i+1:], "%d", &port)
 				}
 			}
 		}
@@ -529,10 +533,11 @@ func detectGoEntry(dir string) string {
 }
 
 func findFreePort() (int, error) {
-	l, err := net.Listen("tcp", "127.0.0.1:0")
+	var lc net.ListenConfig
+	l, err := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		return 0, err
 	}
-	defer l.Close()
+	defer func() { _ = l.Close() }()
 	return l.Addr().(*net.TCPAddr).Port, nil
 }

@@ -163,7 +163,7 @@ func (s *SOCKS5Server) handleConnection(conn net.Conn) {
 	if addr == "" {
 		fmt.Printf("[SOCKS5] UDP ASSOCIATE handled\n")
 		buf := make([]byte, 1)
-		conn.Read(buf)
+		_, _ = conn.Read(buf)
 		return
 	}
 

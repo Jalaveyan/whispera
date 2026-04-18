@@ -24,9 +24,7 @@ func runWiraidCLI(args []string) {
 	}
 
 	switch args[0] {
-
 	case "new":
-		// Does NOT need engine — no registry required
 		name := ""
 		dir := ""
 		for i := 1; i < len(args); i++ {
