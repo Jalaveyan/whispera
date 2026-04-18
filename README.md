@@ -97,7 +97,7 @@ restart (see [Live reconfiguration](#live-reconfiguration) below).
 > Run `whispera update-checksum /etc/whispera/config.yaml` after manual edits;
 > `install.sh` and the panel do this automatically.
 
-### Example 1 — minimal TCP server with phantom (Reality-style) masquerade
+### Example 1 — minimal TCP server with phantom masquerade
 
 The default profile produced by `install.sh`. Single inbound, server hides
 behind the chosen `dest` (a real popular HTTPS site); active probes get
