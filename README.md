@@ -7,7 +7,7 @@ Masquerades as legitimate HTTPS traffic with ML-driven obfuscation, multi-transp
 
 ## Features
 
-- **30+ transport protocols** — TCP, UDP, QUIC, WebSocket, HTTP Upgrade, Split HTTP, Snowflake, TUIC, WireGuard-like, VK WebRTC, Telegram Bot, Yandex Cloud/Disk/Telemost, TOR SOCKS, ASN Bypass, SNI Bypass
+- **15+ transport protocols** — TCP, UDP, QUIC, WebSocket, HTTP Upgrade, Split HTTP, Snowflake, TUIC, WireGuard-like, VK WebRTC, Telegram Bot, Yandex Cloud/Disk/Telemost, TOR SOCKS, ASN Bypass, SNI Bypass
 - **Marionette obfuscation** — behavioral mimicry of real messengers (Telegram, VK, WhatsApp, WeChat, Facebook, Instagram) with full chat protocol state machine (typing, sending, read receipts, feed scrolling, media viewing)
 - **ML-driven DPI evasion** — neural network that analyzes traffic patterns, detects DPI probes, and auto-switches obfuscation profiles
 - **Bridge network** — distributed bridge pool with health monitoring, per-user bridge discovery, automatic rotation, white/community bridge types
@@ -21,7 +21,6 @@ Masquerades as legitimate HTTPS traffic with ML-driven obfuscation, multi-transp
 - **NATS message bus** — distributed event architecture (drop-in replacement for in-process EventBus)
 - **Disaster recovery** — automatic snapshots, restore, health checks
 - **Chaos testing** — fault injection engine for bridge resilience testing
-- **Kubernetes ready** — Helm chart with HPA, PVC, ConfigMap, Secrets
 - **Admin panel** — web UI for user management, bridge registry, traffic stats, routing rules, firewall, backups
 - **Whisp desktop client** — Tauri 2.0 app with interactive bridge map, click-to-connect
 
