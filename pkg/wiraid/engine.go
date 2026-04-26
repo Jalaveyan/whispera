@@ -43,6 +43,28 @@ func NewEngine(baseDir string) (*Engine, error) {
 }
 
 func (e *Engine) InstallFromURL(url string) (string, error) {
+	if st, err := os.Stat(url); err == nil && st.IsDir() {
+		name := sanitizeModuleName(strings.ToLower(filepath.Base(url)))
+		moduleDir := filepath.Join(e.Registry.BaseDir(), name)
+		if err := copyDir(url, moduleDir); err != nil {
+			return "", fmt.Errorf("copy %s → %s: %w", url, moduleDir, err)
+		}
+		manifest, err := e.detectOrCreateManifest(moduleDir, name)
+		if err != nil {
+			return "", err
+		}
+		binary := ""
+		if b, err := e.tryBuild(moduleDir, manifest); err == nil {
+			binary = b
+		}
+		im := &InstalledModule{Manifest: manifest, Dir: moduleDir, Binary: binary}
+		_, _ = FillMissingParams(im)
+		if err := e.Registry.Add(im); err != nil {
+			return "", err
+		}
+		return name, nil
+	}
+
 	name := RepoNameFromURL(url)
 	moduleDir := filepath.Join(e.Registry.BaseDir(), name)
 
@@ -92,6 +114,31 @@ func (e *Engine) InstallFromURL(url string) (string, error) {
 		return "", err
 	}
 	return name, nil
+}
+
+// copyDir: src → dst recursive. Used by InstallFromURL local-path branch.
+func copyDir(src, dst string) error {
+	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(dst, rel)
+		if info.IsDir() {
+			return os.MkdirAll(target, info.Mode())
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			return err
+		}
+		return os.WriteFile(target, data, info.Mode())
+	})
 }
 
 func (e *Engine) Uninstall(name string) error {

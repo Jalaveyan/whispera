@@ -2,6 +2,7 @@ package mlserver
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -32,7 +33,11 @@ func newTestServer(t *testing.T) (*MLServer, *httptest.Server) {
 
 func mustGet(t *testing.T, url string) []byte {
 	t.Helper()
-	resp, err := http.Get(url)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, url, nil)
+	if err != nil {
+		t.Fatalf("NewRequest %s: %v", url, err)
+	}
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("GET %s: %v", url, err)
 	}
@@ -50,7 +55,12 @@ func mustPost(t *testing.T, url string, payload interface{}) []byte {
 	if payload != nil {
 		_ = json.NewEncoder(buf).Encode(payload)
 	}
-	resp, err := http.Post(url, "application/json", buf)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, url, buf)
+	if err != nil {
+		t.Fatalf("NewRequest %s: %v", url, err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("POST %s: %v", url, err)
 	}

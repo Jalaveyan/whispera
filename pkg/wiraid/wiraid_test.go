@@ -86,13 +86,8 @@ func TestEngineNewEmpty(t *testing.T) {
 	}
 }
 
-// Полный round-trip: LoadManifest → Registry.Add → Validate. Имитирует
-// внутреннюю работу `whispera wiraid install ./path` (git clone отдельно
-// тестировать здесь не имеет смысла, это Git, не наш код).
-//
-// Заодно фиксирует баг: InstallFromURL не поддерживает локальные пути,
-// хотя README это обещает. Если когда-нибудь починят — этот тест останется
-// валидным контрактом, а можно добавить отдельный TestInstallFromLocalDir.
+// Полный install + validate flow через публичную API. После фикса
+// InstallFromURL умеет local paths — README обещание сдержано.
 func TestInstallExampleAndValidate(t *testing.T) {
 	root := findExamplesDir(t)
 	if root == "" {
@@ -108,60 +103,29 @@ func TestInstallExampleAndValidate(t *testing.T) {
 		t.Fatalf("NewEngine: %v", err)
 	}
 
-	// Копируем example в registry baseDir (имитация того, что делает install).
-	dst := filepath.Join(e.Registry.BaseDir(), "xray-client")
-	if err := copyTree(src, dst); err != nil {
-		t.Fatalf("copyTree: %v", err)
-	}
-	manifest, err := LoadManifest(dst)
+	// Главное: InstallFromURL теперь принимает локальный path.
+	name, err := e.InstallFromURL(src)
 	if err != nil {
-		t.Fatalf("LoadManifest: %v", err)
+		t.Fatalf("InstallFromURL(%s): %v", src, err)
 	}
-	im := &InstalledModule{Manifest: manifest, Dir: dst}
-	if err := e.Registry.Add(im); err != nil {
-		t.Fatalf("Registry.Add: %v", err)
+	if name != "xray-client" {
+		t.Errorf("installed name = %q want xray-client", name)
 	}
-
 	if got := len(e.Registry.List()); got != 1 {
 		t.Errorf("after install: registry size = %d want 1", got)
 	}
 
-	rep, err := e.Validate("xray-client")
+	rep, err := e.Validate(name)
 	if err != nil {
 		t.Fatalf("Validate: %v", err)
 	}
 	if rep.Name != "xray-client" {
 		t.Errorf("validate name = %q want xray-client", rep.Name)
 	}
-	// xray-client требует server_host/uuid/sni/etc — без params всё в MissingParam.
 	if len(rep.MissingParam) == 0 {
-		t.Errorf("xray-client without params: MissingParam expected non-empty, got %+v", rep.MissingParam)
+		t.Errorf("xray-client без params: MissingParam expected non-empty, got %+v", rep.MissingParam)
 	}
-	// Шаблон должен отрендериться даже с пустыми params (placeholders остаются).
 	if !strings.Contains(rep.ConfigSample, "vless") {
 		t.Errorf("config sample must contain 'vless' for xray-client, got: %s", rep.ConfigSample)
 	}
-}
-
-// copyTree рекурсивно копирует src → dst. Не импортируем сторонний пакет
-// чтобы тесты остались самодостаточными.
-func copyTree(src, dst string) error {
-	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-		rel, _ := filepath.Rel(src, path)
-		target := filepath.Join(dst, rel)
-		if info.IsDir() {
-			return os.MkdirAll(target, info.Mode())
-		}
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return err
-		}
-		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-			return err
-		}
-		return os.WriteFile(target, data, info.Mode())
-	})
 }
