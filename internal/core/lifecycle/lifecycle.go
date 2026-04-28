@@ -118,6 +118,12 @@ func (m *Manager) Start() error {
 }
 
 
+func recoverPanic(idx int) {
+	if r := recover(); r != nil {
+		log.Printf("[Lifecycle] onShutdown[%d] panic: %v", idx, r)
+	}
+}
+
 func (m *Manager) Stop() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -144,12 +150,21 @@ func (m *Manager) Stop() error {
 		log.Printf("[Lifecycle] Error stopping modules: %v", err)
 	}
 
-	
+
 	m.cancel()
 
-	
-	for _, cb := range m.onShutdown {
-		cb()
+	// Каждый onShutdown callback ограничиваем 5s. Раньше любой зависший
+	// callback (например, net.Close на активном соединении) держал shutdown
+	// дольше systemd TimeoutStopSec → SIGKILL.
+	const cbTimeout = 5 * time.Second
+	for i, cb := range m.onShutdown {
+		done := make(chan struct{})
+		go func(c func()) { defer close(done); defer recoverPanic(i); c() }(cb)
+		select {
+		case <-done:
+		case <-time.After(cbTimeout):
+			log.Printf("[Lifecycle] onShutdown[%d] timeout %s — продолжаем", i, cbTimeout)
+		}
 	}
 
 	
