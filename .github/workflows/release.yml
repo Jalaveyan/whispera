@@ -296,9 +296,17 @@ jobs:
           distribution: temurin
           java-version: 21
       - uses: android-actions/setup-android@v3
-      - name: Install NDK 25 (CMFA несовместим с NDK 27+)
+      - name: Install NDK 25 + remove others (CMFA picks highest)
         run: |
           $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "ndk;25.2.9519653" >/dev/null
+          # Удаляем все остальные NDK чтобы Gradle не выбрал NDK 29.
+          for d in "$ANDROID_HOME/ndk/"*/; do
+            v=$(basename "$d")
+            if [ "$v" != "25.2.9519653" ]; then
+              echo "removing $d"
+              rm -rf "$d"
+            fi
+          done
           ls "$ANDROID_HOME/ndk/"
       - name: Install gomobile
         run: |
@@ -317,11 +325,20 @@ jobs:
         working-directory: cmfa
         run: |
           export PATH="$PATH:$(go env GOPATH)/bin"
-          # Жёстко используем NDK 25 (поставили выше). NDK 27+/29 ломают
-          # CMFA cmake-сборку.
           export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/25.2.9519653"
           export ANDROID_NDK_ROOT="$ANDROID_NDK_HOME"
-          echo "ANDROID_NDK_HOME=$ANDROID_NDK_HOME"
+          # local.properties — Gradle берёт sdk.dir/ndk.dir отсюда независимо от ENV.
+          cat > local.properties <<EOF
+          sdk.dir=$ANDROID_HOME
+          ndk.dir=$ANDROID_NDK_HOME
+          EOF
+          # Перезаписываем ndkVersion во всех build.gradle.kts
+          find . -name "build.gradle.kts" -exec sed -i \
+            's/ndkVersion = "[^"]*"/ndkVersion = "25.2.9519653"/g' {} +
+          echo "=== local.properties ==="
+          cat local.properties
+          echo "=== ndkVersion in gradle files ==="
+          grep -rn "ndkVersion" --include="build.gradle.kts" . || true
           # CMFA core/Makefile имеет target 'core' который запускает gomobile bind.
           if [ -f core/Makefile ]; then
             (cd core && make core 2>&1 | tee build.log)
