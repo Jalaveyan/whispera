@@ -294,7 +294,7 @@ jobs:
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: 17
+          java-version: 21
       - uses: android-actions/setup-android@v3
       - name: Install gomobile
         run: |
@@ -302,10 +302,13 @@ jobs:
           go install golang.org/x/mobile/cmd/gobind@latest
           export PATH="$PATH:$(go env GOPATH)/bin"
           gomobile init
-      - name: Clone ClashMetaForAndroid
+      - name: Clone ClashMetaForAndroid (with submodules)
         run: |
-          git clone --depth 1 https://github.com/MetaCubeX/ClashMetaForAndroid.git cmfa
-          ls cmfa cmfa/core
+          # CMFA держит mihomo как git submodule в core/src/foss/golang/clash —
+          # без --recurse-submodules clash/go.mod отсутствует и сборка падает.
+          git clone --depth 1 --recurse-submodules --shallow-submodules \
+            https://github.com/MetaCubeX/ClashMetaForAndroid.git cmfa
+          ls cmfa cmfa/core/src/foss/golang/clash | head
       - name: Build core AAR
         working-directory: cmfa
         run: |
