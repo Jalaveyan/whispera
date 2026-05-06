@@ -97,6 +97,11 @@ var socksUser string
 var socksPass string
 
 func generateSocksAuth() {
+	if *connKey != "" {
+		socksUser = "whisp"
+		socksPass = *connKey
+		return
+	}
 	b := make([]byte, 16)
 	rand.Read(b)
 	socksUser = "w"
