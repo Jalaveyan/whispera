@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -99,7 +100,11 @@ var socksPass string
 func generateSocksAuth() {
 	if *connKey != "" {
 		socksUser = "whisp"
-		socksPass = *connKey
+		// SOCKS5 password field is 1-byte length prefix → max 255 bytes.
+		// connKey is a whispera:// URL that easily exceeds this limit.
+		// Both sides must use the same derivation: SHA256(connKey) hex = 64 bytes.
+		h := sha256.Sum256([]byte(*connKey))
+		socksPass = hex.EncodeToString(h[:])
 		return
 	}
 	b := make([]byte, 16)
