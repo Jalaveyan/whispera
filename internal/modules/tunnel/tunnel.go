@@ -2229,6 +2229,7 @@ func (m *Manager) OpenStream(ctx context.Context, proto byte, addr string, port 
 	if err != nil {
 		return nil, fmt.Errorf("open stream: %w", err)
 	}
+	m.lastPong = time.Now()
 
 	var proxyStream net.Conn = stream
 	if m.config.EnablePhantom {
@@ -2787,7 +2788,7 @@ func (m *Manager) stopKeepalive() {
 func (m *Manager) sendKeepalive() {
 	if !m.lastPong.IsZero() && m.GetState() == StateConnected {
 		silentDuration := time.Since(m.lastPong)
-		maxSilence := 5 * time.Minute
+		maxSilence := 30 * time.Minute
 		if silentDuration > maxSilence {
 			log.Warn("No data received in %s (max %s), triggering reconnect", silentDuration, maxSilence)
 			go m.Reconnect(m.Context())

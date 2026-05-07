@@ -83,7 +83,7 @@ func (s *TrafficStats) AddRx(userID string, bytes int64) {
 		user.LastActivity = time.Now()
 	}
 
-	s.log.Info("RX: user=%s bytes=%d", userID, bytes)
+	s.log.Debug("RX: user=%s bytes=%d", userID, bytes)
 }
 
 func (s *TrafficStats) AddTx(userID string, bytes int64) {
@@ -100,7 +100,7 @@ func (s *TrafficStats) AddTx(userID string, bytes int64) {
 		user.LastActivity = time.Now()
 	}
 
-	s.log.Info("TX: user=%s bytes=%d", userID, bytes)
+	s.log.Debug("TX: user=%s bytes=%d", userID, bytes)
 }
 
 func (s *TrafficStats) AddTraffic(userID string, bytesRx, bytesTx int64) {
