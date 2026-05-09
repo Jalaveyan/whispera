@@ -27,21 +27,21 @@ refresh_config() {
     fi
 }
 
-_enable_tcp443_in_config() {
+_enable_tcp8443_in_config() {
     local cfg="${CONF_PATH}/config.yaml"
     [[ -f "$cfg" ]] || return
-    # Already on :443 — nothing to do
-    if grep -q 'listen_addr: ":443"' "$cfg" && grep -qP '^\s+enabled: true' "$cfg"; then
+    # Already on :8443 — nothing to do
+    if grep -q 'listen_addr: ":8443"' "$cfg" && grep -qP '^\s+enabled: true' "$cfg"; then
         return
     fi
     local changed=0
-    # Enable TCP transport and point it to :443
+    # Enable TCP transport and point it to :8443
     if grep -q 'listen_addr: ":8443"' "$cfg"; then
         # Replace tcp block: enabled: false + :8443 → enabled: true + :443
         # We use awk to only change the tcp sub-block
         awk '
             /^  tcp:/ { in_tcp=1 }
-            in_tcp && /listen_addr:/ { sub(/":[0-9]+"/, "\":443\""); changed=1 }
+            in_tcp && /listen_addr:/ { sub(/":[0-9]+"/, "\":8443\""); changed=1 }
             in_tcp && /enabled: false/ { sub(/false/, "true"); changed=1 }
             /^  [a-z]/ && !/^  tcp:/ { in_tcp=0 }
             { print }
@@ -50,7 +50,7 @@ _enable_tcp443_in_config() {
     fi
     if [[ $changed -eq 1 ]]; then
         refresh_config "$cfg"
-        log_success "TCP transport enabled on :443 in config.yaml"
+        log_success "TCP transport enabled on :8443 in config.yaml"
     fi
 }
 
