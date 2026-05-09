@@ -1317,10 +1317,10 @@ transport:
     listen_addr: ":8443"
   tcp:
     enabled: true
-    listen_addr: ":443"
+    listen_addr: ":8443"
   websocket:
     enabled: false
-    listen_addr: ":443"
+    listen_addr: ":8080"
 
 phantom:
   enabled: true
