@@ -26,6 +26,16 @@ type Config struct {
 	Debug         bool
 	VPNServerAddr string
 	MTU           int
+
+	// BypassFunc — return true to dial the target directly (bypass VPN tunnel).
+	// Called with the target hostname/IP and port before tunnel routing.
+	BypassFunc func(addr string, port uint16) bool
+
+	// BlockFunc — return true to silently drop the connection.
+	BlockFunc func(addr string, port uint16) bool
+
+	// BlockTorrents — drop connections to well-known BitTorrent ports (6881-6889, 6969, 51413).
+	BlockTorrents bool
 }
 
 type Module struct {
@@ -136,12 +146,37 @@ func (m *Module) SetTunnel(tunnel TunnelManager) {
 }
 
 
+// isTorrentPort returns true for well-known BitTorrent TCP ports.
+func isTorrentPort(port uint16) bool {
+	switch port {
+	case 6969, 51413: // common tracker / client ports
+		return true
+	}
+	return port >= 6881 && port <= 6889
+}
+
 func (m *Module) handleConnection(clientConn net.Conn, targetAddr string, targetPort uint16) error {
 	defer func() {
 		if r := recover(); r != nil {
 			stdlog.Printf("[SOCKS5] PANIC in handleConnection: %v", r)
 		}
 	}()
+
+	// Block before anything else.
+	if m.config.BlockTorrents && isTorrentPort(targetPort) {
+		stdlog.Printf("[SOCKS5] blocked torrent port %d → %s", targetPort, targetAddr)
+		return nil
+	}
+	if m.config.BlockFunc != nil && m.config.BlockFunc(targetAddr, targetPort) {
+		stdlog.Printf("[SOCKS5] blocked by rule: %s:%d", targetAddr, targetPort)
+		return nil
+	}
+
+	// Bypass: route directly without VPN tunnel.
+	if m.config.BypassFunc != nil && m.config.BypassFunc(targetAddr, targetPort) {
+		stdlog.Printf("[SOCKS5] direct (bypass) → %s:%d", targetAddr, targetPort)
+		return m.directDial(clientConn, targetAddr, targetPort)
+	}
 
 	m.mu.RLock()
 	tunnel := m.tunnel
@@ -182,6 +217,29 @@ func (m *Module) handleConnection(clientConn net.Conn, targetAddr string, target
 	go func() {
 		buf := make([]byte, 256*1024)
 		_, err := io.CopyBuffer(clientConn, stream, buf)
+		errCh <- err
+	}()
+	<-errCh
+	return nil
+}
+
+// directDial connects to addr:port without the VPN tunnel (used for bypass).
+func (m *Module) directDial(clientConn net.Conn, host string, port uint16) error {
+	addr := net.JoinHostPort(host, fmt.Sprintf("%d", port))
+	upstream, err := net.DialTimeout("tcp", addr, 10*time.Second)
+	if err != nil {
+		return fmt.Errorf("direct dial %s: %w", addr, err)
+	}
+	defer upstream.Close()
+	errCh := make(chan error, 2)
+	go func() {
+		buf := make([]byte, 32*1024)
+		_, err := io.CopyBuffer(upstream, clientConn, buf)
+		errCh <- err
+	}()
+	go func() {
+		buf := make([]byte, 32*1024)
+		_, err := io.CopyBuffer(clientConn, upstream, buf)
 		errCh <- err
 	}()
 	<-errCh

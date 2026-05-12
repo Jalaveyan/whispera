@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"runtime"
 	"runtime/debug"
 	"strings"
 	"sync/atomic"
@@ -33,6 +34,7 @@ import (
 	"whispera/internal/modules/session"
 	"whispera/internal/modules/socks5"
 	"whispera/internal/modules/tunnel"
+	"whispera/internal/split_tunnel"
 )
 
 var log = logger.Module("client")
@@ -66,7 +68,32 @@ var (
 	spoofIPs         = flag.String("spoof-ips", "", "Comma-separated source IPs for IP spoofing (requires multiple local IPs)")
 	adminTokenFlag   = flag.String("admin-token", "", "Admin token required for privileged control endpoints (e.g. /spoof). Empty = no auth")
 	tlsFragSize      = flag.Int("tls-fragment", 0, "TLS ClientHello fragment size in bytes (0=default 40, range 16-200). Smaller = harder for DPI but more RTT")
+	logFilePath      = flag.String("log-file", "", "Write logs to file (default: in-memory only, no disk storage)")
+	subURL           = flag.String("sub-url", "", "Subscription URL for automatic key refresh (checked every 24h)")
+	subInterval      = flag.Duration("sub-interval", 24*time.Hour, "Subscription refresh interval")
 )
+
+// pickServerAddress returns the best server address for the given transport,
+// respecting transport-specific overrides in ClientConfig.
+func pickServerAddress(cfg *config.ClientConfig, transport string) string {
+	switch transport {
+	case "tcp", "tls":
+		if cfg.ServerTCP != "" {
+			return cfg.ServerTCP
+		}
+	case "ws", "websocket":
+		if cfg.ServerWS != "" {
+			return cfg.ServerWS
+		}
+		if cfg.ServerTCP != "" {
+			return cfg.ServerTCP
+		}
+	}
+	if cfg.Server != "" {
+		return cfg.Server
+	}
+	return cfg.ServerTCP
+}
 
 func mlDefaultDataDir() string {
 	if exe, err := os.Executable(); err == nil {
@@ -124,7 +151,12 @@ func resolveMLToken(cfg *config.ClientConfig) string {
 }
 
 func main() {
-	debug.SetGCPercent(200)
+	// Keep GC aggressive enough to avoid large heap on memory-constrained devices
+	// (mobile). 100 = GC when live heap doubles (Go default). 200 trades RAM for
+	// CPU — fine on desktop, bad on mobile where 150–200 MB heaps drain battery.
+	debug.SetGCPercent(100)
+	// Return OS memory promptly after GC instead of holding it speculatively.
+	debug.SetMemoryLimit(200 << 20) // soft cap: 200 MB
 
 	flag.Parse()
 
@@ -132,22 +164,33 @@ func main() {
 		mlpkg.SetMLServerURL(*mlServerURL, *mlTokenFlag)
 	}
 
-	logFile, err := os.OpenFile("whispera-client.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
-	if err == nil {
-		if null, errNull := os.OpenFile(os.DevNull, os.O_WRONLY, 0666); errNull == nil {
-			os.Stdout = null
-			os.Stderr = null
-		}
-
-		stdlog.SetOutput(logFile)
-		logger.SetOutput(logFile)
-		log = logger.Module("client")
-	} else {
-		if null, errNull := os.OpenFile(os.DevNull, os.O_WRONLY, 0666); errNull == nil {
-			os.Stdout = null
-			os.Stderr = null
-		}
+	// Silence stdout/stderr — all output goes through our log writer.
+	if null, errNull := os.OpenFile(os.DevNull, os.O_WRONLY, 0666); errNull == nil {
+		os.Stdout = null
+		os.Stderr = null
 	}
+
+	var logWriter io.Writer
+	if *logFilePath != "" {
+		// Explicit file requested — write there.
+		logFile, err := os.OpenFile(*logFilePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
+		if err != nil {
+			// Fall back to ring buffer if file can't be opened.
+			rb := newRingLogBuffer(2000)
+			globalLogBuf = rb
+			logWriter = rb
+		} else {
+			logWriter = logFile
+		}
+	} else {
+		// Default: in-memory ring buffer. Nothing written to disk.
+		rb := newRingLogBuffer(2000)
+		globalLogBuf = rb
+		logWriter = rb
+	}
+	stdlog.SetOutput(logWriter)
+	logger.SetOutput(logWriter)
+	log = logger.Module("client")
 	stdlog.Printf("Whispera Client v%s starting...", Version)
 
 	var cfg *config.ClientConfig
@@ -161,9 +204,10 @@ func main() {
 		stdlog.Printf("Loaded config from key: %s", key.Name)
 		stdlog.Printf("Server: %s (transport: %s, obfuscation: %s)", key.GetPrimaryServer(), key.Transport, key.ObfsPreset)
 	} else if *configPath != "" {
-		cfg, err = config.LoadClient(*configPath)
-		if err != nil {
-			stdlog.Fatalf("Failed to load config: %v", err)
+		var loadErr error
+		cfg, loadErr = config.LoadClient(*configPath)
+		if loadErr != nil {
+			stdlog.Fatalf("Failed to load config: %v", loadErr)
 		}
 	} else {
 		cfg = &config.ClientConfig{
@@ -248,17 +292,6 @@ func main() {
 	}
 	lc.Register(hsMod)
 
-	socksMod, _ := socks5.New(&socks5.Config{
-		ListenAddr:    *socksAddr,
-		Debug:         true,
-		VPNServerAddr: cfg.Server,
-		MTU:           cfg.MTU,
-	})
-	generateSocksAuth()
-	socksMod.SetAuthHandler(socksUser, socksPass)
-	stdlog.Printf("SOCKS5 auth enabled (user=%s)", socksUser)
-	lc.Register(socksMod)
-
 	dnsUpstreamAddr := "1.1.1.1:53"
 	if *dnsUpstream != "" {
 		if strings.EqualFold(*dnsUpstream, "system") {
@@ -267,15 +300,70 @@ func main() {
 			dnsUpstreamAddr = *dnsUpstream
 		}
 	}
+	// Build split-tunnel manager first — needed by both SOCKS5 bypass and DNS.
+	// Russian whitelist is always pre-loaded so that services like YaDisk /
+	// Gosuslugi resolve via system DNS and connect directly, keeping their
+	// regional IPs regardless of the configured VPN upstream.
+	stm := split_tunnel.NewSplitTunnelManager()
+	stm.AddRussianWhitelist()
+	stm.CreateDefaultRules()
+	if cfg.SplitTunnel {
+		stm.SetEnabled(true)
+		if cfg.SplitTunnelMode != "" {
+			stm.SetMode(cfg.SplitTunnelMode)
+		}
+		if cfg.SplitTunnelRules != "" {
+			if err := stm.LoadConfig(cfg.SplitTunnelRules); err != nil {
+				stdlog.Printf("WARNING: split tunnel config load failed: %v", err)
+			}
+		}
+	} else {
+		// Even without full split-tunnel enabled, still bypass Russian whitelist
+		// at DNS level so the VPN doesn't break access to Russian services.
+		stm.SetEnabled(true)
+	}
+
+	socksMod, _ := socks5.New(&socks5.Config{
+		ListenAddr:    *socksAddr,
+		Debug:         true,
+		VPNServerAddr: cfg.Server,
+		MTU:           cfg.MTU,
+		// Route Russian services directly so they resolve to Russian IPs.
+		BypassFunc: func(addr string, _ uint16) bool {
+			return stm.ShouldBypassByHostname(addr)
+		},
+		// Drop BitTorrent connections — they reveal the real IP via DHT/PEX
+		// and unnecessarily consume VPN bandwidth.
+		BlockTorrents: true,
+	})
+	generateSocksAuth()
+	socksMod.SetAuthHandler(socksUser, socksPass)
+	stdlog.Printf("SOCKS5 auth enabled (user=%s)", socksUser)
+	lc.Register(socksMod)
+
 	dnsMod, _ := dnsmodule.New(&dnsmodule.Config{
 		Upstream:     dnsUpstreamAddr,
 		CacheEnabled: true,
+		BypassFunc:   stm.ShouldBypassByHostname,
 	})
 	lc.Register(dnsMod)
 
-	serverAddress := cfg.Server
-	if *transport == "tcp" && cfg.ServerTCP != "" {
-		serverAddress = cfg.ServerTCP
+	// Determine active transport (key overrides flag).
+	resolvedTransport := cfg.Transport
+	if resolvedTransport == "" {
+		resolvedTransport = *transport
+	}
+
+	// Pick the best server address for the resolved transport.
+	serverAddress := pickServerAddress(cfg, resolvedTransport)
+	if serverAddress == "" {
+		serverAddress = cfg.Server
+	}
+	// Ensure port is present; default to 8443.
+	if serverAddress != "" {
+		if _, _, err := net.SplitHostPort(serverAddress); err != nil {
+			serverAddress = net.JoinHostPort(serverAddress, "8443")
+		}
 	}
 
 	var globalBridgeSel *bridge.Selector
@@ -423,12 +511,13 @@ func main() {
 		force := e.ForceObfuscation
 		profile := e.BehavioralProfile
 		customSNI := e.SNI
+		noSNI := e.NoSNI
 		bridgeAddr := e.Bridge
 		rateLimitKB := e.RateLimitKB
 		e.mu.Unlock()
 
 		tc := cfg.TransportConfig
-		if customSNI != "" {
+		if customSNI != "" && !noSNI {
 			tc = make(map[string]interface{})
 			for k, v := range cfg.TransportConfig {
 				tc[k] = v
@@ -461,6 +550,7 @@ func main() {
 			ForceObfuscation:    force,
 			BehavioralProfile:   profile,
 			CustomSNI:           customSNI,
+			NoSNI:               noSNI,
 			BridgeAddr:          bridgeAddr,
 			RateLimitKB:         rateLimitKB,
 			EnableIPSpoof:       len(spoofList) > 0,
@@ -631,7 +721,7 @@ func main() {
 	for _, tr := range transports {
 		knownTransports[tr] = true
 	}
-	for _, extra := range []string{"tcp", "udp", "websocket", "xhttp", "quic"} {
+	for _, extra := range []string{"tcp", "udp", "websocket", "grpc", "xhttp", "quic"} {
 		if !knownTransports[extra] {
 			agentCfg.Candidates = append(agentCfg.Candidates, proxyagent.TransportCandidate{
 				Name:     extra,
@@ -754,6 +844,37 @@ func main() {
 		}
 	}
 
+	// Resolve subscription URL: explicit flag overrides key's sub_url field.
+	effectiveSubURL := *subURL
+	if effectiveSubURL == "" && cfg != nil {
+		effectiveSubURL = cfg.SubscriptionURL
+	}
+	if effectiveSubURL == "" && *connKey != "" {
+		if ck, err := config.ParseConnectionKey(*connKey); err == nil {
+			effectiveSubURL = ck.SubscriptionURL
+		}
+	}
+
+	var globalSubMgr *config.SubscriptionManager
+	if effectiveSubURL != "" {
+		stdlog.Printf("Subscription URL: %s (refresh every %s)", effectiveSubURL, *subInterval)
+		globalSubMgr = config.NewSubscriptionManager(effectiveSubURL, *subInterval, func(keys []*config.ConnectionKey) {
+			if len(keys) == 0 {
+				return
+			}
+			best := keys[0]
+			stdlog.Printf("Subscription updated: %d keys available, using %q (server=%s)", len(keys), best.Name, best.Server)
+			// Update the primary tunnel's server address if it changed.
+			if best.Server != "" && best.Server != serverAddress {
+				serverAddress = best.Server
+				stdlog.Printf("Subscription: server address updated to %s", serverAddress)
+			}
+		})
+		globalSubMgr.Start()
+		defer globalSubMgr.Stop()
+		globalSubscriptionMgr = globalSubMgr
+	}
+
 	startControlServer(ctx)
 
 	if err := lc.Start(); err != nil {
@@ -776,7 +897,7 @@ func main() {
 	}
 
 	if err := tunnelMod.Connect(ctx); err != nil {
-		stdlog.Printf("WARNING: Failed to connect to VPN server via %s: %v", transports[0], err)
+		stdlog.Printf("WARNING: Failed to connect to VPN server via %s: %s", transports[0], tunnel.ClassifyConnError(err))
 		primaryEntry.mu.Lock()
 		primaryEntry.Status = connStatusFailed
 		primaryEntry.Error = err.Error()
@@ -980,6 +1101,29 @@ func main() {
 							}
 						}
 					}
+				}
+			}
+		}
+	}()
+
+	// Memory watchdog: force GC if heap grows past 150 MB to stay within the
+	// 200 MB soft cap and avoid OOM on memory-constrained mobile devices.
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		const heapThreshold = 150 << 20 // 150 MB
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				var ms runtime.MemStats
+				runtime.ReadMemStats(&ms)
+				if ms.HeapAlloc > heapThreshold {
+					runtime.GC()
+					debug.FreeOSMemory()
+					stdlog.Printf("[mem] heap=%dMB — forced GC (threshold %dMB)",
+						ms.HeapAlloc>>20, heapThreshold>>20)
 				}
 			}
 		}
