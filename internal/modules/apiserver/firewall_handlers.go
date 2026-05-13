@@ -129,6 +129,9 @@ func (s *Server) handleFirewallStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleFirewallAddRule(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
 	var req struct {
 		Action string `json:"action"`
 		Port   string `json:"port"`
@@ -193,6 +196,9 @@ func (s *Server) handleFirewallAddRule(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleFirewallDeleteRule(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
 	var req struct {
 		Number int `json:"number"`
 	}
@@ -215,6 +221,9 @@ func (s *Server) handleFirewallDeleteRule(w http.ResponseWriter, r *http.Request
 }
 
 func (s *Server) handleFirewallToggle(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
 	var req struct {
 		Enable bool `json:"enable"`
 	}
