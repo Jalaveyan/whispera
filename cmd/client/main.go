@@ -538,13 +538,14 @@ func main() {
 
 	newTunnelMod := func(tr string) *tunnel.Manager {
 		m, _ := tunnel.New(&tunnel.Config{
-			ServerAddr:          serverAddress,
-			ServerAddrTCP:       fallbackTCP,
-			Transport:           tr,
-			TransportWhitelist:  cfg.TransportWhitelist,
-			TransportBlacklist:  cfg.TransportBlacklist,
-			KeepaliveInterval:   30 * time.Second,
-			EnableASNBypass:     asnBypassEnabled,
+			ServerAddr:              serverAddress,
+			ServerAddrTCP:           fallbackTCP,
+			Transport:               tr,
+			TransportWhitelist:      cfg.TransportWhitelist,
+			TransportBlacklist:      cfg.TransportBlacklist,
+			KeepaliveInterval:       30 * time.Second,
+			QualityMissedKeepalives: 3,
+			EnableASNBypass:         asnBypassEnabled,
 			TLSFingerprint:      asnBypassFingerprint,
 			EnableJA3Randomize:  true,
 			EnablePhantom:       phantomEnabled,
@@ -595,11 +596,12 @@ func main() {
 		}
 
 		return &tunnel.Config{
-			ServerAddr:          serverAddress,
-			ServerAddrTCP:       fallbackTCP,
-			Transport:           tr,
-			KeepaliveInterval:   30 * time.Second,
-			EnableASNBypass:     asnBypassEnabled,
+			ServerAddr:              serverAddress,
+			ServerAddrTCP:           fallbackTCP,
+			Transport:               tr,
+			KeepaliveInterval:       30 * time.Second,
+			QualityMissedKeepalives: 3,
+			EnableASNBypass:         asnBypassEnabled,
 			TLSFingerprint:      asnBypassFingerprint,
 			EnableJA3Randomize:  true,
 			EnablePhantom:       phantomEnabled,
@@ -851,11 +853,12 @@ func main() {
 
 	newMultiBridgeTunnel = func(bridgeCtx context.Context, bridgeID, bridgeAddr string, rules []string) {
 		m, err := tunnel.New(&tunnel.Config{
-			ServerAddr:          bridgeAddr,
-			ServerAddrTCP:       bridgeAddr,
-			Transport:           transports[0],
-			KeepaliveInterval:   30 * time.Second,
-			EnableASNBypass:     asnBypassEnabled,
+			ServerAddr:              bridgeAddr,
+			ServerAddrTCP:           bridgeAddr,
+			Transport:               transports[0],
+			KeepaliveInterval:       30 * time.Second,
+			QualityMissedKeepalives: 3,
+			EnableASNBypass:         asnBypassEnabled,
 			TLSFingerprint:      asnBypassFingerprint,
 			EnableJA3Randomize:  true,
 			EnablePhantom:       phantomEnabled,

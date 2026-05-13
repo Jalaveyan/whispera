@@ -421,7 +421,7 @@ func (m *Manager) getMuxConfig() *mux.Config {
 		MaxReceiveBuffer:     512 * 1024 * 1024,
 		MaxStreamBuffer:      4 * 1024 * 1024,
 		KeepAliveInterval:    time.Duration(base) * time.Second,
-		KeepAliveTimeout:     120 * time.Second,
+		KeepAliveTimeout:     45 * time.Second,
 		MaxConcurrentStreams: 256,
 	}
 }
@@ -2994,10 +2994,30 @@ func (m *Manager) sendKeepalive() {
 	pingFrame := make([]byte, 8)
 	pingFrame[2] = 0x06
 
-	if err := m.Send(pingFrame); err != nil {
-		log.Warn("Keepalive send failed: %v", err)
-	} else {
-		m.lastKeepalive = time.Now()
+	// Send in a separate goroutine so a blocked write (dead NAT, full TCP buffer)
+	// doesn't stall the keepalive loop and prevent maxSilence from firing.
+	sendTimeout := m.config.KeepaliveInterval
+	if sendTimeout <= 0 {
+		sendTimeout = 30 * time.Second
+	}
+	done := make(chan error, 1)
+	go func() { done <- m.Send(pingFrame) }()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			log.Warn("Keepalive send failed: %v", err)
+			if m.GetState() == StateConnected {
+				go m.Reconnect(m.Context())
+			}
+		} else {
+			m.lastKeepalive = time.Now()
+		}
+	case <-time.After(sendTimeout):
+		log.Warn("Keepalive send blocked >%s, triggering reconnect", sendTimeout)
+		if m.GetState() == StateConnected {
+			go m.Reconnect(m.Context())
+		}
 	}
 }
 
