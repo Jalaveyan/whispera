@@ -2989,6 +2989,16 @@ func (m *Manager) sendKeepalive() {
 				return
 			}
 		}
+
+		// If data is actively flowing from the server, the connection is clearly
+		// alive — no need to send an explicit ping that would compete with
+		// streaming traffic (YouTube, etc.) in the shared yamux write channel.
+		halfInterval := m.config.KeepaliveInterval / 2
+		if halfInterval > 0 && silentDuration < halfInterval {
+			m.lastKeepalive = time.Now()
+			atomic.StoreInt32(&m.missedKAs, 0)
+			return
+		}
 	}
 
 	pingFrame := make([]byte, 8)
