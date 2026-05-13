@@ -355,7 +355,7 @@ func (r *Resolver) resolveUpstream(ctx context.Context, domain string) ([]net.IP
 	upstream := r.config.Upstream
 	r.cacheMu.RUnlock()
 
-	// DoH upstream: https://... → use DNS-over-HTTPS (RFC 8484).
+	// Explicit DoH upstream: https://... → use DNS-over-HTTPS (RFC 8484).
 	if strings.HasPrefix(upstream, "https://") {
 		return r.resolveDoH(ctx, upstream, domain)
 	}
@@ -374,15 +374,17 @@ func (r *Resolver) resolveUpstream(ctx context.Context, domain string) ([]net.IP
 	}
 
 	// When a tunnel dial function is available, we must use TCP DNS (RFC 5966)
-	// because the mux stream is TCP-like. The stdlib net.Resolver issues UDP-style
-	// datagrams by default (no 2-byte length prefix), which breaks over a TCP
-	// stream. We send a raw TCP DNS query instead.
+	// because the mux stream is TCP-like.
 	if dialFn != nil {
 		ips, err := r.resolveTCPDNS(ctx, dialFn, upstream, domain)
 		if err == nil {
 			return ips, nil
 		}
-		// Fallback: try direct UDP to upstream if tunnel path failed.
+		// TCP DNS through tunnel failed — try DoH as fallback.
+		if ips, err2 := r.resolveDoH(ctx, dohFallbackFor(upstream), domain); err2 == nil {
+			return ips, nil
+		}
+		return nil, err
 	}
 
 	// Direct UDP DNS to the configured upstream.
@@ -397,7 +399,29 @@ func (r *Resolver) resolveUpstream(ctx context.Context, domain string) ([]net.IP
 			return d.DialContext(ctx, "udp4", addr)
 		},
 	}
-	return resolver.LookupIP(ctx, "ip4", domain)
+	ips, err := resolver.LookupIP(ctx, "ip4", domain)
+	if err == nil {
+		return ips, nil
+	}
+	// UDP/53 blocked by ISP — auto-upgrade to DoH.
+	return r.resolveDoH(ctx, dohFallbackFor(upstream), domain)
+}
+
+// dohFallbackFor maps a plain DNS server address to its DoH endpoint.
+// Falls back to Cloudflare DoH for unknown servers.
+func dohFallbackFor(upstream string) string {
+	host := strings.TrimSuffix(upstream, ":53")
+	host = strings.Split(host, ":")[0]
+	switch host {
+	case "8.8.8.8", "8.8.4.4", "dns.google":
+		return "https://dns.google/dns-query"
+	case "9.9.9.9", "149.112.112.112":
+		return "https://dns.quad9.net/dns-query"
+	case "94.140.14.14", "94.140.15.15":
+		return "https://dns.adguard.com/dns-query"
+	default:
+		return "https://1.1.1.1/dns-query"
+	}
 }
 
 // resolveDoH resolves a domain via DNS-over-HTTPS (RFC 8484 wire format POST).
