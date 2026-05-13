@@ -225,6 +225,7 @@ func (s *MLServer) registerRoutes() {
 	s.mux.HandleFunc("POST /train/stop", s.handleTrainStop)
 	s.mux.HandleFunc("GET /train/status", s.handleTrainStatus)
 	s.mux.HandleFunc("GET /scan", s.handleScan)
+	s.mux.HandleFunc("GET /selftest", s.handleSelfTest)
 	s.mux.HandleFunc("GET /federated/export", s.handleFedExport)
 	s.mux.HandleFunc("POST /federated/import", s.handleFedImport)
 	s.mux.HandleFunc("GET /federated/status", s.handleFedStatus)
@@ -824,6 +825,10 @@ func (s *MLServer) handleScan(w http.ResponseWriter, r *http.Request) {
 	s.jsonReply(w, map[string]interface{}{"results": results})
 }
 
+func (s *MLServer) handleSelfTest(w http.ResponseWriter, r *http.Request) {
+	s.jsonReply(w, s.engine.SelfTest())
+}
+
 func (s *MLServer) handleFedExport(w http.ResponseWriter, r *http.Request) {
 	s.feedbackMu.Lock()
 	stats := make(map[string]*TransportStats)
@@ -834,10 +839,12 @@ func (s *MLServer) handleFedExport(w http.ResponseWriter, r *http.Request) {
 	s.feedbackMu.Unlock()
 
 	engineStats := s.engine.GetStats()
+	modelState := s.engine.ExportModelState()
 
 	s.jsonReply(w, map[string]interface{}{
 		"transports": stats,
 		"model":      engineStats,
+		"weights":    modelState,
 		"ts":         time.Now().Unix(),
 	})
 }
@@ -845,10 +852,16 @@ func (s *MLServer) handleFedExport(w http.ResponseWriter, r *http.Request) {
 func (s *MLServer) handleFedImport(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Transports map[string]*TransportStats `json:"transports"`
+		Weights    *ml.ModelState             `json:"weights"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "invalid json", http.StatusBadRequest)
 		return
+	}
+
+	// FedAvg: blend remote NN weights into local model (alpha=0.5 = equal trust).
+	if req.Weights != nil {
+		s.engine.ImportModelState(req.Weights, 0.5)
 	}
 
 	s.feedbackMu.Lock()
@@ -864,7 +877,7 @@ func (s *MLServer) handleFedImport(w http.ResponseWriter, r *http.Request) {
 	}
 	s.feedbackMu.Unlock()
 
-	s.addLogf("federated import applied")
+	s.addLogf("federated import applied (weights: %v)", req.Weights != nil)
 	s.jsonReply(w, map[string]string{"status": "applied"})
 }
 
@@ -906,16 +919,53 @@ func (s *MLServer) handleFedUpload(w http.ResponseWriter, r *http.Request) {
 	var upload struct {
 		Samples []json.RawMessage `json:"samples"`
 		Count   int               `json:"count"`
+		Weights *ml.ModelState    `json:"weights"`
 	}
-	if json.Unmarshal(body, &upload) == nil && len(upload.Samples) > 0 {
-		s.appendToDataset(upload.Samples)
-		s.addLogf("federated upload: %s — %d samples appended to dataset (total: %d)",
-			fname, len(upload.Samples), s.datasetSampleCount())
-	} else {
-		s.addLogf("federated delta uploaded: %s (%d bytes, no samples field)", fname, len(body))
+	if json.Unmarshal(body, &upload) == nil {
+		if len(upload.Samples) > 0 {
+			s.appendToDataset(upload.Samples)
+			s.addLogf("federated upload: %s — %d samples (total: %d)",
+				fname, len(upload.Samples), s.datasetSampleCount())
+		}
+		if upload.Weights != nil {
+			// Apply client weights into aggregated model and into local engine.
+			s.aggregateModelDelta(upload.Weights)
+			s.engine.ImportModelState(upload.Weights, 0.7) // trust local more
+			s.addLogf("federated upload: NN weights aggregated from %s", fname)
+		}
+		if len(upload.Samples) == 0 && upload.Weights == nil {
+			s.addLogf("federated delta uploaded: %s (%d bytes, no samples/weights)", fname, len(body))
+		}
 	}
 
 	s.jsonReply(w, map[string]string{"status": "ok"})
+}
+
+// aggregateModelDelta blends a remote ModelState into the on-disk aggregated
+// model file (federated/aggregated_model.json). The file acts as the running
+// FedAvg result that clients can download.
+func (s *MLServer) aggregateModelDelta(remote *ml.ModelState) {
+	if remote == nil {
+		return
+	}
+	aggPath := filepath.Join(s.fedDir, "aggregated_model.json")
+	var agg ml.ModelState
+	if data, err := os.ReadFile(aggPath); err == nil {
+		json.Unmarshal(data, &agg)
+	}
+	if len(agg.TrafficLayers) == 0 {
+		agg = *remote
+	} else {
+		// Create a temporary engine snapshot to perform FedAvg, then persist.
+		tmp := ml.NewNativeMLEngine("") // no modelDir — in-memory only
+		tmp.ImportModelState(&agg, 0.6)
+		tmp.ImportModelState(remote, 0.4)
+		agg = *tmp.ExportModelState()
+	}
+	data, err := json.Marshal(agg)
+	if err == nil {
+		os.WriteFile(aggPath, data, 0600)
+	}
 }
 
 func (s *MLServer) appendToDataset(samples []json.RawMessage) {
@@ -947,20 +997,24 @@ func (s *MLServer) datasetSampleCount() int {
 }
 
 func (s *MLServer) handleFedDownload(w http.ResponseWriter, r *http.Request) {
-	entries, _ := os.ReadDir(s.fedDir)
-	deltas := make([]map[string]interface{}, 0)
-	for _, e := range entries {
-		if strings.HasSuffix(e.Name(), ".json") {
-			data, err := os.ReadFile(filepath.Join(s.fedDir, e.Name()))
-			if err == nil {
-				var d map[string]interface{}
-				if json.Unmarshal(data, &d) == nil {
-					deltas = append(deltas, d)
-				}
-			}
+	// Return the aggregated model so clients can apply FedAvg locally.
+	var aggModel *ml.ModelState
+	aggPath := filepath.Join(s.fedDir, "aggregated_model.json")
+	if data, err := os.ReadFile(aggPath); err == nil {
+		var m ml.ModelState
+		if json.Unmarshal(data, &m) == nil {
+			aggModel = &m
 		}
 	}
-	s.jsonReply(w, map[string]interface{}{"deltas": deltas, "count": len(deltas)})
+	// Fallback: if no aggregated model exists yet, export local engine state.
+	if aggModel == nil {
+		aggModel = s.engine.ExportModelState()
+	}
+
+	s.jsonReply(w, map[string]interface{}{
+		"weights": aggModel,
+		"ts":      time.Now().Unix(),
+	})
 }
 
 func (s *MLServer) handleFedDatasetExport(w http.ResponseWriter, r *http.Request) {

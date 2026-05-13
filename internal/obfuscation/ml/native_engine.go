@@ -1494,6 +1494,133 @@ func (e *NativeMLEngine) maybeFireProfileChange(dpiType int, conf float64) {
 	}
 }
 
+// ExportModelState returns a serializable copy of current NN weights.
+// Safe to call concurrently with inference.
+func (e *NativeMLEngine) ExportModelState() *ModelState {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return &ModelState{
+		TrafficLayers:   copyLayerDefs(e.trafficNet.Layers),
+		DPILayers:       copyLayerDefs(e.dpiNet.Layers),
+		AnomalyLayers:   copyLayerDefs(e.anomalyNet.Layers),
+		TransportLayers: copyLayerDefs(e.transportNet.Layers),
+		Normalizer:      copyNorm(e.featureNorm),
+		Accuracy:        e.accuracy,
+		Trained:         e.lastTrained.Unix(),
+	}
+}
+
+// ImportModelState applies FedAvg between local and remote NN weights.
+// alpha=0.5 gives equal weight to both sides; increase toward 1.0 to trust
+// local weights more (useful when local has seen much more data).
+func (e *NativeMLEngine) ImportModelState(remote *ModelState, alpha float64) {
+	if remote == nil || alpha <= 0 || alpha >= 1 {
+		return
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	fedAvgLayers(e.trafficNet.Layers, remote.TrafficLayers, alpha)
+	fedAvgLayers(e.dpiNet.Layers, remote.DPILayers, alpha)
+	fedAvgLayers(e.anomalyNet.Layers, remote.AnomalyLayers, alpha)
+	fedAvgLayers(e.transportNet.Layers, remote.TransportLayers, alpha)
+	if remote.Accuracy > 0 {
+		e.accuracy = alpha*e.accuracy + (1-alpha)*remote.Accuracy
+	}
+}
+
+// SelfTest runs a synthetic forward pass and reports NN health.
+// Returns ok=false if output contains NaN/Inf.
+// is_uniform=true means the model is likely still untrained (max-entropy output).
+func (e *NativeMLEngine) SelfTest() map[string]interface{} {
+	input := make([]float64, InputSize)
+	for i := range input {
+		input[i] = 0.5
+	}
+
+	e.mu.RLock()
+	rawOut := e.trafficNet.Forward(input)
+	trainedAt := e.lastTrained.Unix()
+	acc := e.accuracy
+	e.mu.RUnlock()
+
+	hasNaN, hasInf := false, false
+	for _, v := range rawOut {
+		if math.IsNaN(v) {
+			hasNaN = true
+		}
+		if math.IsInf(v, 0) {
+			hasInf = true
+		}
+	}
+
+	softOut := softmaxF64(rawOut)
+	entropy := 0.0
+	for _, p := range softOut {
+		if p > 1e-12 {
+			entropy -= p * math.Log(p)
+		}
+	}
+	maxEntropy := math.Log(float64(TrafficClasses))
+
+	return map[string]interface{}{
+		"ok":          !hasNaN && !hasInf,
+		"has_nan":     hasNaN,
+		"has_inf":     hasInf,
+		"traffic_raw": rawOut,
+		"traffic_p":   softOut,
+		"entropy":     entropy,
+		"max_entropy": maxEntropy,
+		"is_uniform":  entropy > 0.95*maxEntropy,
+		"accuracy":    acc,
+		"samples":     atomic.LoadInt64(&e.sampleCount),
+		"trained_at":  trainedAt,
+	}
+}
+
+func copyLayerDefs(layers []LayerDef) []LayerDef {
+	out := make([]LayerDef, len(layers))
+	for i, l := range layers {
+		out[i] = LayerDef{
+			InSize:  l.InSize,
+			OutSize: l.OutSize,
+			W:       append([]float64(nil), l.W...),
+			B:       append([]float64(nil), l.B...),
+		}
+	}
+	return out
+}
+
+func copyNorm(n *FeatureNormalizer) *FeatureNormalizer {
+	if n == nil {
+		return nil
+	}
+	return &FeatureNormalizer{
+		Mean:    append([]float64(nil), n.Mean...),
+		Std:     append([]float64(nil), n.Std...),
+		Samples: n.Samples,
+	}
+}
+
+func fedAvgLayers(local, remote []LayerDef, alpha float64) {
+	beta := 1 - alpha
+	for i := range local {
+		if i >= len(remote) {
+			break
+		}
+		r := remote[i]
+		for j := range local[i].W {
+			if j < len(r.W) {
+				local[i].W[j] = alpha*local[i].W[j] + beta*r.W[j]
+			}
+		}
+		for j := range local[i].B {
+			if j < len(r.B) {
+				local[i].B[j] = alpha*local[i].B[j] + beta*r.B[j]
+			}
+		}
+	}
+}
+
 func (e *NativeMLEngine) Close() {
 	select {
 	case <-e.stopSelfLearn:
