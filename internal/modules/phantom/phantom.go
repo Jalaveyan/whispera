@@ -201,6 +201,8 @@ type Handler struct {
 	currentSNI    string
 	sniDomains    []string
 	sniRotateStop chan struct{}
+	sniProbeStop  chan struct{}
+	sniProbed     map[string]struct{}
 
 	watcherStop chan struct{}
 
@@ -347,6 +349,7 @@ func (h *Handler) Start() error {
 	if h.config.EnableSNIRotation {
 		h.initSNIRotation()
 		go h.sniRotationLoop()
+		go h.sniProberLoop()
 		log.Printf("SNI rotation enabled (interval: %d seconds)", h.config.SNIRotationInterval)
 	}
 
@@ -369,6 +372,9 @@ func (h *Handler) Stop() error {
 	}
 	if h.sniRotateStop != nil {
 		close(h.sniRotateStop)
+	}
+	if h.sniProbeStop != nil {
+		close(h.sniProbeStop)
 	}
 
 	if h.coverTrafficStop != nil {
@@ -1167,6 +1173,11 @@ func (h *Handler) initSNIRotation() {
 	}
 
 	h.sniRotateStop = make(chan struct{})
+	h.sniProbeStop = make(chan struct{})
+	h.sniProbed = make(map[string]struct{})
+	for _, d := range h.sniDomains {
+		h.sniProbed[d] = struct{}{}
+	}
 
 	if len(h.sniDomains) > 0 {
 		h.currentSNI = h.sniDomains[0]
@@ -1277,4 +1288,127 @@ func (p *prependConn) Read(b []byte) (int, error) {
 		return n, nil
 	}
 	return p.Conn.Read(b)
+}
+
+// commonSNIPrefixes are tried against each base domain during subdomain discovery.
+var commonSNIPrefixes = []string{
+	"cdn", "static", "s", "i", "img", "api", "media", "video",
+	"stream", "m", "content", "assets", "live", "play", "web",
+	"app", "dl", "files", "upload", "www", "edge", "cache",
+}
+
+// sniProberLoop runs subdomain discovery every 6 hours.
+// First probe fires 2 minutes after start (server warm-up).
+func (h *Handler) sniProberLoop() {
+	select {
+	case <-h.sniProbeStop:
+		return
+	case <-time.After(2 * time.Minute):
+	}
+	h.probeSubdomains()
+
+	ticker := time.NewTicker(6 * time.Hour)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-h.sniProbeStop:
+			return
+		case <-ticker.C:
+			h.probeSubdomains()
+		}
+	}
+}
+
+func (h *Handler) probeSubdomains() {
+	h.sniMu.RLock()
+	var bases []string
+	seenBase := make(map[string]struct{})
+	for _, d := range h.sniDomains {
+		// Only expand two-label domains (e.g. vk.com, rutube.ru) to avoid
+		// generating cdn.api.vk.com-style nonsense.
+		if strings.Count(d, ".") == 1 {
+			if _, ok := seenBase[d]; !ok {
+				seenBase[d] = struct{}{}
+				bases = append(bases, d)
+			}
+		}
+	}
+	probed := make(map[string]struct{}, len(h.sniProbed))
+	for k := range h.sniProbed {
+		probed[k] = struct{}{}
+	}
+	h.sniMu.RUnlock()
+
+	var candidates []string
+	for _, base := range bases {
+		for _, prefix := range commonSNIPrefixes {
+			c := prefix + "." + base
+			if _, known := probed[c]; !known {
+				candidates = append(candidates, c)
+			}
+		}
+	}
+
+	if len(candidates) == 0 {
+		return
+	}
+	log.Printf("[Phantom] SNI prober: checking %d subdomain candidates", len(candidates))
+
+	sem := make(chan struct{}, 20)
+	var mu sync.Mutex
+	var found []string
+	var wg sync.WaitGroup
+
+	for _, c := range candidates {
+		select {
+		case <-h.sniProbeStop:
+			wg.Wait()
+			return
+		case sem <- struct{}{}:
+		}
+		wg.Add(1)
+		go func(domain string) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			if h.probeSNIDomain(domain) {
+				mu.Lock()
+				found = append(found, domain)
+				mu.Unlock()
+			}
+		}(c)
+	}
+	wg.Wait()
+
+	h.sniMu.Lock()
+	for _, d := range candidates {
+		h.sniProbed[d] = struct{}{}
+	}
+	for _, d := range found {
+		h.sniDomains = append(h.sniDomains, d)
+	}
+	h.sniMu.Unlock()
+
+	if len(found) > 0 {
+		log.Printf("[Phantom] SNI prober: added %d new domains: %v", len(found), found)
+	} else {
+		log.Printf("[Phantom] SNI prober: no new subdomains found")
+	}
+}
+
+// probeSNIDomain returns true if a valid TLS handshake succeeds on :443.
+func (h *Handler) probeSNIDomain(domain string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	conn, err := (&tls.Dialer{
+		NetDialer: &net.Dialer{},
+		Config: &tls.Config{
+			ServerName: domain,
+			MinVersion: tls.VersionTLS12,
+		},
+	}).DialContext(ctx, "tcp", domain+":443")
+	if err != nil {
+		return false
+	}
+	conn.Close()
+	return true
 }
