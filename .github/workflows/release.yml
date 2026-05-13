@@ -360,6 +360,22 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Wait for release assets to propagate
+        if: github.ref == 'refs/heads/main'
+        shell: bash
+        run: |
+          # GitHub release asset uploads can take a few seconds to become
+          # visible via API after the release step completes.
+          VERSION="${{ needs.prepare.outputs.version }}"
+          for i in $(seq 1 12); do
+            COUNT=$(curl -sL -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+              "https://api.github.com/repos/${{ github.repository }}/releases/tags/${VERSION}" \
+              | python3 -c "import sys,json; r=json.load(sys.stdin); print(len(r.get('assets',[])))")
+            echo "Asset count: $COUNT (attempt $i)"
+            [ "$COUNT" -ge 5 ] && break
+            sleep 10
+          done
+
       - name: Trigger Whisp Client rebuild
         if: github.ref == 'refs/heads/main'
         uses: peter-evans/repository-dispatch@v3
