@@ -21,6 +21,10 @@ const (
 	ModuleVersion = "2.0.0"
 )
 
+var copyBufPool = sync.Pool{
+	New: func() interface{} { b := make([]byte, 32*1024); return &b },
+}
+
 type Config struct {
 	ListenAddr    string
 	Debug         bool
@@ -210,13 +214,15 @@ func (m *Module) handleConnection(clientConn net.Conn, targetAddr string, target
 
 	errCh := make(chan error, 2)
 	go func() {
-		buf := make([]byte, 256*1024)
-		_, err := io.CopyBuffer(stream, clientConn, buf)
+		bp := copyBufPool.Get().(*[]byte)
+		_, err := io.CopyBuffer(stream, clientConn, *bp)
+		copyBufPool.Put(bp)
 		errCh <- err
 	}()
 	go func() {
-		buf := make([]byte, 256*1024)
-		_, err := io.CopyBuffer(clientConn, stream, buf)
+		bp := copyBufPool.Get().(*[]byte)
+		_, err := io.CopyBuffer(clientConn, stream, *bp)
+		copyBufPool.Put(bp)
 		errCh <- err
 	}()
 	<-errCh

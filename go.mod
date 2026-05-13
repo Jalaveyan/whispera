@@ -55,6 +55,7 @@ require (
 	github.com/quic-go/qpack v0.6.0 // indirect
 	github.com/stretchr/testify v1.11.1 // indirect
 	github.com/xtgo/set v1.0.0 // indirect
+	go.uber.org/automaxprocs v1.6.0 // indirect
 	go4.org/unsafe/assume-no-moving-gc v0.0.0-20231121144256-b99613f794b6 // indirect
 	golang.org/x/sync v0.17.0 // indirect
 	golang.org/x/xerrors v0.0.0-20200804184101-5ec99f83aff1 // indirect

@@ -17,6 +17,8 @@ import (
 	"syscall"
 	"time"
 
+	_ "go.uber.org/automaxprocs"
+
 	"whispera/internal/auth"
 	"whispera/internal/client/bridge"
 	"whispera/internal/core/lifecycle"

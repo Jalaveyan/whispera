@@ -18,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	_ "go.uber.org/automaxprocs"
 	"golang.org/x/crypto/curve25519"
 	"golang.org/x/net/proxy"
 
