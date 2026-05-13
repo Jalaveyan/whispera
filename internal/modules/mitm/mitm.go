@@ -29,7 +29,10 @@ var log = logger.Module("mitm")
 
 type TrafficMeta struct {
 	Host      string
+	Method    string
+	URL       string
 	UserAgent string
+	Status    int
 	IsTLS     bool
 	SNI       string
 	Timestamp time.Time
@@ -37,10 +40,14 @@ type TrafficMeta struct {
 
 type MetaHook func(meta TrafficMeta)
 
+// RequestHook is called before each forwarded request. Return false to block.
+type RequestHook func(meta TrafficMeta) bool
+
 type Config struct {
-	ListenAddr string
-	TunnelDial func(ctx context.Context, network, addr string) (net.Conn, error)
-	MetaHook   MetaHook
+	ListenAddr  string
+	TunnelDial  func(ctx context.Context, network, addr string) (net.Conn, error)
+	MetaHook    MetaHook
+	RequestHook RequestHook
 }
 
 type Proxy struct {
@@ -199,17 +206,24 @@ func (p *Proxy) handleConn(conn net.Conn) {
 	}
 
 	if req.Method == http.MethodConnect {
-		p.handleCONNECT(conn, br, req.Host)
+		p.handleCONNECT(conn, req.Host)
 		return
 	}
 
 	p.handleHTTP(conn, br, req)
 }
 
-func (p *Proxy) handleCONNECT(conn net.Conn, _ *bufio.Reader, hostport string) {
+func (p *Proxy) handleCONNECT(conn net.Conn, hostport string) {
 	conn.Write([]byte("HTTP/1.1 200 Connection established\r\n\r\n"))
 
-	host, _, _ := net.SplitHostPort(hostport)
+	host, port, err := net.SplitHostPort(hostport)
+	if err != nil {
+		host = hostport
+		port = "443"
+	}
+	if port == "" {
+		port = "443"
+	}
 
 	tlsCert, err := p.signHostCert(host)
 	if err != nil {
@@ -240,12 +254,15 @@ func (p *Proxy) handleCONNECT(conn net.Conn, _ *bufio.Reader, hostport string) {
 	defer tlsConn.Close()
 
 	sni := tlsConn.ConnectionState().ServerName
+	if sni == "" {
+		sni = host
+	}
 
 	var upstream net.Conn
 	if p.cfg.TunnelDial != nil {
 		upstream, err = p.cfg.TunnelDial(ctx, "tcp", hostport)
 	} else {
-		upstream, err = (&net.Dialer{Timeout: 15 * time.Second}).DialContext(ctx, "tcp", hostport)
+		upstream, err = (&net.Dialer{Timeout: 15 * time.Second}).DialContext(ctx, "tcp", net.JoinHostPort(host, port))
 	}
 	if err != nil {
 		log.Error("mitm upstream dial %s: %v", hostport, err)
@@ -264,52 +281,92 @@ func (p *Proxy) handleCONNECT(conn net.Conn, _ *bufio.Reader, hostport string) {
 	}
 	defer upstreamTLS.Close()
 
-	pr, pw := io.Pipe()
-	go func() {
-		defer pw.Close()
-		io.Copy(pw, tlsConn)
-	}()
-
-	meta := TrafficMeta{
-		Host:      host,
-		IsTLS:     true,
-		SNI:       sni,
-		Timestamp: time.Now(),
-	}
-
-	go p.teeAndForward(pr, upstreamTLS, &meta)
-	io.Copy(tlsConn, upstreamTLS)
-
-	if p.cfg.MetaHook != nil && meta.Host != "" {
-		p.cfg.MetaHook(meta)
-	}
+	// Parse HTTP requests inside TLS for per-request inspection/blocking.
+	p.proxyHTTPStream(tlsConn, bufio.NewReader(tlsConn), upstreamTLS, host, sni, true)
 }
 
-func (p *Proxy) teeAndForward(r io.Reader, w io.Writer, meta *TrafficMeta) {
-	buf := make([]byte, 4096)
-	first := true
+// proxyHTTPStream proxies a sequence of HTTP requests/responses between client and upstream.
+// clientConn is used for write deadlines and writing responses.
+// clientBR may contain pre-buffered bytes (e.g. first request already partially read).
+func (p *Proxy) proxyHTTPStream(clientConn net.Conn, clientBR *bufio.Reader, upstream net.Conn, host, sni string, isTLS bool) {
+	upstreamBR := bufio.NewReader(upstream)
+
 	for {
-		n, err := r.Read(buf)
-		if n > 0 {
-			if first {
-				first = false
-				ua := extractUserAgent(buf[:n])
-				if ua != "" {
-					meta.UserAgent = ua
-				}
-			}
-			w.Write(buf[:n])
-		}
+		clientConn.SetReadDeadline(time.Now().Add(90 * time.Second))
+		req, err := http.ReadRequest(clientBR)
 		if err != nil {
+			return
+		}
+		clientConn.SetReadDeadline(time.Time{})
+
+		urlStr := req.URL.String()
+		if !strings.HasPrefix(urlStr, "http") {
+			scheme := "http"
+			if isTLS {
+				scheme = "https"
+			}
+			urlStr = scheme + "://" + host + urlStr
+		}
+
+		meta := TrafficMeta{
+			Host:      host,
+			Method:    req.Method,
+			URL:       urlStr,
+			UserAgent: req.Header.Get("User-Agent"),
+			IsTLS:     isTLS,
+			SNI:       sni,
+			Timestamp: time.Now(),
+		}
+
+		if p.cfg.RequestHook != nil && !p.cfg.RequestHook(meta) {
+			req.Body.Close()
+			clientConn.Write([]byte("HTTP/1.1 403 Forbidden\r\nContent-Length: 9\r\nContent-Type: text/plain\r\n\r\nBlocked.\n"))
+			return
+		}
+
+		req.Header.Del("Proxy-Connection")
+		req.Header.Del("Proxy-Authenticate")
+		req.Header.Del("Proxy-Authorization")
+		req.RequestURI = req.URL.RequestURI()
+
+		upstream.SetWriteDeadline(time.Now().Add(30 * time.Second))
+		if err := req.Write(upstream); err != nil {
+			req.Body.Close()
+			return
+		}
+		upstream.SetWriteDeadline(time.Time{})
+		req.Body.Close()
+
+		upstream.SetReadDeadline(time.Now().Add(60 * time.Second))
+		resp, err := http.ReadResponse(upstreamBR, req)
+		if err != nil {
+			return
+		}
+		upstream.SetReadDeadline(time.Time{})
+
+		meta.Status = resp.StatusCode
+		if p.cfg.MetaHook != nil {
+			p.cfg.MetaHook(meta)
+		}
+
+		clientConn.SetWriteDeadline(time.Now().Add(60 * time.Second))
+		if err := resp.Write(clientConn); err != nil {
+			resp.Body.Close()
+			return
+		}
+		clientConn.SetWriteDeadline(time.Time{})
+		resp.Body.Close()
+
+		if req.Close || resp.Close || req.Header.Get("Connection") == "close" {
 			return
 		}
 	}
 }
 
-func (p *Proxy) handleHTTP(conn net.Conn, br *bufio.Reader, req *http.Request) {
-	host := req.Host
+func (p *Proxy) handleHTTP(conn net.Conn, br *bufio.Reader, firstReq *http.Request) {
+	host := firstReq.Host
 	if host == "" {
-		host = req.URL.Host
+		host = firstReq.URL.Host
 	}
 
 	plainHost := host
@@ -321,95 +378,50 @@ func (p *Proxy) handleHTTP(conn net.Conn, br *bufio.Reader, req *http.Request) {
 		h = plainHost
 		port = "80"
 	}
-	useHTTPS := port == "80" || port == "8080" || port == ""
-	var httpsHost string
-	if useHTTPS {
-		httpsHost = h + ":443"
-	} else {
-		httpsHost = plainHost
-	}
 
-	meta := TrafficMeta{
-		Host:      h,
-		UserAgent: req.Header.Get("User-Agent"),
-		IsTLS:     useHTTPS,
-		Timestamp: time.Now(),
-	}
+	// Port 443 → TLS; everything else (80, 8080, custom) → plain HTTP.
+	isTLS := port == "443"
+	targetHost := net.JoinHostPort(h, port)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	var rawConn net.Conn
 	if p.cfg.TunnelDial != nil {
-		rawConn, err = p.cfg.TunnelDial(ctx, "tcp", httpsHost)
+		rawConn, err = p.cfg.TunnelDial(ctx, "tcp", targetHost)
 	} else {
-		rawConn, err = (&net.Dialer{Timeout: 15 * time.Second}).DialContext(ctx, "tcp", httpsHost)
+		rawConn, err = (&net.Dialer{Timeout: 15 * time.Second}).DialContext(ctx, "tcp", targetHost)
 	}
 	if err != nil {
-		log.Error("mitm http dial %s: %v", httpsHost, err)
+		log.Error("mitm http dial %s: %v", targetHost, err)
 		return
 	}
+	defer rawConn.Close()
 
-	req.Header.Del("Proxy-Connection")
-	req.Header.Del("Proxy-Authenticate")
-	req.Header.Del("Proxy-Authorization")
-
-	if p.cfg.MetaHook != nil {
-		p.cfg.MetaHook(meta)
-	}
-
-	if useHTTPS {
+	var upstream net.Conn
+	if isTLS {
 		tlsConn := tls.Client(rawConn, &tls.Config{
 			ServerName:         h,
 			InsecureSkipVerify: false,
 		})
 		if err := tlsConn.HandshakeContext(ctx); err != nil {
 			tlsConn.Close()
-			rawConn.Close()
-			log.Error("mitm http→https tls handshake %s: %v", h, err)
+			log.Error("mitm http→https tls %s: %v", h, err)
 			return
 		}
-		defer tlsConn.Close()
-		req.URL.Scheme = "https"
-		if err := req.Write(tlsConn); err != nil {
-			return
-		}
-		done := make(chan struct{})
-		go func() {
-			defer close(done)
-			io.Copy(tlsConn, conn)
-		}()
-		io.Copy(conn, tlsConn)
-		<-done
+		upstream = tlsConn
 	} else {
-		defer rawConn.Close()
-		if err := req.Write(rawConn); err != nil {
-			return
-		}
-		done := make(chan struct{})
-		go func() {
-			defer close(done)
-			io.Copy(rawConn, conn)
-		}()
-		io.Copy(conn, rawConn)
-		<-done
+		upstream = rawConn
 	}
-}
+	defer upstream.Close()
 
-func extractUserAgent(data []byte) string {
-	idx := bytes.Index(data, []byte("User-Agent: "))
-	if idx < 0 {
-		return ""
-	}
-	rest := data[idx+12:]
-	end := bytes.IndexByte(rest, '\r')
-	if end < 0 {
-		end = bytes.IndexByte(rest, '\n')
-	}
-	if end < 0 {
-		return ""
-	}
-	return string(rest[:end])
+	// Re-serialize the first request and prepend it to the remaining buffered
+	// bytes so proxyHTTPStream processes it as part of the normal request loop.
+	var prefixBuf bytes.Buffer
+	firstReq.Write(&prefixBuf)
+	combinedBR := bufio.NewReader(io.MultiReader(&prefixBuf, br))
+
+	p.proxyHTTPStream(conn, combinedBR, upstream, h, h, isTLS)
 }
 
 func (p *Proxy) Stop() error {
