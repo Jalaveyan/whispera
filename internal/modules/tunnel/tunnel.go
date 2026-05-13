@@ -1699,8 +1699,8 @@ func (m *Manager) selectNewSNILocked() string {
 		if domain != "" {
 			m.currentSNI = domain
 			m.lastRotation = time.Now()
-			log.Info("[ROTATION EVENT] RL SNI agent selected: %s (eps=%.2f, next=%s)",
-				m.currentSNI, m.sniAgent.Epsilon(), m.getSNIRotationInterval(m.currentSNI))
+			log.Info("[ROTATION EVENT] RL SNI agent selected: %s (eps=%.2f)",
+				m.currentSNI, m.sniAgent.Epsilon())
 			return m.currentSNI
 		}
 	}
@@ -1713,7 +1713,7 @@ func (m *Manager) selectNewSNILocked() string {
 		m.currentSNI = pool[idxBig.Int64()]
 	}
 	m.lastRotation = time.Now()
-	log.Info("[ROTATION EVENT] Selected new SNI: %s (Next rotation in %s)", m.currentSNI, m.getSNIRotationInterval(m.currentSNI))
+	log.Info("[ROTATION EVENT] Selected new SNI: %s (fallback crypto/rand)", m.currentSNI)
 	return m.currentSNI
 }
 
@@ -1740,43 +1740,6 @@ func (m *Manager) getRotationSNI() string {
 	return m.selectNewSNILocked()
 }
 
-func (m *Manager) getSNIRotationInterval(sni string) time.Duration {
-	if sni == "" {
-		return m.config.RotationInterval
-	}
-
-	if strings.Contains(sni, "ozon") ||
-		strings.Contains(sni, "wildberries") ||
-		strings.Contains(sni, "avito") ||
-		strings.Contains(sni, "market") {
-		return 6 * time.Hour
-	}
-
-	if strings.Contains(sni, "yandex") ||
-		strings.Contains(sni, "ya.ru") ||
-		strings.Contains(sni, "google") ||
-		strings.Contains(sni, "mail.ru") ||
-		strings.Contains(sni, "rambler") ||
-		strings.Contains(sni, "bing") {
-		return 4 * time.Hour
-	}
-
-	if strings.Contains(sni, "rutube") ||
-		strings.Contains(sni, "vk.com") ||
-		strings.Contains(sni, "vkvideo") ||
-		strings.Contains(sni, "kion") ||
-		strings.Contains(sni, "premier") ||
-		strings.Contains(sni, "twitch") {
-		return 24 * time.Hour
-	}
-
-	if strings.Contains(sni, "vk.com") ||
-		strings.Contains(sni, "telegram") {
-		return 6 * time.Hour
-	}
-
-	return 2 * time.Hour
-}
 
 func (m *Manager) enableKillSwitch(remoteAddr net.Addr) {
 	var serverIP net.IP
@@ -1950,6 +1913,9 @@ func (m *Manager) Reconnect(ctx context.Context) error {
 		m.mlSendFeedback(usedTransport, false, dialLatency)
 		if m.sniAgent != nil {
 			m.sniAgent.RecordOutcome(false, dialLatency)
+			if m.sniAgent.ShouldRotate() {
+				go m.RotateSNI()
+			}
 		}
 		log.Warn("Reconnect attempt %d failed (transport=%s): %s", attempts, m.config.Transport, ClassifyConnError(err))
 		m.circuitBreakerFail()
@@ -2711,13 +2677,10 @@ func (m *Manager) startRotation() {
 	ctx, cancel := context.WithCancel(context.Background())
 	m.rotationCancel = cancel
 
-	initialInterval := m.getSNIRotationInterval(m.currentSNI)
-	if initialInterval < m.config.RotationInterval {
-		initialInterval = m.config.RotationInterval
-	}
-
-	log.Info("Starting SNI rotation timer (initial interval: %s)", initialInterval)
-	m.rotationTicker = time.NewTicker(initialInterval)
+	// Safety-net: если нейросеть не даёт сигнал долго, всё равно ротируем.
+	const safetyInterval = 6 * time.Hour
+	log.Info("Starting SNI rotation watchdog (safety interval: %s, RL-agent controls active rotation)", safetyInterval)
+	m.rotationTicker = time.NewTicker(safetyInterval)
 
 	go func() {
 		for {
@@ -2725,14 +2688,8 @@ func (m *Manager) startRotation() {
 			case <-ctx.Done():
 				return
 			case <-m.rotationTicker.C:
+				log.Info("SNI safety-net rotation triggered (no agent signal for %s)", safetyInterval)
 				m.RotateSNI()
-
-				newInterval := m.getSNIRotationInterval(m.currentSNI)
-				if newInterval < m.config.RotationInterval {
-					newInterval = m.config.RotationInterval
-				}
-				m.rotationTicker.Reset(newInterval)
-				log.Debug("Next rotation in %s", newInterval)
 			}
 		}
 	}()

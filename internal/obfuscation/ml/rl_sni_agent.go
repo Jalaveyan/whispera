@@ -2,6 +2,7 @@ package ml
 
 import (
 	"encoding/json"
+	"fmt"
 	"math"
 	mrand "math/rand"
 	"os"
@@ -12,6 +13,10 @@ import (
 
 	"whispera/internal/obfuscation/ml/gnet"
 )
+
+var sniLog = func(format string, args ...interface{}) {
+	fmt.Printf("[RL-SNI] "+format+"\n", args...)
+}
 
 const (
 	sniStateSize    = 7
@@ -53,6 +58,10 @@ type RLSNIAgent struct {
 	// последнее действие для RecordOutcome
 	pendingState  []float64
 	pendingAction int
+
+	// agent-driven rotation signal
+	consecutiveFails int32 // atomic
+	rotateSignal     int32 // atomic: 1 = rotate now
 }
 
 type sniPolicyState struct {
@@ -132,8 +141,10 @@ func (a *RLSNIAgent) Select(state []float64) (domain string, actionIdx int) {
 	}
 
 	var idx int
+	var mode string
 	if mrand.Float64() < a.epsilon {
 		idx = mrand.Intn(len(pool))
+		mode = "explore"
 	} else {
 		qvals := a.qNet.Forward(state)
 		best := 0
@@ -143,7 +154,11 @@ func (a *RLSNIAgent) Select(state []float64) (domain string, actionIdx int) {
 			}
 		}
 		idx = best
+		mode = fmt.Sprintf("exploit Q=%.3f", qvals[idx])
 	}
+
+	sniLog("%s → %s (eps=%.2f, pool=%d, steps=%d)",
+		mode, pool[idx], a.epsilon, len(pool), atomic.LoadInt64(&a.stepCount))
 
 	a.pendingState = state
 	a.pendingAction = idx
@@ -162,6 +177,18 @@ func (a *RLSNIAgent) RecordOutcome(success bool, latencyMs float64) {
 	}
 
 	reward := ComputeReward(success, latencyMs)
+	sniLog("outcome: success=%v reward=%.2f latency=%.0fms eps→%.3f",
+		success, reward, latencyMs, a.epsilon*sniEpsilonDecay)
+
+	if success {
+		atomic.StoreInt32(&a.consecutiveFails, 0)
+	} else {
+		fails := atomic.AddInt32(&a.consecutiveFails, 1)
+		if fails >= 3 {
+			atomic.StoreInt32(&a.rotateSignal, 1)
+			sniLog("rotate signal: %d consecutive failures — triggering rotation", fails)
+		}
+	}
 
 	a.mu.Lock()
 	a.buffer[a.bufIdx] = Experience{
@@ -194,6 +221,12 @@ func (a *RLSNIAgent) Epsilon() float64 {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	return a.epsilon
+}
+
+// ShouldRotate возвращает true и сбрасывает флаг, если агент решил что нужна ротация SNI.
+// Вызывается из tunnel.go после каждого неудачного RecordOutcome.
+func (a *RLSNIAgent) ShouldRotate() bool {
+	return atomic.CompareAndSwapInt32(&a.rotateSignal, 1, 0)
 }
 
 func (a *RLSNIAgent) trainStep() {
