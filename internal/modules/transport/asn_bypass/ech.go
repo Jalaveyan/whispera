@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	utls "github.com/refraction-networking/utls"
 )
 
 type ECHProvider struct {
@@ -305,18 +307,43 @@ func NewECHWrapper() *ECHWrapper {
 	}
 }
 
+// WrapConnection upgrades conn to a uTLS connection with ECH if the domain
+// has a published ECH config. Falls back to plain conn on any error so the
+// caller can still proceed without ECH.
 func (w *ECHWrapper) WrapConnection(ctx context.Context, conn net.Conn, domain string) (net.Conn, error) {
 	cfg, err := w.provider.GetConfig(ctx, domain)
-	if err != nil {
+	if err != nil || !cfg.Valid || cfg.ECHConfig == nil {
 		return conn, nil
 	}
 
-	if !cfg.Valid || cfg.ECHConfig == nil {
-		return conn, nil
+	publicName := cfg.PublicName
+	if publicName == "" {
+		publicName = "cloudflare-ech.com"
 	}
 
-	log.Info("ECH available for %s via %s", domain, cfg.PublicName)
-	return conn, nil
+	tlsCfg := &utls.Config{
+		// Outer SNI is the ECH public name (visible to DPI).
+		ServerName:                     publicName,
+		// ECHConfigList causes uTLS to encrypt the real ServerName in the inner ClientHello.
+		EncryptedClientHelloConfigList: cfg.ECHConfig,
+		InsecureSkipVerify:             false,
+		MinVersion:                     utls.VersionTLS13,
+	}
+
+	uconn := utls.UClient(conn, tlsCfg, utls.HelloChrome_Auto)
+	// Handshake must complete within the parent context deadline.
+	if deadline, ok := ctx.Deadline(); ok {
+		uconn.SetDeadline(deadline)
+	}
+	if err := uconn.Handshake(); err != nil {
+		uconn.Close()
+		return conn, nil // fall back to plain conn
+	}
+	uconn.SetDeadline(time.Time{})
+
+	log.Info("ECH handshake succeeded for %s via public name %s (ECHAccepted=%v)",
+		domain, publicName, uconn.ConnectionState().ECHAccepted)
+	return uconn, nil
 }
 
 func (w *ECHWrapper) IsECHAvailable(ctx context.Context, domain string) bool {
