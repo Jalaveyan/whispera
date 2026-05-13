@@ -64,7 +64,7 @@ var (
 	mlServerURL      = flag.String("ml-server", "", "ML server URL (e.g. https://127.0.0.1:8000)")
 	mlTokenFlag      = flag.String("ml-token", "", "ML API auth token")
 	controlPort      = flag.String("control-port", "10801", "Control server port (default 10801)")
-	dnsUpstream      = flag.String("dns", "", "Custom DNS upstream (e.g. 8.8.8.8:53, 1.1.1.1:53). Empty = use 1.1.1.1:53. Set to 'system' for ISP/system resolver")
+	dnsUpstream      = flag.String("dns", "", "DNS upstream: host:port for UDP (8.8.8.8:53), https://... for DoH (https://1.1.1.1/dns-query). Empty = 1.1.1.1:53. 'system' = ISP resolver")
 	enableMITM       = flag.Bool("mitm", false, "Enable local TLS inspection proxy (MITM)")
 	mitmAddr         = flag.String("mitm-addr", "127.0.0.1:10899", "MITM proxy listen address")
 	spoofIPs         = flag.String("spoof-ips", "", "Comma-separated source IPs for IP spoofing (requires multiple local IPs)")

@@ -1,10 +1,13 @@
 package dnsmodule
 
 import (
+	"bytes"
 	"context"
+	"crypto/tls"
 	"fmt"
 	"io"
 	"net"
+	"net/http"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -352,6 +355,11 @@ func (r *Resolver) resolveUpstream(ctx context.Context, domain string) ([]net.IP
 	upstream := r.config.Upstream
 	r.cacheMu.RUnlock()
 
+	// DoH upstream: https://... → use DNS-over-HTTPS (RFC 8484).
+	if strings.HasPrefix(upstream, "https://") {
+		return r.resolveDoH(ctx, upstream, domain)
+	}
+
 	// Empty or "system" upstream → use OS resolver directly.
 	if upstream == "" || strings.EqualFold(upstream, "system") {
 		addrs, err := net.DefaultResolver.LookupIPAddr(ctx, domain)
@@ -390,6 +398,58 @@ func (r *Resolver) resolveUpstream(ctx context.Context, domain string) ([]net.IP
 		},
 	}
 	return resolver.LookupIP(ctx, "ip4", domain)
+}
+
+// resolveDoH resolves a domain via DNS-over-HTTPS (RFC 8484 wire format POST).
+// If a tunnel dialFn is configured it is used as the underlying TCP dialer so
+// the DoH query travels through the tunnel; otherwise a direct HTTPS connection
+// is made (works when the ISP blocks port 53 but allows 443).
+func (r *Resolver) resolveDoH(ctx context.Context, endpoint, domain string) ([]net.IP, error) {
+	r.dialCtxMu.RLock()
+	dialFn := r.dialCtx
+	r.dialCtxMu.RUnlock()
+
+	msg := buildDNSMsg(domain)
+
+	var transport http.RoundTripper
+	if dialFn != nil {
+		transport = &http.Transport{
+			DialContext:     dialFn,
+			TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12},
+			ForceAttemptHTTP2: true,
+		}
+	} else {
+		transport = &http.Transport{
+			TLSClientConfig:   &tls.Config{MinVersion: tls.VersionTLS12},
+			ForceAttemptHTTP2: true,
+		}
+	}
+
+	client := &http.Client{Transport: transport, Timeout: 5 * time.Second}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(msg))
+	if err != nil {
+		return nil, fmt.Errorf("doh: build request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/dns-message")
+	req.Header.Set("Accept", "application/dns-message")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("doh: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("doh: server returned HTTP %d", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 65535))
+	if err != nil {
+		return nil, fmt.Errorf("doh: read body: %w", err)
+	}
+
+	return parseDNSResponse(body)
 }
 
 // resolveTCPDNS sends a DNS A-query over a TCP-like connection obtained via
