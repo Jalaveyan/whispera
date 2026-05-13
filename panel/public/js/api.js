@@ -219,34 +219,6 @@ class WhisperaAPI {
         return this.request('/api/subscriptions/update-all', { method: 'POST' });
     }
 
-    async getAdblockStats() {
-        return this.request('/api/adblock/stats');
-    }
-
-    async getAdblockRules() {
-        return this.request('/api/adblock/rules');
-    }
-
-    async addAdblockRule(rule) {
-        return this.request('/api/adblock/rules/add', {
-            method: 'POST',
-            body: JSON.stringify(rule)
-        });
-    }
-
-    async deleteAdblockRule(id) {
-        return this.request('/api/adblock/rules/delete', {
-            method: 'POST',
-            body: JSON.stringify({ id })
-        });
-    }
-
-    async updateAdblockSettings(settings) {
-        return this.request('/api/adblock/settings', {
-            method: 'POST',
-            body: JSON.stringify(settings)
-        });
-    }
 
     async getBridges() {
         return this.request('/api/bridges');

@@ -511,7 +511,6 @@
             'outbounds': -3000,
             'routing': -2500,
             'subscriptions': -2000,
-            'adblock': -1500,
             'settings': -1000,
             'logs': -500
         };
@@ -600,7 +599,6 @@ class WhisperaApp {
                 "nav.outbounds": "Исходящие",
                 "nav.routing": "Маршрутизация",
                 "nav.subscriptions": "Подписки",
-                "nav.adblock": "Блокировщик",
                 "nav.settings": "Настройки",
                 "nav.logs": "Логи",
                 "nav.logout": "Выход",
@@ -640,18 +638,11 @@ class WhisperaApp {
                 "modal.outbound.title": "Добавить сервер",
                 "modal.routing.title": "Добавить правило маршрутизации",
                 "modal.subscription.title": "Добавить подписку",
-                "modal.adblock.title": "Добавить правило блокировки",
-
                 "modal.routing.type": "Тип",
                 "modal.routing.value": "Значение (домен или IP)",
                 "modal.routing.outbound_tag": "Исходящий тег",
                 "modal.routing.option.domain": "Домен",
-                "modal.adblock.option.domain": "Домен",
-                "modal.adblock.option.keyword": "Ключевое слово",
                 "modal.routing.option.ip": "IP",
-
-                "modal.adblock.domain": "Домен",
-                "modal.adblock.type": "Тип",
 
                 "settings.title": "Настройки системы",
                 "settings.config.title": "Основные настройки",
@@ -744,14 +735,8 @@ class WhisperaApp {
                 "table.empty.subscriptions": "Нет активных подписок",
 
                 "page.bridges.title": "Мониторинг мостов",
-                "page.adblock.title": "Блокировщик рекламы",
-                "page.adblock.total": "Всего заблокировано",
-                "page.adblock.dns": "DNS",
-                "page.adblock.https": "HTTPS",
-                "page.adblock.rules": "Правила блокировки",
                 "table.header.domain": "Домен/URL",
                 "table.header.enabled": "Включено",
-                "table.empty.adblock": "Нет правил блокировки",
 
                 "page.logs.title": "Системные логи",
                 "page.logs.loading": "Загрузка логов...",
@@ -846,7 +831,6 @@ class WhisperaApp {
                 "dashboard.server.uptime": "Uptime",
                 "nav.routing": "Routing",
                 "nav.subscriptions": "Subscriptions",
-                "nav.adblock": "AdBlock",
                 "nav.settings": "Settings",
                 "nav.logs": "Logs",
                 "nav.logout": "Logout",
@@ -872,18 +856,11 @@ class WhisperaApp {
                 "modal.outbound.title": "Add Server",
                 "modal.routing.title": "Add Routing Rule",
                 "modal.subscription.title": "Add Subscription",
-                "modal.adblock.title": "Add Block Rule",
-
                 "modal.routing.type": "Type",
                 "modal.routing.value": "Value (domain or IP)",
                 "modal.routing.outbound_tag": "Outbound Tag",
                 "modal.routing.option.domain": "Domain",
-                "modal.adblock.option.domain": "Domain",
-                "modal.adblock.option.keyword": "Keyword",
                 "modal.routing.option.ip": "IP",
-
-                "modal.adblock.domain": "Domain",
-                "modal.adblock.type": "Type",
 
                 "settings.title": "System Settings",
                 "settings.config.title": "Server Configuration",
@@ -976,14 +953,8 @@ class WhisperaApp {
                 "table.empty.subscriptions": "No active subscriptions",
 
                 "page.bridges.title": "Bridge Monitor",
-                "page.adblock.title": "AdBlock",
-                "page.adblock.total": "Total Blocked",
-                "page.adblock.dns": "DNS",
-                "page.adblock.https": "HTTPS",
-                "page.adblock.rules": "Blocking Rules",
                 "table.header.domain": "Domain/URL",
                 "table.header.enabled": "Enabled",
-                "table.empty.adblock": "No blocking rules",
 
                 "page.logs.title": "System Logs",
                 "page.logs.loading": "Loading logs...",
@@ -1057,12 +1028,11 @@ class WhisperaApp {
             },
             zh: {
                 "common.login_desc":"管理面板","common.login_username":"用户名","common.login_password":"密码","common.login_btn":"登录","common.admin":"管理员","common.role_admin":"管理员",
-                "nav.dashboard":"仪表盘","nav.users":"用户","nav.sessions":"会话","nav.inbounds":"入站","nav.outbounds":"出站","nav.routing":"路由","nav.subscriptions":"订阅","nav.adblock":"广告拦截","nav.settings":"设置","nav.logs":"日志","nav.logout":"退出","nav.bridges":"网桥",
+                "nav.dashboard":"仪表盘","nav.users":"用户","nav.sessions":"会话","nav.inbounds":"入站","nav.outbounds":"出站","nav.routing":"路由","nav.subscriptions":"订阅","nav.settings":"设置","nav.logs":"日志","nav.logout":"退出","nav.bridges":"网桥",
                 "page.dashboard.title":"仪表盘","dashboard.stats.users":"用户","dashboard.stats.sessions":"活跃会话","dashboard.stats.upload":"上传","dashboard.stats.download":"下载","dashboard.stats.memory":"内存","dashboard.traffic.title":"流量 (MB/s)","dashboard.server.title":"服务器信息","dashboard.server.uptime":"运行时间",
                 "common.save":"保存","common.cancel":"取消","common.add":"添加","common.create":"创建","common.delete":"删除","common.edit":"编辑","common.refresh":"刷新","common.loading":"加载中...","common.add_rule":"添加规则",
                 "modal.user.title":"添加用户","modal.common.tag":"标签","modal.common.protocol":"协议","modal.common.port":"端口","modal.common.address":"地址","modal.common.name":"名称","modal.common.url":"URL",
-                "modal.inbound.title":"添加入站","modal.outbound.title":"添加服务器","modal.routing.title":"添加路由规则","modal.subscription.title":"添加订阅","modal.adblock.title":"添加拦截规则",
-                "modal.routing.type":"类型","modal.routing.value":"值（域名或IP）","modal.routing.outbound_tag":"出站标签","modal.routing.option.domain":"域名","modal.adblock.option.domain":"域名","modal.adblock.option.keyword":"关键词","modal.routing.option.ip":"IP","modal.adblock.domain":"域名","modal.adblock.type":"类型",
+                "modal.inbound.title":"添加入站","modal.outbound.title":"添加服务器","modal.routing.title":"添加路由规则","modal.subscription.title":"添加订阅",                "modal.routing.type":"类型","modal.routing.value":"值（域名或IP）","modal.routing.outbound_tag":"出站标签","modal.routing.option.domain":"域名","modal.routing.option.ip":"IP",
                 "settings.title":"系统设置","settings.config.title":"服务器配置","settings.config.port":"用户连接端口","settings.config.domain":"主域名 (SNI)","settings.config.email":"管理员邮箱","settings.config.reload":"重载核心",
                 "settings.security.title":"安全与SSL","settings.security.cert":"证书","settings.security.expiry":"到期时间","settings.security.renew":"手动更新证书","settings.security.firewall":"防火墙管理",
                 "settings.appearance.title":"外观","settings.appearance.language":"界面语言","settings.appearance.theme":"主题","settings.appearance.bg":"面板背景","settings.appearance.upload":"上传","settings.appearance.reset":"重置",
@@ -1080,7 +1050,7 @@ class WhisperaApp {
                 "page.subscriptions.title":"订阅","page.subscriptions.update_all":"全部更新","table.header.name":"名称","table.header.url":"URL","table.header.interval":"间隔","table.header.count":"服务器数","table.empty.subscriptions":"暂无活跃订阅",
                 "page.bridges.title":"网桥监控","bridges.btn.add":"添加网桥","bridges.stat.total":"总网桥数","bridges.stat.alive":"在线","bridges.stat.dead":"离线","bridges.stat.latency":"平均延迟","bridges.table.region":"地区","bridges.table.latency":"延迟","bridges.table.trust":"信任度","bridges.table.last_check":"最后检查",
                 "bridges.token.title":"网桥注册令牌","bridges.token.desc":"通过 install-bridge.sh 安装新网桥时传递此令牌。网桥将自动注册并出现在上方表格中。","bridges.token.new":"新令牌",
-                "page.adblock.title":"广告拦截","page.adblock.total":"总计拦截","page.adblock.dns":"DNS","page.adblock.https":"HTTPS","page.adblock.rules":"拦截规则","table.header.domain":"域名/URL","table.header.enabled":"已启用","table.empty.adblock":"暂无拦截规则",
+                "table.header.domain":"域名/URL","table.header.enabled":"已启用",
                 "settings.stealth.title":"翻墙模式","settings.stealth.strategy":"传输策略","settings.stealth.auto":"自动（最优）","settings.stealth.russia":"俄罗斯 — VK / Yandex 优先","settings.stealth.save":"保存模式",
                 "settings.probe.title":"主动探测防护","settings.probe.blocked":"已封锁IP","settings.probe.watching":"监控中","settings.probe.block_placeholder":"要封锁的IP","settings.probe.block_btn":"封锁","settings.probe.unblock_placeholder":"要解锁的IP","settings.probe.unblock_btn":"解锁",
                 "modal.bridge.title":"添加网桥","modal.bridge.address":"地址","modal.bridge.region":"地区","modal.bridge.provider":"提供商","modal.bridge.type":"类型","modal.bridge.pubkey":"公钥",
@@ -1095,12 +1065,11 @@ class WhisperaApp {
             },
             fa: {
                 "common.login_desc":"پنل مدیریت","common.login_username":"نام کاربری","common.login_password":"رمز عبور","common.login_btn":"ورود","common.admin":"مدیر","common.role_admin":"مدیر سیستم",
-                "nav.dashboard":"داشبورد","nav.users":"کاربران","nav.sessions":"جلسات","nav.inbounds":"ورودی‌ها","nav.outbounds":"خروجی‌ها","nav.routing":"مسیریابی","nav.subscriptions":"اشتراک‌ها","nav.adblock":"مسدودکننده","nav.settings":"تنظیمات","nav.logs":"لاگ‌ها","nav.logout":"خروج","nav.bridges":"پل‌ها",
+                "nav.dashboard":"داشبورد","nav.users":"کاربران","nav.sessions":"جلسات","nav.inbounds":"ورودی‌ها","nav.outbounds":"خروجی‌ها","nav.routing":"مسیریابی","nav.subscriptions":"اشتراک‌ها","nav.settings":"تنظیمات","nav.logs":"لاگ‌ها","nav.logout":"خروج","nav.bridges":"پل‌ها",
                 "page.dashboard.title":"داشبورد","dashboard.stats.users":"کاربران","dashboard.stats.sessions":"جلسات فعال","dashboard.stats.upload":"آپلود","dashboard.stats.download":"دانلود","dashboard.stats.memory":"حافظه","dashboard.traffic.title":"ترافیک (MB/s)","dashboard.server.title":"اطلاعات سرور","dashboard.server.uptime":"آپتایم",
                 "common.save":"ذخیره","common.cancel":"لغو","common.add":"افزودن","common.create":"ایجاد","common.delete":"حذف","common.edit":"ویرایش","common.refresh":"بازنشانی","common.loading":"در حال بارگذاری...","common.add_rule":"افزودن قانون",
                 "modal.user.title":"افزودن کاربر","modal.common.tag":"برچسب","modal.common.protocol":"پروتکل","modal.common.port":"پورت","modal.common.address":"آدرس","modal.common.name":"نام","modal.common.url":"URL",
-                "modal.inbound.title":"افزودن ورودی","modal.outbound.title":"افزودن سرور","modal.routing.title":"افزودن قانون مسیریابی","modal.subscription.title":"افزودن اشتراک","modal.adblock.title":"افزودن قانون مسدودسازی",
-                "modal.routing.type":"نوع","modal.routing.value":"مقدار (دامنه یا IP)","modal.routing.outbound_tag":"برچسب خروجی","modal.routing.option.domain":"دامنه","modal.adblock.option.domain":"دامنه","modal.adblock.option.keyword":"کلیدواژه","modal.routing.option.ip":"IP","modal.adblock.domain":"دامنه","modal.adblock.type":"نوع",
+                "modal.inbound.title":"افزودن ورودی","modal.outbound.title":"افزودن سرور","modal.routing.title":"افزودن قانون مسیریابی","modal.subscription.title":"افزودن اشتراک",                "modal.routing.type":"نوع","modal.routing.value":"مقدار (دامنه یا IP)","modal.routing.outbound_tag":"برچسب خروجی","modal.routing.option.domain":"دامنه","modal.routing.option.ip":"IP",
                 "settings.title":"تنظیمات سیستم","settings.config.title":"پیکربندی سرور","settings.config.port":"پورت اتصال کاربر","settings.config.domain":"دامنه اصلی (SNI)","settings.config.email":"ایمیل مدیر","settings.config.reload":"بارگذاری مجدد هسته",
                 "settings.security.title":"امنیت و SSL","settings.security.cert":"گواهی","settings.security.expiry":"انقضا","settings.security.renew":"تجدید گواهی دستی","settings.security.firewall":"مدیریت فایروال",
                 "settings.appearance.title":"ظاهر","settings.appearance.language":"زبان رابط","settings.appearance.theme":"تم","settings.appearance.bg":"پس‌زمینه پنل","settings.appearance.upload":"آپلود","settings.appearance.reset":"بازنشانی",
@@ -1118,7 +1087,7 @@ class WhisperaApp {
                 "page.subscriptions.title":"اشتراک‌ها","page.subscriptions.update_all":"به‌روزرسانی همه","table.header.name":"نام","table.header.url":"URL","table.header.interval":"بازه","table.header.count":"سرورها","table.empty.subscriptions":"اشتراک فعالی وجود ندارد",
                 "page.bridges.title":"مانیتور پل","bridges.btn.add":"افزودن پل","bridges.stat.total":"کل پل‌ها","bridges.stat.alive":"فعال","bridges.stat.dead":"غیرفعال","bridges.stat.latency":"تأخیر میانگین","bridges.table.region":"منطقه","bridges.table.latency":"تأخیر","bridges.table.trust":"اعتماد","bridges.table.last_check":"آخرین بررسی",
                 "bridges.token.title":"توکن ثبت پل","bridges.token.desc":"هنگام نصب پل جدید از طریق install-bridge.sh این توکن را ارائه دهید. پل به صورت خودکار ثبت و در جدول بالا نمایش داده می‌شود.","bridges.token.new":"توکن جدید",
-                "page.adblock.title":"مسدودکننده تبلیغات","page.adblock.total":"کل مسدود شده","page.adblock.dns":"DNS","page.adblock.https":"HTTPS","page.adblock.rules":"قوانین مسدودسازی","table.header.domain":"دامنه/URL","table.header.enabled":"فعال","table.empty.adblock":"قانون مسدودسازی یافت نشد",
+                "table.header.domain":"دامنه/URL","table.header.enabled":"فعال",
                 "settings.stealth.title":"حالت دور زدن سانسور","settings.stealth.strategy":"استراتژی انتقال","settings.stealth.auto":"خودکار (بهینه)","settings.stealth.russia":"روسیه — VK / Yandex اولویت","settings.stealth.save":"ذخیره حالت",
                 "settings.probe.title":"محافظت در برابر پروب فعال","settings.probe.blocked":"IP‌های مسدود شده","settings.probe.watching":"در حال نظارت","settings.probe.block_placeholder":"IP برای مسدود کردن","settings.probe.block_btn":"مسدود","settings.probe.unblock_placeholder":"IP برای رفع مسدودیت","settings.probe.unblock_btn":"رفع مسدودیت",
                 "modal.bridge.title":"افزودن پل","modal.bridge.address":"آدرس","modal.bridge.region":"منطقه","modal.bridge.provider":"ارائه‌دهنده","modal.bridge.type":"نوع","modal.bridge.pubkey":"کلید عمومی",
@@ -1531,19 +1500,6 @@ class WhisperaApp {
                 this.loadSubscriptions();
             } catch (error) {
                 this.showNotification('Ошибка: ' + error.message, 'error');
-            }
-        });
-
-        document.getElementById('add-adblock-rule-btn')?.addEventListener('click', () => this.showModal('add-adblock-modal'));
-        document.getElementById('add-adblock-form')?.addEventListener('submit', (e) => {
-            e.preventDefault();
-            this.handleAddAdblockRule();
-        });
-        document.getElementById('save-adblock-btn')?.addEventListener('click', async () => {
-            try {
-                this.showNotification('Настройки блокировщика сохранены', 'success');
-            } catch (e) {
-                this.showNotification('Ошибка сохранения: ' + e.message, 'error');
             }
         });
 
@@ -2107,20 +2063,6 @@ class WhisperaApp {
         }
     }
 
-    async handleAddAdblockRule() {
-        const form = document.getElementById('add-adblock-form');
-        const data = Object.fromEntries(new FormData(form));
-
-        try {
-            await api.addAdblockRule(data);
-            this.closeModals();
-            this.loadAdblock();
-            this.showNotification('Правило блокировки добавлено', 'success');
-        } catch (error) {
-            this.showNotification('Ошибка: ' + error.message, 'error');
-        }
-    }
-
 
     async _loadProbeStats() {
         try {
@@ -2247,7 +2189,6 @@ class WhisperaApp {
                 'outbounds': 'page.outbounds.title',
                 'routing': 'page.routing.title',
                 'subscriptions': 'page.subscriptions.title',
-                'adblock': 'page.adblock.title',
                 'bridges': 'page.bridges.title',
                 'bridge-map': 'nav.bridge_map',
                 'logs': 'page.logs.title',
@@ -2272,7 +2213,6 @@ class WhisperaApp {
             case 'bridge-map': this.loadBridgeMap(); break;
             case 'routing': this.loadRouting(); break;
             case 'subscriptions': this.loadSubscriptions(); break;
-            case 'adblock': this.loadAdblock(); break;
             case 'settings': this.loadSettings(); break;
             case 'logs': this.loadLogs(); break;
         }
@@ -3132,40 +3072,6 @@ class WhisperaApp {
         }
     }
 
-    async loadAdblock() {
-        const tbody = document.getElementById('adblock-table-body');
-        try {
-            const [stats, rulesData] = await Promise.all([
-                api.getAdblockStats().catch(() => ({})),
-                api.getAdblockRules().catch(() => ({ rules: [] }))
-            ]);
-
-            document.getElementById('stat-adblock-total').textContent = stats.total_blocked || 0;
-            document.getElementById('stat-adblock-dns').textContent = stats.dns_blocked || 0;
-            document.getElementById('stat-adblock-https').textContent = stats.https_blocked || 0;
-
-            const rules = rulesData.rules || [];
-            if (rules.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="4" class="text-center">Нет правил блокировки</td></tr>';
-                return;
-            }
-
-            tbody.innerHTML = rules.map(r => `
-    <tr>
-                    <td>${r.domain}</td>
-                    <td>${r.type}</td>
-                    <td><span class="status ${r.enabled ? 'active' : 'inactive'}">${r.enabled ? 'Вкл' : 'Выкл'}</span></td>
-                    <td>
-                        <button class="btn btn-danger btn-sm" onclick="app.deleteAdblockRule('${r.id}')">
-                            <i class="fas fa-trash"></i>
-                        </button>
-                    </td>
-                </tr>
-    `).join('');
-        } catch (error) {
-            tbody.innerHTML = '<tr><td colspan="4" class="text-center">Ошибка загрузки</td></tr>';
-        }
-    }
 
     async loadUsers() {
         const tbody = document.getElementById('users-table-body');
@@ -3471,16 +3377,6 @@ class WhisperaApp {
         }
     }
 
-    async deleteAdblockRule(id) {
-        if (!(await this.showConfirm('Удалить правило блокировки?'))) return;
-        try {
-            await api.deleteAdblockRule(id);
-            this.loadAdblock();
-            this.showNotification('Правило удалено', 'success');
-        } catch (error) {
-            this.showNotification('Ошибка: ' + error.message, 'error');
-        }
-    }
 
     showModal(id) {
         document.getElementById(id)?.classList.add('active');

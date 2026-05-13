@@ -85,10 +85,6 @@
                 <svg class="nav-icon" viewBox="0 0 20 20" fill="currentColor"><path d="M3.5 2.75a.75.75 0 0 0-1.5 0v14.5a.75.75 0 0 0 1.5 0v-4.392l1.657-.348a6.449 6.449 0 0 1 4.271.572 7.948 7.948 0 0 0 5.965.524l2.078-.64A.75.75 0 0 0 18 12.25v-8.5a.75.75 0 0 0-.904-.734l-2.38.501a7.25 7.25 0 0 1-4.186-.363l-.502-.2a8.75 8.75 0 0 0-5.053-.439L3.5 3.01v-.26Z"/></svg>
                 <span data-i18n="nav.subscriptions">Подписки</span>
             </li>
-            <li class="nav-item" data-page="adblock">
-                <svg class="nav-icon" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M10 1a.75.75 0 0 1 .75.75v1.5a.75.75 0 0 1-1.5 0v-1.5A.75.75 0 0 1 10 1ZM5.05 3.05a.75.75 0 0 1 1.06 0l1.062 1.06A.75.75 0 1 1 6.11 5.173L5.05 4.11a.75.75 0 0 1 0-1.06ZM14.95 3.05a.75.75 0 0 1 0 1.06l-1.06 1.062a.75.75 0 0 1-1.062-1.061l1.061-1.061a.75.75 0 0 1 1.06 0ZM3 10a.75.75 0 0 1 .75-.75h1.5a.75.75 0 0 1 0 1.5h-1.5A.75.75 0 0 1 3 10ZM14.75 9.25a.75.75 0 0 0 0 1.5h1.5a.75.75 0 0 0 0-1.5h-1.5ZM3.661 13.343a.75.75 0 0 1 1.06 0l1.062 1.061a.75.75 0 0 1-1.06 1.061l-1.062-1.06a.75.75 0 0 1 0-1.062ZM13.28 14.404a.75.75 0 1 0 1.061-1.06l-1.06-1.062a.75.75 0 0 0-1.062 1.06l1.061 1.062ZM10 15a.75.75 0 0 1 .75.75v1.5a.75.75 0 0 1-1.5 0v-1.5A.75.75 0 0 1 10 15ZM5.05 5.05A7 7 0 1 1 14.95 14.95 7 7 0 0 1 5.05 5.05Zm1.707 9.193a5.5 5.5 0 0 0 7.243-7.243L6.757 14.243Z" clip-rule="evenodd"/></svg>
-                <span data-i18n="nav.adblock">Блокировщик</span>
-            </li>
             <li class="nav-item" data-page="settings">
                 <svg class="nav-icon" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M7.84 1.804A1 1 0 0 1 8.82 1h2.36a1 1 0 0 1 .98.804l.331 1.652a6.993 6.993 0 0 1 1.929 1.115l1.598-.54a1 1 0 0 1 1.186.447l1.18 2.044a1 1 0 0 1-.205 1.251l-1.267 1.113a7.047 7.047 0 0 1 0 2.228l1.267 1.113a1 1 0 0 1 .206 1.25l-1.18 2.045a1 1 0 0 1-1.187.447l-1.598-.54a6.993 6.993 0 0 1-1.929 1.115l-.33 1.652a1 1 0 0 1-.98.804H8.82a1 1 0 0 1-.98-.804l-.331-1.652a6.993 6.993 0 0 1-1.929-1.115l-1.598.54a1 1 0 0 1-1.186-.447l-1.18-2.044a1 1 0 0 1 .205-1.251l1.267-1.114a7.05 7.05 0 0 1 0-2.227L1.821 7.773a1 1 0 0 1-.206-1.25l1.18-2.045a1 1 0 0 1 1.187-.447l1.598.54A6.993 6.993 0 0 1 7.51 3.456l.33-1.652ZM10 13a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z" clip-rule="evenodd"/></svg>
                 <span data-i18n="nav.settings">Настройки</span>
@@ -459,53 +455,6 @@
                 </div>
             </section>
 
-            <!-- AdBlock -->
-            <section id="page-adblock" class="page">
-                <div class="page-head">
-                    <h1 class="page-title" data-i18n="page.adblock.title">Блокировщик рекламы</h1>
-                    <button id="save-adblock-btn" class="btn btn-primary">
-                        <svg viewBox="0 0 20 20" fill="currentColor" width="16" height="16"><path fill-rule="evenodd" d="M16.704 4.153a.75.75 0 0 1 .143 1.052l-8 10.5a.75.75 0 0 1-1.127.075l-4.5-4.5a.75.75 0 0 1 1.06-1.06l3.894 3.893 7.48-9.817a.75.75 0 0 1 1.05-.143Z" clip-rule="evenodd"/></svg>
-                        <span data-i18n="common.save">Сохранить</span>
-                    </button>
-                </div>
-                <p class="page-hint">Счётчики увеличиваются когда трафик клиентов VPN совпадает с правилом — не при добавлении правил.</p>
-
-                <div class="stats-row" style="margin-bottom:20px">
-                    <div class="stat-card">
-                        <div class="stat-icon stat-icon-rose"><svg viewBox="0 0 20 20" fill="currentColor" width="18" height="18"><path fill-rule="evenodd" d="M10 1a.75.75 0 0 1 .75.75v1.5a.75.75 0 0 1-1.5 0v-1.5A.75.75 0 0 1 10 1ZM5.05 3.05a.75.75 0 0 1 1.06 0l1.062 1.06A.75.75 0 1 1 6.11 5.173L5.05 4.11a.75.75 0 0 1 0-1.06ZM14.95 3.05a.75.75 0 0 1 0 1.06l-1.06 1.062a.75.75 0 0 1-1.062-1.061l1.061-1.061a.75.75 0 0 1 1.06 0Z" clip-rule="evenodd"/></svg></div>
-                        <div class="stat-body"><span class="stat-value" id="stat-adblock-total">0</span><span class="stat-label" data-i18n="page.adblock.total">Всего заблокировано</span></div>
-                    </div>
-                    <div class="stat-card">
-                        <div class="stat-icon stat-icon-blue"><svg viewBox="0 0 20 20" fill="currentColor" width="18" height="18"><path fill-rule="evenodd" d="M10 2.5c-1.31 0-2.526.386-3.546 1.051a.75.75 0 0 1-.82-1.256A8 8 0 1 1 2.25 10a.75.75 0 0 1 1.5 0 6.5 6.5 0 1 0 6.25-6.5Z" clip-rule="evenodd"/></svg></div>
-                        <div class="stat-body"><span class="stat-value" id="stat-adblock-dns">0</span><span class="stat-label">DNS</span></div>
-                    </div>
-                    <div class="stat-card">
-                        <div class="stat-icon stat-icon-green"><svg viewBox="0 0 20 20" fill="currentColor" width="18" height="18"><path fill-rule="evenodd" d="M9.661 2.237a.531.531 0 0 1 .678 0 11.947 11.947 0 0 0 7.078 2.749.5.5 0 0 1 .479.425c.069.52.104 1.05.104 1.589 0 5.162-3.26 9.563-7.834 11.256a.48.48 0 0 1-.332 0C5.26 16.563 2 12.162 2 7c0-.538.035-1.069.104-1.589a.5.5 0 0 1 .48-.425 11.947 11.947 0 0 0 7.077-2.749Z" clip-rule="evenodd"/></svg></div>
-                        <div class="stat-body"><span class="stat-value" id="stat-adblock-https">0</span><span class="stat-label">HTTPS</span></div>
-                    </div>
-                </div>
-
-                <div class="card p0">
-                    <div class="card-head" style="padding:16px 20px">
-                        <span class="card-title" data-i18n="page.adblock.rules">Правила блокировки</span>
-                        <button id="add-adblock-rule-btn" class="btn btn-ghost btn-sm">
-                            <svg viewBox="0 0 20 20" fill="currentColor" width="14" height="14"><path d="M10.75 4.75a.75.75 0 0 0-1.5 0v4.5h-4.5a.75.75 0 0 0 0 1.5h4.5v4.5a.75.75 0 0 0 1.5 0v-4.5h4.5a.75.75 0 0 0 0-1.5h-4.5v-4.5Z"/></svg>
-                            <span data-i18n="common.add_rule">Добавить правило</span>
-                        </button>
-                    </div>
-                    <table class="table">
-                        <thead><tr>
-                            <th data-i18n="table.header.domain">Домен/URL</th>
-                            <th data-i18n="table.header.type">Тип</th>
-                            <th data-i18n="table.header.enabled">Включено</th>
-                            <th data-i18n="table.header.actions">Действия</th>
-                        </tr></thead>
-                        <tbody id="adblock-table-body">
-                            <tr><td colspan="4" class="table-empty"><span data-i18n="table.empty.adblock">Нет правил блокировки</span></td></tr>
-                        </tbody>
-                    </table>
-                </div>
-            </section>
 
             <!-- Settings -->
             <section id="page-settings" class="page">
@@ -560,19 +509,31 @@
                         </form>
                     </div>
 
+                    <!-- Row 3: SSL (short) | Backup (short) — оба маленькие → выровненная строка -->
                     <div class="card">
                         <div class="card-head"><span class="card-title" data-i18n="settings.security.title">Безопасность и SSL</span></div>
                         <div class="info-list">
                             <div class="info-row"><span class="info-key" data-i18n="settings.security.cert">Сертификат</span><span class="info-val" id="ssl-status">Active (Let's Encrypt)</span></div>
                             <div class="info-row"><span class="info-key" data-i18n="settings.security.expiry">Истекает</span><span class="info-val" id="ssl-expiry">—</span></div>
                         </div>
-                        <div class="btn-stack" style="margin-top:20px">
+                        <div class="btn-stack" style="margin-top:auto;padding-top:20px">
                             <button id="renew-cert-btn" class="btn btn-ghost btn-full"><span data-i18n="settings.security.renew">Обновить сертификат вручную</span></button>
                             <button id="firewall-manage-btn" class="btn btn-ghost btn-full"><span data-i18n="settings.security.firewall">Управление Firewall</span></button>
                         </div>
                     </div>
 
                     <div class="card">
+                        <div class="card-head"><span class="card-title" data-i18n="settings.backup.title">Резервное копирование</span></div>
+                        <p class="text-muted small" style="margin-bottom:16px" data-i18n="settings.backup.desc">Скачать полный дамп базы данных и конфигурации.</p>
+                        <div class="btn-stack" style="margin-top:auto">
+                            <button id="backup-download-btn" class="btn btn-ghost btn-full"><span data-i18n="settings.backup.download">Скачать Backup</span></button>
+                            <input type="file" id="backup-upload" style="display:none">
+                            <button onclick="document.getElementById('backup-upload').click()" class="btn btn-ghost btn-full"><span data-i18n="settings.backup.restore">Восстановить...</span></button>
+                        </div>
+                    </div>
+
+                    <!-- Row 4: Probe — полная ширина (сложный контент) -->
+                    <div class="card" style="grid-column:1/-1">
                         <div class="card-head">
                             <span class="card-title" data-i18n="settings.probe.title">Защита от активного зондирования</span>
                             <button id="probe-refresh-btn" class="btn btn-ghost btn-sm btn-icon-only">
@@ -585,21 +546,24 @@
                             <div class="probe-stat"><span id="probe-stat-dns" class="probe-val">—</span><span class="probe-label">DNS-knock</span></div>
                             <div class="probe-stat"><span id="probe-stat-sni" class="probe-val">—</span><span class="probe-label">SNI-ownership</span></div>
                         </div>
-                        <div class="field-group" style="margin-top:12px">
-                            <div class="input-with-btn">
-                                <input type="text" id="probe-block-ip" placeholder="IP для блокировки">
-                                <button id="probe-block-btn" class="btn btn-danger btn-sm" data-i18n="settings.probe.block_btn">Блок</button>
+                        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:4px">
+                            <div class="field-group" style="margin-bottom:0">
+                                <div class="input-with-btn">
+                                    <input type="text" id="probe-block-ip" placeholder="IP для блокировки">
+                                    <button id="probe-block-btn" class="btn btn-danger btn-sm" data-i18n="settings.probe.block_btn">Блок</button>
+                                </div>
+                            </div>
+                            <div class="field-group" style="margin-bottom:0">
+                                <div class="input-with-btn">
+                                    <input type="text" id="probe-unblock-ip" placeholder="IP для разблокировки">
+                                    <button id="probe-unblock-btn" class="btn btn-ghost btn-sm" data-i18n="settings.probe.unblock_btn">Разблок</button>
+                                </div>
                             </div>
                         </div>
-                        <div class="field-group">
-                            <div class="input-with-btn">
-                                <input type="text" id="probe-unblock-ip" placeholder="IP для разблокировки">
-                                <button id="probe-unblock-btn" class="btn btn-ghost btn-sm" data-i18n="settings.probe.unblock_btn">Разблок</button>
-                            </div>
-                        </div>
-                        <p class="text-muted small" style="margin-top:8px">После <b>5 неудачных</b> Phantom-аутентификаций IP блокируется на 30 мин.</p>
+                        <p class="text-muted small" style="margin-top:10px">После <b>5 неудачных</b> Phantom-аутентификаций IP блокируется на 30 мин.</p>
                     </div>
 
+                    <!-- Row 5: Appearance -->
                     <div class="card">
                         <div class="card-head"><span class="card-title" data-i18n="settings.appearance.title">Внешний вид</span></div>
                         <div class="field-group"><label data-i18n="settings.appearance.language">Язык</label>
@@ -631,15 +595,6 @@
                         </div>
                     </div>
 
-                    <div class="card">
-                        <div class="card-head"><span class="card-title" data-i18n="settings.backup.title">Резервное копирование</span></div>
-                        <p class="text-muted small" style="margin-bottom:16px" data-i18n="settings.backup.desc">Скачать полный дамп базы данных и конфигурации.</p>
-                        <div class="btn-stack">
-                            <button id="backup-download-btn" class="btn btn-ghost btn-full"><span data-i18n="settings.backup.download">Скачать Backup</span></button>
-                            <input type="file" id="backup-upload" style="display:none">
-                            <button onclick="document.getElementById('backup-upload').click()" class="btn btn-ghost btn-full"><span data-i18n="settings.backup.restore">Восстановить...</span></button>
-                        </div>
-                    </div>
                 </div>
             </section>
 
@@ -958,28 +913,6 @@
     </div>
 </div>
 
-<div id="add-adblock-modal" class="modal-backdrop">
-    <div class="modal">
-        <div class="modal-head">
-            <h3 class="modal-title" data-i18n="modal.adblock.title">Добавить правило блокировки</h3>
-            <button class="modal-close modal-close-icon">&times;</button>
-        </div>
-        <form id="add-adblock-form" class="modal-body">
-            <div class="field-group"><label data-i18n="modal.adblock.domain">Домен</label><input type="text" name="domain" required placeholder="ads.example.com"></div>
-            <div class="field-group">
-                <label data-i18n="modal.adblock.type">Тип</label>
-                <select name="type">
-                    <option value="domain" data-i18n="modal.adblock.option.domain">Domain</option>
-                    <option value="keyword" data-i18n="modal.adblock.option.keyword">Keyword</option>
-                </select>
-            </div>
-            <div class="modal-foot">
-                <button type="button" class="btn btn-ghost modal-close" data-i18n="common.cancel">Отмена</button>
-                <button type="submit" class="btn btn-primary" data-i18n="common.add">Добавить</button>
-            </div>
-        </form>
-    </div>
-</div>
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js" crossorigin="anonymous"></script>
 <script src="/js/api.js?v=3"></script>
