@@ -30,9 +30,19 @@ const (
 	sniEpsilonDecay = 0.990
 	sniTargetSync   = 30
 	sniTrainEvery   = 5
+
+	// Веса при комбинировании Q-сети и world model в режиме exploit.
+	// Q-сеть учится на долгосрочной ценности (Bellman),
+	// world model — на прямом наблюдении reward (MSE).
+	sniQWeight     = 0.6
+	sniWorldWeight = 0.4
 )
 
-// RLSNIAgent выбирает SNI-домены через DQN вместо crypto/rand.
+// RLSNIAgent выбирает SNI-домены через DQN + world model.
+//
+// Режим "thinking": в exploit-ветке агент прогоняет каждый домен через
+// Q-сеть И world model, комбинирует оценки, выбирает лучший вариант.
+//
 // State (7 признаков): rtt_norm, success_rate, fail_rate, dpi_flag,
 //
 //	hour_sin, hour_cos, block_risk
@@ -42,9 +52,10 @@ const (
 type RLSNIAgent struct {
 	mu sync.RWMutex
 
-	pool   []string
-	qNet   *gnet.GorgoniaNet
-	target *gnet.GorgoniaNet
+	pool     []string
+	qNet     *gnet.GorgoniaNet // Q-сеть (Bellman / долгосрочная ценность)
+	target   *gnet.GorgoniaNet // target network для стабильного обучения
+	worldNet *gnet.GorgoniaNet // world model (direct reward prediction / "thinking")
 
 	buffer  []Experience
 	bufIdx  int
@@ -65,10 +76,11 @@ type RLSNIAgent struct {
 }
 
 type sniPolicyState struct {
-	Layers  []gnet.LayerDef `json:"layers"`
-	Pool    []string        `json:"pool"`
-	Epsilon float64         `json:"epsilon"`
-	Steps   int64           `json:"steps"`
+	Layers      []gnet.LayerDef `json:"layers"`
+	WorldLayers []gnet.LayerDef `json:"world_layers,omitempty"`
+	Pool        []string        `json:"pool"`
+	Epsilon     float64         `json:"epsilon"`
+	Steps       int64           `json:"steps"`
 }
 
 func NewRLSNIAgent(modelDir string, pool []string) *RLSNIAgent {
@@ -83,12 +95,12 @@ func NewRLSNIAgent(modelDir string, pool []string) *RLSNIAgent {
 	}
 	a.qNet = gnet.New([]int{sniStateSize, sniHidden1, sniHidden2, len(pool)})
 	a.target = gnet.Clone(a.qNet)
+	a.worldNet = gnet.New([]int{sniStateSize, sniHidden1, sniHidden2, len(pool)})
 	a.load(pool)
 	return a
 }
 
-// SetPool обновляет список доменов. Вызывается когда SNI prober добавляет новые домены.
-// Если размер пула изменился — сеть пересоздаётся (веса старых действий сохраняются).
+// SetPool обновляет список доменов. Если размер пула изменился — сети пересоздаются.
 func (a *RLSNIAgent) SetPool(pool []string) {
 	if len(pool) == 0 {
 		return
@@ -99,19 +111,25 @@ func (a *RLSNIAgent) SetPool(pool []string) {
 		a.pool = pool
 		return
 	}
-	// Пул вырос — сохраняем старые веса, добавляем нули для новых действий.
-	oldLayers := a.qNet.Layers
-	newNet := gnet.New([]int{sniStateSize, sniHidden1, sniHidden2, len(pool)})
-	// Копируем веса старых слоёв (кроме выходного) как есть.
-	for i := 0; i < len(oldLayers)-1 && i < len(newNet.Layers)-1; i++ {
-		if len(oldLayers[i].W) == len(newNet.Layers[i].W) {
-			copy(newNet.Layers[i].W, oldLayers[i].W)
-			copy(newNet.Layers[i].B, oldLayers[i].B)
+	// Пул вырос — сохраняем веса скрытых слоёв, добавляем нули для новых действий.
+	oldQLayers := a.qNet.Layers
+	oldWLayers := a.worldNet.Layers
+	newQ := gnet.New([]int{sniStateSize, sniHidden1, sniHidden2, len(pool)})
+	newW := gnet.New([]int{sniStateSize, sniHidden1, sniHidden2, len(pool)})
+	for i := 0; i < len(oldQLayers)-1 && i < len(newQ.Layers)-1; i++ {
+		if len(oldQLayers[i].W) == len(newQ.Layers[i].W) {
+			copy(newQ.Layers[i].W, oldQLayers[i].W)
+			copy(newQ.Layers[i].B, oldQLayers[i].B)
+		}
+		if len(oldWLayers[i].W) == len(newW.Layers[i].W) {
+			copy(newW.Layers[i].W, oldWLayers[i].W)
+			copy(newW.Layers[i].B, oldWLayers[i].B)
 		}
 	}
 	a.pool = pool
-	a.qNet = newNet
-	a.target = gnet.Clone(newNet)
+	a.qNet = newQ
+	a.target = gnet.Clone(newQ)
+	a.worldNet = newW
 }
 
 // EncodeState строит вектор состояния из доступных метрик.
@@ -130,7 +148,11 @@ func (a *RLSNIAgent) EncodeState(rttMs float64, successRate, failRate float64, d
 	return s
 }
 
-// Select выбирает SNI-домен (epsilon-greedy). Запоминает выбор для RecordOutcome.
+// Select выбирает SNI-домен.
+//
+// Explore (epsilon-greedy): случайный домен для исследования.
+// Exploit (thinking): агент прогоняет все домены через Q-сеть и world model,
+// комбинирует оценки (Q*0.6 + world*0.4) и выбирает домен с максимальным score.
 func (a *RLSNIAgent) Select(state []float64) (domain string, actionIdx int) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -147,14 +169,20 @@ func (a *RLSNIAgent) Select(state []float64) (domain string, actionIdx int) {
 		mode = "explore"
 	} else {
 		qvals := a.qNet.Forward(state)
+		wvals := a.worldNet.Forward(state)
+
 		best := 0
 		for i := 1; i < len(qvals) && i < len(pool); i++ {
-			if qvals[i] > qvals[best] {
+			scoreI := sniQWeight*qvals[i] + sniWorldWeight*wvals[i]
+			scoreBest := sniQWeight*qvals[best] + sniWorldWeight*wvals[best]
+			if scoreI > scoreBest {
 				best = i
 			}
 		}
 		idx = best
-		mode = fmt.Sprintf("exploit Q=%.3f", qvals[idx])
+		mode = fmt.Sprintf("think Q=%.3f W=%.3f score=%.3f",
+			qvals[idx], wvals[idx],
+			sniQWeight*qvals[idx]+sniWorldWeight*wvals[idx])
 	}
 
 	sniLog("%s → %s (eps=%.2f, pool=%d, steps=%d)",
@@ -224,7 +252,6 @@ func (a *RLSNIAgent) Epsilon() float64 {
 }
 
 // ShouldRotate возвращает true и сбрасывает флаг, если агент решил что нужна ротация SNI.
-// Вызывается из tunnel.go после каждого неудачного RecordOutcome.
 func (a *RLSNIAgent) ShouldRotate() bool {
 	return atomic.CompareAndSwapInt32(&a.rotateSignal, 1, 0)
 }
@@ -250,11 +277,14 @@ func (a *RLSNIAgent) trainStep() {
 
 	const lr = 0.001
 	for _, exp := range batch {
-		if exp.Action >= len(a.qNet.Layers[len(a.qNet.Layers)-1].B) {
+		outSize := len(a.qNet.Layers[len(a.qNet.Layers)-1].B)
+		if exp.Action >= outSize {
 			continue
 		}
-		layerOut := a.fullForward(exp.State)
-		qvals := layerOut[len(layerOut)-1]
+
+		// --- Q-сеть: Bellman update ---
+		qOut := a.netForward(a.qNet, exp.State)
+		qvals := qOut[len(qOut)-1]
 
 		var targetQ float64
 		if exp.Done {
@@ -270,9 +300,21 @@ func (a *RLSNIAgent) trainStep() {
 			targetQ = exp.Reward + sniGamma*maxQ
 		}
 
-		dOut := make([]float64, len(qvals))
-		dOut[exp.Action] = -(targetQ - qvals[exp.Action])
-		a.fullBackprop(layerOut, dOut, lr)
+		dQ := make([]float64, len(qvals))
+		dQ[exp.Action] = -(targetQ - qvals[exp.Action])
+		a.netBackprop(a.qNet, qOut, dQ, lr)
+
+		// --- World model: прямой MSE на наблюдаемый reward ---
+		wOutSize := len(a.worldNet.Layers[len(a.worldNet.Layers)-1].B)
+		if exp.Action >= wOutSize {
+			continue
+		}
+		wOut := a.netForward(a.worldNet, exp.State)
+		wvals := wOut[len(wOut)-1]
+
+		dW := make([]float64, len(wvals))
+		dW[exp.Action] = wvals[exp.Action] - exp.Reward // MSE gradient
+		a.netBackprop(a.worldNet, wOut, dW, lr)
 	}
 
 	cnt := atomic.AddInt64(&a.trainCount, 1)
@@ -281,19 +323,20 @@ func (a *RLSNIAgent) trainStep() {
 	}
 }
 
-func (a *RLSNIAgent) fullForward(input []float64) [][]float64 {
-	acts := make([][]float64, len(a.qNet.Layers)+1)
+// netForward — универсальный forward pass для любой сети (ReLU на скрытых, linear на выходе).
+func (a *RLSNIAgent) netForward(net *gnet.GorgoniaNet, input []float64) [][]float64 {
+	acts := make([][]float64, len(net.Layers)+1)
 	acts[0] = input
 	cur := input
-	for i, ld := range a.qNet.Layers {
+	for i, ld := range net.Layers {
 		out := make([]float64, ld.OutSize)
 		for j := 0; j < ld.OutSize; j++ {
 			sum := ld.B[j]
 			for k := 0; k < ld.InSize && k < len(cur); k++ {
 				sum += cur[k] * ld.W[k*ld.OutSize+j]
 			}
-			if i < len(a.qNet.Layers)-1 && sum < 0 {
-				sum = 0
+			if i < len(net.Layers)-1 && sum < 0 {
+				sum = 0 // ReLU
 			}
 			out[j] = sum
 		}
@@ -303,16 +346,17 @@ func (a *RLSNIAgent) fullForward(input []float64) [][]float64 {
 	return acts
 }
 
-func (a *RLSNIAgent) fullBackprop(acts [][]float64, dOut []float64, lr float64) {
+// netBackprop — универсальный backprop для любой сети.
+func (a *RLSNIAgent) netBackprop(net *gnet.GorgoniaNet, acts [][]float64, dOut []float64, lr float64) {
 	delta := dOut
-	for i := len(a.qNet.Layers) - 1; i >= 0; i-- {
-		ld := &a.qNet.Layers[i]
+	for i := len(net.Layers) - 1; i >= 0; i-- {
+		ld := &net.Layers[i]
 		input := acts[i]
 		output := acts[i+1]
-		if i < len(a.qNet.Layers)-1 {
+		if i < len(net.Layers)-1 {
 			for j := range delta {
 				if output[j] <= 0 {
-					delta[j] = 0
+					delta[j] = 0 // ReLU mask
 				}
 			}
 		}
@@ -337,6 +381,15 @@ func (a *RLSNIAgent) fullBackprop(acts [][]float64, dOut []float64, lr float64) 
 	}
 }
 
+// fullForward / fullBackprop оставлены как алиасы для обратной совместимости.
+func (a *RLSNIAgent) fullForward(input []float64) [][]float64 {
+	return a.netForward(a.qNet, input)
+}
+
+func (a *RLSNIAgent) fullBackprop(acts [][]float64, dOut []float64, lr float64) {
+	a.netBackprop(a.qNet, acts, dOut, lr)
+}
+
 func (a *RLSNIAgent) load(pool []string) {
 	if a.modelDir == "" {
 		return
@@ -349,16 +402,19 @@ func (a *RLSNIAgent) load(pool []string) {
 	if json.Unmarshal(data, &st) != nil || len(st.Layers) == 0 {
 		return
 	}
-	// Принимаем только если размер выхода совпадает с пулом.
 	if st.Layers[len(st.Layers)-1].OutSize != len(pool) {
 		return
 	}
 	a.mu.Lock()
 	a.qNet = &gnet.GorgoniaNet{Layers: st.Layers}
 	a.target = gnet.Clone(a.qNet)
+	if len(st.WorldLayers) > 0 && st.WorldLayers[len(st.WorldLayers)-1].OutSize == len(pool) {
+		a.worldNet = &gnet.GorgoniaNet{Layers: st.WorldLayers}
+	}
 	a.epsilon = st.Epsilon
 	atomic.StoreInt64(&a.stepCount, st.Steps)
 	a.mu.Unlock()
+	sniLog("loaded policy (steps=%d eps=%.3f world=%v)", st.Steps, st.Epsilon, len(st.WorldLayers) > 0)
 }
 
 func (a *RLSNIAgent) saveLocked() {
@@ -366,10 +422,11 @@ func (a *RLSNIAgent) saveLocked() {
 		return
 	}
 	st := sniPolicyState{
-		Layers:  a.qNet.Layers,
-		Pool:    a.pool,
-		Epsilon: a.epsilon,
-		Steps:   atomic.LoadInt64(&a.stepCount),
+		Layers:      a.qNet.Layers,
+		WorldLayers: a.worldNet.Layers,
+		Pool:        a.pool,
+		Epsilon:     a.epsilon,
+		Steps:       atomic.LoadInt64(&a.stepCount),
 	}
 	data, err := json.Marshal(st)
 	if err != nil {
