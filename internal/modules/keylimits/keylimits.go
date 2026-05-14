@@ -225,19 +225,37 @@ func (m *Manager) EvictOldest(n int) {
 		n = len(all)
 	}
 
+	// Remove sessions from the admission map immediately so that a retry Admit
+	// after EvictOldest sees the freed slots without waiting for goroutines to
+	// call Release (which happens asynchronously after conn.Close unblocks them).
+	m.mu.Lock()
+	for i := 0; i < n; i++ {
+		e := all[i]
+		if km, ok := m.sessions[e.keyID]; ok {
+			delete(km, e.sessionID)
+			if len(km) == 0 {
+				delete(m.sessions, e.keyID)
+			}
+		}
+		log.Printf("[keylimits] evicting session %s/%s (age %s)",
+			e.keyID, e.sessionID, time.Since(e.startedAt).Round(time.Second))
+	}
+	m.mu.Unlock()
+
+	// Collect and call closers to terminate the underlying TCP connections.
 	m.closersMu.Lock()
 	toClose := make([]func(), 0, n)
 	for i := 0; i < n; i++ {
 		e := all[i]
 		if km, ok := m.closers[e.keyID]; ok {
-			if fn, ok := km[e.keyID+"/"+e.sessionID]; ok {
+			if fn, ok := km[e.sessionID]; ok {
 				toClose = append(toClose, fn)
-			} else if fn, ok := km[e.sessionID]; ok {
-				toClose = append(toClose, fn)
+				delete(km, e.sessionID)
+			}
+			if len(km) == 0 {
+				delete(m.closers, e.keyID)
 			}
 		}
-		log.Printf("[keylimits] evicting session %s/%s (age %s)",
-			e.keyID, e.sessionID, time.Since(e.startedAt).Round(time.Second))
 	}
 	m.closersMu.Unlock()
 
