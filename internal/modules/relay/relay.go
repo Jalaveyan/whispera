@@ -63,6 +63,20 @@ func (c *Config) Validate() error {
 	return nil
 }
 
+var tcpCopyBufPool = sync.Pool{
+	New: func() any {
+		buf := make([]byte, 512*1024)
+		return &buf
+	},
+}
+
+var udpCopyBufPool = sync.Pool{
+	New: func() any {
+		buf := make([]byte, 2+65535)
+		return &buf
+	},
+}
+
 type Server struct {
 	*base.Module
 	config           *Config
@@ -475,30 +489,35 @@ func (s *Server) handleProxyStream(stream net.Conn) {
 
 	if network == "udp" {
 		go func() {
-			hdr := make([]byte, 2)
-			buf := make([]byte, 65535)
+			bufp := udpCopyBufPool.Get().(*[]byte)
+			defer udpCopyBufPool.Put(bufp)
+			buf := *bufp
+			hdr := buf[:2]
+			data := buf[2:]
 			for {
 				if _, err := io.ReadFull(stream, hdr); err != nil {
 					errCh <- err
 					return
 				}
 				sz := int(binary.BigEndian.Uint16(hdr))
-				if sz == 0 || sz > len(buf) {
+				if sz == 0 || sz > len(data) {
 					errCh <- fmt.Errorf("invalid UDP frame size %d", sz)
 					return
 				}
-				if _, err := io.ReadFull(stream, buf[:sz]); err != nil {
+				if _, err := io.ReadFull(stream, data[:sz]); err != nil {
 					errCh <- err
 					return
 				}
-				if _, err := target.Write(buf[:sz]); err != nil {
+				if _, err := target.Write(data[:sz]); err != nil {
 					errCh <- err
 					return
 				}
 			}
 		}()
 		go func() {
-			buf := make([]byte, 2+65535)
+			bufp := udpCopyBufPool.Get().(*[]byte)
+			defer udpCopyBufPool.Put(bufp)
+			buf := *bufp
 			for {
 				n, err := target.Read(buf[2:])
 				if err != nil {
@@ -514,16 +533,18 @@ func (s *Server) handleProxyStream(stream net.Conn) {
 		}()
 	} else {
 		go func() {
-			buf := make([]byte, 512*1024)
-			_, err := io.CopyBuffer(target, stream, buf)
+			bufp := tcpCopyBufPool.Get().(*[]byte)
+			defer tcpCopyBufPool.Put(bufp)
+			_, err := io.CopyBuffer(target, stream, *bufp)
 			if tc, ok := target.(*net.TCPConn); ok {
 				tc.CloseWrite()
 			}
 			errCh <- err
 		}()
 		go func() {
-			buf := make([]byte, 512*1024)
-			_, err := io.CopyBuffer(stream, target, buf)
+			bufp := tcpCopyBufPool.Get().(*[]byte)
+			defer tcpCopyBufPool.Put(bufp)
+			_, err := io.CopyBuffer(stream, target, *bufp)
 			if tc, ok := stream.(*net.TCPConn); ok {
 				tc.CloseWrite()
 			}
