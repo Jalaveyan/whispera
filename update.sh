@@ -998,28 +998,40 @@ do_update() {
     local ARCH="amd64"
     [[ $(uname -m) == "aarch64" ]] && ARCH="arm64"
     
-    log_info "Checking for latest release on GitHub..."
-    local RELEASE_JSON=$(curl -s https://api.github.com/repos/Jalaveyan/Whispera/releases/latest)
-    local DOWNLOAD_URL=$(echo "$RELEASE_JSON" | grep "browser_download_url" | grep "whispera-server-linux-$ARCH.tar.gz" | head -n 1 | cut -d '"' -f 4)
+    log_info "Downloading latest release from GitHub..."
+    local DIRECT_URL="https://github.com/Jalaveyan/Whispera/releases/latest/download/whispera-server-linux-${ARCH}.tar.gz"
 
     local BIN_FOUND=false
-    
-    if [[ -n "$DOWNLOAD_URL" ]]; then
-        log_info "Downloading update from $DOWNLOAD_URL..."
-        if curl -L -o whispera-server.tar.gz "$DOWNLOAD_URL"; then
-            if tar -xzf whispera-server.tar.gz; then
-                rm -f whispera-server.tar.gz
-                if [[ -f "whispera-server" ]]; then
-                   BIN_FOUND=true
-                   log_success "Update downloaded successfully"
+
+    if curl -fL --retry 3 --retry-delay 2 -o whispera-server.tar.gz "$DIRECT_URL" 2>/dev/null; then
+        if tar -xzf whispera-server.tar.gz 2>/dev/null; then
+            rm -f whispera-server.tar.gz
+            if [[ -f "whispera-server" ]]; then
+                BIN_FOUND=true
+                log_success "Update downloaded successfully"
+            fi
+        fi
+    fi
+
+    if [[ "$BIN_FOUND" != "true" ]]; then
+        log_warn "Direct download failed, trying GitHub API..."
+        local RELEASE_JSON
+        RELEASE_JSON=$(curl -s https://api.github.com/repos/Jalaveyan/Whispera/releases/latest)
+        local DOWNLOAD_URL
+        DOWNLOAD_URL=$(echo "$RELEASE_JSON" | grep "browser_download_url" | grep "whispera-server-linux-$ARCH.tar.gz" | head -n 1 | cut -d '"' -f 4)
+        if [[ -n "$DOWNLOAD_URL" ]]; then
+            if curl -fL --retry 3 -o whispera-server.tar.gz "$DOWNLOAD_URL" 2>/dev/null; then
+                if tar -xzf whispera-server.tar.gz 2>/dev/null; then
+                    rm -f whispera-server.tar.gz
+                    [[ -f "whispera-server" ]] && BIN_FOUND=true && log_success "Update downloaded via API"
                 fi
             fi
         fi
     fi
-    
+
     if [[ "$BIN_FOUND" != "true" ]]; then
         log_info "Release download failed, building from source..."
-        
+
         if [[ -d "$WORK_DIR/.git" ]]; then
             log_info "Pulling from GitHub..."
             cd "$WORK_DIR"
@@ -1027,8 +1039,8 @@ do_update() {
             git fetch origin $BRANCH --quiet
             git reset --hard origin/$BRANCH --quiet
         fi
-        
-        go build -trimpath -ldflags "-w -s" -o whispera-server ./cmd/server
+
+        go build -trimpath -ldflags "-w -s" -o whispera-server ./cmd/server || true
     fi
     
     if [[ ! -f "whispera-server" ]]; then
