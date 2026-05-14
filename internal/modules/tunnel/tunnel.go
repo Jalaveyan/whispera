@@ -2041,7 +2041,9 @@ func (m *Manager) Reconnect(ctx context.Context) error {
 				detector := m.tspuDetector
 				go func() {
 					tcpStart := time.Now()
-					c, tcpErr := net.DialTimeout("tcp", addr, 2*time.Second)
+					probeCtx, probeCancel := context.WithTimeout(context.Background(), 2*time.Second)
+					defer probeCancel()
+					c, tcpErr := (&net.Dialer{}).DialContext(probeCtx, "tcp", addr)
 					tcpDur := time.Since(tcpStart)
 					if tcpErr == nil {
 						c.Close()
