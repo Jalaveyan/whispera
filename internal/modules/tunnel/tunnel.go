@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"math/big"
 	mrand "math/rand"
 	"net"
@@ -390,6 +391,8 @@ type Manager struct {
 	currentSNI    string
 	lastRotation  time.Time
 	sniAgent      *mlpkg.RLSNIAgent
+	connAgent     *mlpkg.RLConnAgent
+	connAgentStop chan struct{}
 
 	russianTunneler *russian.RussianTunneler
 
@@ -572,6 +575,9 @@ func New(cfg *Config) (*Manager, error) {
 	m.sniAgent = mlpkg.NewRLSNIAgent(cfg.SNIModelDir, sniPool)
 	log.Info("RL SNI agent initialized (pool=%d, eps=%.2f)", len(sniPool), m.sniAgent.Epsilon())
 
+	m.connAgent = mlpkg.NewRLConnAgent()
+	log.Info("RL Conn agent initialized")
+
 	if cfg.CustomSNI != "" {
 		if cfg.TransportConfig == nil {
 			cfg.TransportConfig = make(map[string]interface{})
@@ -747,7 +753,7 @@ func (m *Manager) connectInternal(ctx context.Context, isRotation bool) error {
 	log.Info("[%s] Spawning pool of %d connections (lazy mode)...", op, targetPoolSize)
 
 	spawnConnection := func(idx int) {
-		conn, err := m.dial(ctx)
+		mc, err := m.dialManagedConn(ctx, fmt.Sprintf("pool-%d-%d", start.Unix(), idx))
 		if err != nil {
 			log.Warn("[%s] Failed to dial connection %d: %v", op, idx, err)
 			select {
@@ -757,75 +763,11 @@ func (m *Manager) connectInternal(ctx context.Context, isRotation bool) error {
 			return
 		}
 
-		conn = evasion.NewDesyncConn(conn, m.config.DesyncConfig)
-
-		if m.handshake != nil && !m.config.EnablePhantom {
-			session, err := m.handshake.InitiateHandshake(ctx, conn, conn.RemoteAddr())
-			if err != nil {
-				log.Warn("[%s] Handshake failed for conn %d: %v", op, idx, err)
-				conn.Close()
-				select {
-				case firstConnErr <- err:
-				default:
-				}
-				return
-			}
-			if session != nil {
-				poolMu.Lock()
-				if len(connectedPool) == 0 {
-					m.sessionID = session.ID()
-				}
-				poolMu.Unlock()
-			}
-		} else if m.config.EnablePhantom {
-			poolMu.Lock()
-			if len(connectedPool) == 0 {
-				m.sessionID = uint32(time.Now().Unix() & 0xFFFFFFFF)
-			}
-			poolMu.Unlock()
-		}
-
-		log.Debug("[%s] Upgrading connection %d to SMUX...", op, idx)
-
-		paddedConn := mux.NewPaddedConn(conn, 128)
-
-		muxCfg := m.getMuxConfig()
-		muxSess, err := mux.Client(paddedConn, muxCfg)
-		if err != nil {
-			log.Warn("[%s] Failed to create SMUX session for conn %d: %v", op, idx, err)
-			conn.Close()
-			select {
-			case firstConnErr <- err:
-			default:
-			}
-			return
-		}
-
-		stream, err := muxSess.OpenStream()
-		if err != nil {
-			log.Warn("[%s] Failed to open SMUX stream for conn %d: %v", op, idx, err)
-			muxSess.Close()
-			select {
-			case firstConnErr <- err:
-			default:
-			}
-			return
-		}
-
-		var controlStream net.Conn = stream
-		if m.config.EnablePhantom {
-			controlStream = transport.WrapStreamTLS(stream)
-		}
-		mc := &managedConn{
-			Conn:      controlStream,
-			session:   muxSess,
-			id:        fmt.Sprintf("pool-%d-%d", start.Unix(), idx),
-			createdAt: time.Now(),
-			closing:   make(chan struct{}),
-		}
-
 		poolMu.Lock()
 		isFirst := len(connectedPool) == 0
+		if isFirst && m.handshake != nil {
+			// sessionID уже установлен внутри dialManagedConn при handshake
+		}
 		connectedPool = append(connectedPool, mc)
 		poolMu.Unlock()
 
@@ -906,6 +848,7 @@ func (m *Manager) connectInternal(ctx context.Context, isRotation bool) error {
 		m.startKeepalive()
 		m.startRotation()
 		m.startRekey()
+		m.startConnAgent()
 		m.connectedAt = time.Now()
 		m.lastPong = time.Now()
 		m.setState(StateConnected)
@@ -960,6 +903,56 @@ func (m *Manager) spoofDialer() *net.Dialer {
 		Timeout:   10 * time.Second,
 		Resolver:  dohDialer().Resolver,
 	}
+}
+
+// dialManagedConn набирает одно полностью готовое соединение (dial → desync → handshake → mux)
+// и возвращает готовый *managedConn. Используется как в connectInternal, так и в openPoolConn.
+func (m *Manager) dialManagedConn(ctx context.Context, id string) (*managedConn, error) {
+	conn, err := m.dial(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	conn = evasion.NewDesyncConn(conn, m.config.DesyncConfig)
+
+	if m.handshake != nil && !m.config.EnablePhantom {
+		sess, err := m.handshake.InitiateHandshake(ctx, conn, conn.RemoteAddr())
+		if err != nil {
+			conn.Close()
+			return nil, fmt.Errorf("handshake: %w", err)
+		}
+		if sess != nil {
+			atomic.StoreUint32(&m.sessionID, sess.ID())
+		}
+	} else if m.config.EnablePhantom {
+		atomic.StoreUint32(&m.sessionID, uint32(time.Now().Unix()&0xFFFFFFFF))
+	}
+
+	paddedConn := mux.NewPaddedConn(conn, 128)
+	muxSess, err := mux.Client(paddedConn, m.getMuxConfig())
+	if err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("mux: %w", err)
+	}
+
+	stream, err := muxSess.OpenStream()
+	if err != nil {
+		muxSess.Close()
+		return nil, fmt.Errorf("open stream: %w", err)
+	}
+
+	var controlStream net.Conn = stream
+	if m.config.EnablePhantom {
+		controlStream = transport.WrapStreamTLS(stream)
+	}
+
+	return &managedConn{
+		Conn:      controlStream,
+		session:   muxSess,
+		id:        id,
+		createdAt: time.Now(),
+		closing:   make(chan struct{}),
+	}, nil
 }
 
 func (m *Manager) dial(ctx context.Context) (net.Conn, error) {
@@ -1769,6 +1762,7 @@ func (m *Manager) enableKillSwitch(remoteAddr net.Addr) {
 func (m *Manager) Disconnect() {
 	m.stopKeepalive()
 	m.stopRotation()
+	m.stopConnAgent()
 
 	m.connMu.Lock()
 
@@ -2702,6 +2696,162 @@ func (m *Manager) stopRotation() {
 	if m.rotationTicker != nil {
 		m.rotationTicker.Stop()
 	}
+}
+
+// startConnAgent запускает цикл управления пулом соединений через RL-агента.
+// Тикает каждые 15 секунд. Останавливается через stopConnAgent или когда
+// пользователь явно вызвал Disconnect() (activePool == nil).
+func (m *Manager) startConnAgent() {
+	m.stopConnAgent()
+	if m.connAgent == nil {
+		return
+	}
+	stop := make(chan struct{})
+	m.connAgentStop = stop
+	go func() {
+		ticker := time.NewTicker(15 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-ticker.C:
+				m.connAgentTick()
+			}
+		}
+	}()
+}
+
+func (m *Manager) stopConnAgent() {
+	if m.connAgentStop != nil {
+		select {
+		case <-m.connAgentStop:
+		default:
+			close(m.connAgentStop)
+		}
+		m.connAgentStop = nil
+	}
+}
+
+func (m *Manager) connAgentTick() {
+	// Агент работает только пока пользователь подключён.
+	// Если Disconnect() был вызван явно — activePool == nil, не вмешиваемся.
+	if !m.IsConnected() {
+		return
+	}
+
+	m.connMu.RLock()
+	poolSize := len(m.activePool)
+	m.connMu.RUnlock()
+
+	if poolSize == 0 {
+		// Пользователь явно закрыл все соединения — агент не открывает новые.
+		return
+	}
+
+	rttNs := atomic.LoadInt64(&m.qualityRTTEWMA)
+	rttMs := float64(rttNs) / 1e6
+	missedKAs := int(atomic.LoadInt32(&m.missedKAs))
+
+	m.cbMu.Lock()
+	cbFail := m.cbFailures
+	m.cbMu.Unlock()
+
+	errorRate := 0.0
+	if cbFail > 0 {
+		errorRate = math.Min(float64(cbFail)/10.0, 1.0)
+	}
+
+	view := mlpkg.ConnPoolView{
+		Size:       poolSize,
+		RTTMs:      rttMs,
+		ErrorRate:  errorRate,
+		MissedKAs:  missedKAs,
+		CBFailures: cbFail,
+	}
+
+	action := m.connAgent.Decide(view)
+
+	switch action {
+	case mlpkg.ConnActionOpen:
+		log.Info("[CONN-AGENT] OPEN: adding connection to pool (current=%d)", poolSize)
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), m.config.ConnectionTimeout)
+			defer cancel()
+			if err := m.openPoolConn(ctx); err != nil {
+				log.Warn("[CONN-AGENT] OPEN failed: %v", err)
+				m.connAgent.RecordOutcome(0.0)
+			} else {
+				quality := m.connQuality()
+				m.connAgent.RecordOutcome(quality)
+			}
+		}()
+
+	case mlpkg.ConnActionCloseWorst:
+		log.Info("[CONN-AGENT] CLOSE_WORST: removing connection from pool (current=%d)", poolSize)
+		closed := m.closeWorstPoolConn()
+		if closed {
+			m.connAgent.RecordOutcome(m.connQuality())
+		} else {
+			m.connAgent.RecordOutcome(m.connQuality())
+		}
+
+	default: // ConnActionKeep
+		m.connAgent.RecordOutcome(m.connQuality())
+	}
+}
+
+// connQuality возвращает текущее качество пула (0-1) для reward агента.
+func (m *Manager) connQuality() float64 {
+	rttNs := atomic.LoadInt64(&m.qualityRTTEWMA)
+	rttMs := float64(rttNs) / 1e6
+	rttScore := 1.0 - math.Min(rttMs/500.0, 1.0)
+
+	missed := float64(atomic.LoadInt32(&m.missedKAs))
+	kaScore := 1.0 - math.Min(missed/5.0, 1.0)
+
+	return (rttScore + kaScore) / 2.0
+}
+
+// openPoolConn устанавливает одно дополнительное соединение и добавляет его в activePool.
+func (m *Manager) openPoolConn(ctx context.Context) error {
+	id := fmt.Sprintf("agent-%d", time.Now().UnixNano())
+	mc, err := m.dialManagedConn(ctx, id)
+	if err != nil {
+		return err
+	}
+	safeGo("readLoop", func() { m.readLoop(mc) })
+	m.connMu.Lock()
+	m.activePool = append(m.activePool, mc)
+	m.connMu.Unlock()
+	log.Info("[CONN-AGENT] Pool expanded to %d connections", len(m.activePool))
+	return nil
+}
+
+// closeWorstPoolConn закрывает самое старое соединение в пуле.
+// Возвращает false если pool.Size <= 1 (constraint: ≥1 соединение).
+func (m *Manager) closeWorstPoolConn() bool {
+	m.connMu.Lock()
+	defer m.connMu.Unlock()
+
+	if len(m.activePool) <= 1 {
+		return false
+	}
+
+	// Worst = самое старое (наибольший возраст → индекс 0 т.к. slice упорядочен по времени добавления).
+	worst := m.activePool[0]
+	m.activePool = m.activePool[1:]
+
+	// Если это было activeConn — переключаем на следующий.
+	if m.activeConn == worst {
+		m.activeConn = m.activePool[0]
+	}
+
+	m.drainingConns = append(m.drainingConns, worst)
+	go m.monitorDrainingConn(worst)
+
+	log.Info("[CONN-AGENT] Pool shrunk to %d connections (closed oldest conn)", len(m.activePool))
+	return true
 }
 
 func (m *Manager) GetState() TunnelState {
