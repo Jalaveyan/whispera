@@ -368,6 +368,8 @@ func StartInbound(inbound modconfig.InboundConfig, serverConfig *modconfig.Serve
 					// Server-wide cap hit — evict 20 oldest sessions across all clients.
 					globalKeyLimits.EvictOldestGlobal(20)
 					reason, msg = globalKeyLimits.Admit(clientID, sessionID, remoteIP)
+				case keylimits.ReasonNone, keylimits.ReasonSoftIPCap, keylimits.ReasonRateLimit:
+					// no eviction action for these reasons
 				}
 				if reason != keylimits.ReasonNone {
 					return nil, msg
