@@ -27,7 +27,7 @@ const (
 	kaHidden1      = 12
 	kaHidden2      = 8
 	kaNumActions   = 5 // len(KeepaliveIntervals)
-	kaBufferSize   = 600
+	kaBufferSize   = 5000
 	kaBatchSize    = 8
 	kaGamma        = 0.95
 	kaEpsilonStart = 0.40
@@ -56,9 +56,12 @@ type RLKeepaliveAgent struct {
 	target *gnet.GorgoniaNet
 	adam   *AdamState
 
-	buffer  []Experience
-	bufIdx  int
-	bufFull bool
+	prb        *PrioritizedReplayBuffer
+	thompson   *ThompsonSampler
+	sticky     StickyExplorer
+	curriculum CurriculumTracker
+	diversity  DiversityTracker
+	temperature float64
 
 	epsilon    float64
 	stepCount  int64
@@ -70,7 +73,12 @@ type RLKeepaliveAgent struct {
 
 func NewRLKeepaliveAgent() *RLKeepaliveAgent {
 	a := &RLKeepaliveAgent{
-		buffer:        make([]Experience, kaBufferSize),
+		prb:           NewPrioritizedBuffer(kaBufferSize),
+		thompson:      NewThompsonSampler(kaNumActions),
+		sticky:        StickyExplorer{K: 1},
+		curriculum:    NewCurriculumTracker(20, 0.0),
+		diversity:     NewDiversityTracker(kaNumActions, 0.05),
+		temperature:   InitTemp,
 		epsilon:       kaEpsilonStart,
 		pendingAction: -1,
 	}
@@ -92,7 +100,6 @@ func (a *RLKeepaliveAgent) encodeState(v KeepaliveView) []float64 {
 }
 
 // Decide выбирает интервал keepalive.
-// Пока не накоплено 30 шагов — возвращает безопасный дефолт (15s) не вмешиваясь.
 func (a *RLKeepaliveAgent) Decide(v KeepaliveView) time.Duration {
 	if atomic.LoadInt64(&a.stepCount) < 30 {
 		return KeepaliveIntervals[2] // 15s — безопасный дефолт
@@ -103,16 +110,21 @@ func (a *RLKeepaliveAgent) Decide(v KeepaliveView) time.Duration {
 	defer a.mu.Unlock()
 
 	var idx int
-	if mrand.Float64() < a.epsilon {
-		idx = mrand.Intn(kaNumActions)
+	if action, exploring := a.sticky.Explore(a.epsilon, kaNumActions); exploring {
+		idx = action
 	} else {
-		idx = dqnArgmax(a.qNet, state, kaNumActions)
+		qvals := a.qNet.Forward(state)
+		if mrand.Float64() < 0.30 {
+			idx = a.thompson.Sample(kaNumActions)
+		} else {
+			idx = boltzmannSample(qvals, a.temperature)
+		}
 	}
 
 	a.pendingState = state
 	a.pendingAction = idx
-	kaLog.Info("interval=%v eps=%.2f rtt=%.0fms missed=%d steps=%d",
-		KeepaliveIntervals[idx], a.epsilon, v.RTTMs, v.MissedKAs, atomic.LoadInt64(&a.stepCount))
+	kaLog.Info("interval=%v eps=%.2f temp=%.2f rtt=%.0fms missed=%d steps=%d",
+		KeepaliveIntervals[idx], a.epsilon, a.temperature, v.RTTMs, v.MissedKAs, atomic.LoadInt64(&a.stepCount))
 	return KeepaliveIntervals[idx]
 }
 
@@ -126,24 +138,28 @@ func (a *RLKeepaliveAgent) RecordOutcome(quality float64) {
 		return
 	}
 
-	// Лёгкий штраф за длинные интервалы (предпочитаем чаще проверять стабильность).
 	intervalPenalty := float64(action) * 0.03
 	reward := quality - intervalPenalty
-	kaLog.Info("outcome: quality=%.2f reward=%.2f interval=%v eps→%.3f",
-		quality, reward, KeepaliveIntervals[action], a.epsilon*kaEpsilonDecay)
 
 	a.mu.Lock()
-	a.buffer[a.bufIdx] = Experience{
+	divBonus := a.diversity.Record(action)
+	reward += divBonus
+	if a.curriculum.Add(reward) {
+		a.epsilon = math.Min(kaEpsilonStart, a.epsilon*2)
+	} else {
+		a.epsilon = math.Max(kaEpsilonMin, a.epsilon*kaEpsilonDecay)
+	}
+	a.thompson.Update(action, reward)
+	a.prb.Add(Experience{
 		State: state, Action: action, Reward: reward,
 		NextState: state, Done: quality < 0.1,
-	}
-	a.bufIdx = (a.bufIdx + 1) % kaBufferSize
-	if a.bufIdx == 0 {
-		a.bufFull = true
-	}
-	a.epsilon = math.Max(kaEpsilonMin, a.epsilon*kaEpsilonDecay)
+	})
 	step := atomic.AddInt64(&a.stepCount, 1)
+	eps := a.epsilon
 	a.mu.Unlock()
+
+	kaLog.Info("outcome: quality=%.2f reward=%.2f interval=%v eps=%.3f",
+		quality, reward, KeepaliveIntervals[action], eps)
 
 	if step%kaTrainEvery == 0 {
 		go a.trainStep()
@@ -162,17 +178,19 @@ func (a *RLKeepaliveAgent) Epsilon() float64 {
 }
 
 func (a *RLKeepaliveAgent) trainStep() {
-	a.mu.RLock()
-	batch, ok := sampleBatch(a.buffer, a.bufIdx, a.bufFull, kaBatchSize)
-	a.mu.RUnlock()
+	a.mu.Lock()
+	batch, idxs, ok := a.prb.Sample(kaBatchSize)
 	if !ok {
+		a.mu.Unlock()
 		return
 	}
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	dqnTrainBatchAdam(a.qNet, a.target, a.adam, batch, kaNumActions, kaGamma, 0.001)
+	dqnTrainBatchAdamPER(a.qNet, a.target, a.adam, a.prb, batch, idxs, kaNumActions, kaGamma, 0.001, defaultEntropyCoeff)
+	a.temperature = math.Max(MinTemp, a.temperature*TempDecay)
 	cnt := atomic.AddInt64(&a.trainCount, 1)
+	temp := a.temperature
+	eps := a.epsilon
+	a.mu.Unlock()
 	if cnt%10 == 0 {
-		kaLog.Debug("train#%d eps=%.3f steps=%d", cnt, a.epsilon, atomic.LoadInt64(&a.stepCount))
+		kaLog.Debug("train#%d eps=%.3f temp=%.3f steps=%d", cnt, eps, temp, atomic.LoadInt64(&a.stepCount))
 	}
 }

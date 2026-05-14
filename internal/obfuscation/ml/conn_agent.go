@@ -41,7 +41,7 @@ const (
 	connHidden1      = 16
 	connHidden2      = 8
 	connNumActions   = 3
-	connBufferSize   = 500
+	connBufferSize   = 5000
 	connBatchSize    = 8
 	connGamma        = 0.95
 	connEpsilonStart = 0.30
@@ -68,8 +68,6 @@ type ConnPoolView struct {
 //	pool_size_norm, rtt_norm, error_rate, missedka_norm, hour_sin, hour_cos
 //
 // Actions: KEEP(0) / OPEN(1) / CLOSE_WORST(2)
-// CLOSE_WORST игнорируется если pool.Size <= 1 (constraint: ≥1 соединение).
-// Агент не действует если вызывающая сторона сигнализирует disconnected.
 type RLConnAgent struct {
 	mu sync.RWMutex
 
@@ -77,9 +75,12 @@ type RLConnAgent struct {
 	target *gnet.GorgoniaNet
 	adam   *AdamState
 
-	buffer  []Experience
-	bufIdx  int
-	bufFull bool
+	prb        *PrioritizedReplayBuffer
+	thompson   *ThompsonSampler
+	sticky     StickyExplorer
+	curriculum CurriculumTracker
+	diversity  DiversityTracker
+	temperature float64
 
 	epsilon    float64
 	stepCount  int64
@@ -91,8 +92,13 @@ type RLConnAgent struct {
 
 func NewRLConnAgent() *RLConnAgent {
 	a := &RLConnAgent{
-		buffer:  make([]Experience, connBufferSize),
-		epsilon: connEpsilonStart,
+		prb:         NewPrioritizedBuffer(connBufferSize),
+		thompson:    NewThompsonSampler(connNumActions),
+		sticky:      StickyExplorer{K: 1},
+		curriculum:  NewCurriculumTracker(20, 0.0),
+		diversity:   NewDiversityTracker(connNumActions, 0.05),
+		temperature: InitTemp,
+		epsilon:     connEpsilonStart,
 	}
 	a.qNet = gnet.New([]int{connStateSize, connHidden1, connHidden2, connNumActions})
 	a.target = gnet.Clone(a.qNet)
@@ -123,19 +129,18 @@ func (a *RLConnAgent) Decide(view ConnPoolView) ConnAction {
 	var actionIdx int
 	var mode string
 
-	if mrand.Float64() < a.epsilon {
-		actionIdx = mrand.Intn(connNumActions)
-		mode = "explore"
+	if idx, exploring := a.sticky.Explore(a.epsilon, connNumActions); exploring {
+		actionIdx = idx
+		mode = "explore-sticky"
 	} else {
 		qvals := a.qNet.Forward(state)
-		best := 0
-		for i := 1; i < connNumActions; i++ {
-			if qvals[i] > qvals[best] {
-				best = i
-			}
+		if mrand.Float64() < 0.30 {
+			actionIdx = a.thompson.Sample(connNumActions)
+			mode = "thompson"
+		} else {
+			actionIdx = boltzmannSample(qvals, a.temperature)
+			mode = fmt.Sprintf("boltzmann Q=%.3f", qvals[actionIdx])
 		}
-		actionIdx = best
-		mode = fmt.Sprintf("exploit Q=%.3f", qvals[actionIdx])
 	}
 
 	action := ConnAction(actionIdx)
@@ -152,8 +157,8 @@ func (a *RLConnAgent) Decide(view ConnPoolView) ConnAction {
 		mode += " →KEEP(maxpool)"
 	}
 
-	connLog.Info("%s → %s (pool=%d eps=%.2f steps=%d train=%d)",
-		mode, action, view.Size, a.epsilon,
+	connLog.Info("%s → %s (pool=%d eps=%.2f temp=%.2f steps=%d train=%d)",
+		mode, action, view.Size, a.epsilon, a.temperature,
 		atomic.LoadInt64(&a.stepCount), atomic.LoadInt64(&a.trainCount))
 
 	a.pendingState = state
@@ -173,26 +178,30 @@ func (a *RLConnAgent) RecordOutcome(quality float64) {
 		return
 	}
 
-	// Reward: качество пула − штраф за излишние соединения.
 	connCountNorm := state[0]
-	reward := quality - 0.05*connCountNorm // лёгкий штраф за избыточность
-	connLog.Info("outcome: quality=%.3f reward=%.3f eps→%.3f", quality, reward, a.epsilon*connEpsilonDecay)
+	reward := quality - 0.05*connCountNorm
 
 	a.mu.Lock()
-	a.buffer[a.bufIdx] = Experience{
+	divBonus := a.diversity.Record(action)
+	reward += divBonus
+	if a.curriculum.Add(reward) {
+		a.epsilon = math.Min(connEpsilonStart, a.epsilon*2)
+	} else {
+		a.epsilon = math.Max(connEpsilonMin, a.epsilon*connEpsilonDecay)
+	}
+	a.thompson.Update(action, reward)
+	a.prb.Add(Experience{
 		State:     state,
 		Action:    action,
 		Reward:    reward,
 		NextState: state,
 		Done:      quality < 0.1,
-	}
-	a.bufIdx = (a.bufIdx + 1) % connBufferSize
-	if a.bufIdx == 0 {
-		a.bufFull = true
-	}
-	a.epsilon = math.Max(connEpsilonMin, a.epsilon*connEpsilonDecay)
+	})
 	step := atomic.AddInt64(&a.stepCount, 1)
+	eps := a.epsilon
 	a.mu.Unlock()
+
+	connLog.Info("outcome: quality=%.3f reward=%.3f eps=%.3f", quality, reward, eps)
 
 	if step%connTrainEvery == 0 {
 		go a.trainStep()
@@ -205,28 +214,19 @@ func (a *RLConnAgent) RecordOutcome(quality float64) {
 }
 
 func (a *RLConnAgent) trainStep() {
-	a.mu.RLock()
-	size := a.bufIdx
-	if a.bufFull {
-		size = connBufferSize
-	}
-	if size < connBatchSize*2 {
-		a.mu.RUnlock()
+	a.mu.Lock()
+	batch, idxs, ok := a.prb.Sample(connBatchSize)
+	if !ok {
+		a.mu.Unlock()
 		return
 	}
-	batch := make([]Experience, connBatchSize)
-	for i := range batch {
-		batch[i] = a.buffer[mrand.Intn(size)]
-	}
-	a.mu.RUnlock()
-
-	a.mu.Lock()
-	defer a.mu.Unlock()
-
-	dqnTrainBatchAdam(a.qNet, a.target, a.adam, batch, connNumActions, connGamma, 0.001)
-
+	dqnTrainBatchAdamPER(a.qNet, a.target, a.adam, a.prb, batch, idxs, connNumActions, connGamma, 0.001, defaultEntropyCoeff)
+	a.temperature = math.Max(MinTemp, a.temperature*TempDecay)
 	cnt := atomic.AddInt64(&a.trainCount, 1)
+	temp := a.temperature
+	eps := a.epsilon
+	a.mu.Unlock()
 	if cnt%10 == 0 {
-		connLog.Debug("train#%d eps=%.3f steps=%d", cnt, a.epsilon, atomic.LoadInt64(&a.stepCount))
+		connLog.Debug("train#%d eps=%.3f temp=%.3f steps=%d", cnt, eps, temp, atomic.LoadInt64(&a.stepCount))
 	}
 }

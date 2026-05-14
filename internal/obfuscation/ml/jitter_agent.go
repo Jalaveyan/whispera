@@ -22,7 +22,7 @@ const (
 	jHidden1      = 10
 	jHidden2      = 6
 	jNumActions   = 4 // len(JitterFractions)
-	jBufferSize   = 600
+	jBufferSize   = 5000
 	jBatchSize    = 8
 	jGamma        = 0.95
 	jEpsilonStart = 0.40
@@ -44,9 +44,6 @@ type JitterView struct {
 // State (5): rtt_norm, missed_ka_norm, error_rate, hour_sin, hour_cos
 // Actions: ±10% / ±20% / ±40% / ±70% от базового интервала
 // Reward: стабильность соединения − штраф за высокий джиттер
-//
-// Высокий джиттер разрушает timing-анализ DPI, но увеличивает нагрузку.
-// Агент учится балансировать между ними.
 type RLJitterAgent struct {
 	mu sync.RWMutex
 
@@ -54,9 +51,12 @@ type RLJitterAgent struct {
 	target *gnet.GorgoniaNet
 	adam   *AdamState
 
-	buffer  []Experience
-	bufIdx  int
-	bufFull bool
+	prb        *PrioritizedReplayBuffer
+	thompson   *ThompsonSampler
+	sticky     StickyExplorer
+	curriculum CurriculumTracker
+	diversity  DiversityTracker
+	temperature float64
 
 	epsilon    float64
 	stepCount  int64
@@ -68,7 +68,12 @@ type RLJitterAgent struct {
 
 func NewRLJitterAgent() *RLJitterAgent {
 	a := &RLJitterAgent{
-		buffer:        make([]Experience, jBufferSize),
+		prb:           NewPrioritizedBuffer(jBufferSize),
+		thompson:      NewThompsonSampler(jNumActions),
+		sticky:        StickyExplorer{K: 1},
+		curriculum:    NewCurriculumTracker(20, 0.0),
+		diversity:     NewDiversityTracker(jNumActions, 0.05),
+		temperature:   InitTemp,
 		epsilon:       jEpsilonStart,
 		pendingAction: -1,
 	}
@@ -90,8 +95,6 @@ func (a *RLJitterAgent) encodeState(v JitterView) []float64 {
 }
 
 // Decide возвращает долю джиттера (0.10–0.70).
-// Применяется как: jitter = rand(-frac*base, +frac*base).
-// Пока не накоплено 30 шагов — возвращает ±30% (исходное поведение системы).
 func (a *RLJitterAgent) Decide(v JitterView) float64 {
 	if atomic.LoadInt64(&a.stepCount) < 30 {
 		return JitterFractions[2] // 0.40 ≈ ±40% — поведение по умолчанию
@@ -102,16 +105,21 @@ func (a *RLJitterAgent) Decide(v JitterView) float64 {
 	defer a.mu.Unlock()
 
 	var idx int
-	if mrand.Float64() < a.epsilon {
-		idx = mrand.Intn(jNumActions)
+	if action, exploring := a.sticky.Explore(a.epsilon, jNumActions); exploring {
+		idx = action
 	} else {
-		idx = dqnArgmax(a.qNet, state, jNumActions)
+		qvals := a.qNet.Forward(state)
+		if mrand.Float64() < 0.30 {
+			idx = a.thompson.Sample(jNumActions)
+		} else {
+			idx = boltzmannSample(qvals, a.temperature)
+		}
 	}
 
 	a.pendingState = state
 	a.pendingAction = idx
-	jLog.Info("jitter=±%.0f%% eps=%.2f rtt=%.0fms missed=%d steps=%d",
-		JitterFractions[idx]*100, a.epsilon, v.RTTMs, v.MissedKAs, atomic.LoadInt64(&a.stepCount))
+	jLog.Info("jitter=±%.0f%% eps=%.2f temp=%.2f rtt=%.0fms missed=%d steps=%d",
+		JitterFractions[idx]*100, a.epsilon, a.temperature, v.RTTMs, v.MissedKAs, atomic.LoadInt64(&a.stepCount))
 	return JitterFractions[idx]
 }
 
@@ -127,21 +135,26 @@ func (a *RLJitterAgent) RecordOutcome(quality float64) {
 
 	jitterCost := float64(action) * 0.05
 	reward := quality - jitterCost
-	jLog.Info("outcome: quality=%.2f reward=%.2f jitter=±%.0f%% eps→%.3f",
-		quality, reward, JitterFractions[action]*100, a.epsilon*jEpsilonDecay)
 
 	a.mu.Lock()
-	a.buffer[a.bufIdx] = Experience{
+	divBonus := a.diversity.Record(action)
+	reward += divBonus
+	if a.curriculum.Add(reward) {
+		a.epsilon = math.Min(jEpsilonStart, a.epsilon*2)
+	} else {
+		a.epsilon = math.Max(jEpsilonMin, a.epsilon*jEpsilonDecay)
+	}
+	a.thompson.Update(action, reward)
+	a.prb.Add(Experience{
 		State: state, Action: action, Reward: reward,
 		NextState: state, Done: quality < 0.1,
-	}
-	a.bufIdx = (a.bufIdx + 1) % jBufferSize
-	if a.bufIdx == 0 {
-		a.bufFull = true
-	}
-	a.epsilon = math.Max(jEpsilonMin, a.epsilon*jEpsilonDecay)
+	})
 	step := atomic.AddInt64(&a.stepCount, 1)
+	eps := a.epsilon
 	a.mu.Unlock()
+
+	jLog.Info("outcome: quality=%.2f reward=%.2f jitter=±%.0f%% eps=%.3f",
+		quality, reward, JitterFractions[action]*100, eps)
 
 	if step%jTrainEvery == 0 {
 		go a.trainStep()
@@ -160,17 +173,19 @@ func (a *RLJitterAgent) Epsilon() float64 {
 }
 
 func (a *RLJitterAgent) trainStep() {
-	a.mu.RLock()
-	batch, ok := sampleBatch(a.buffer, a.bufIdx, a.bufFull, jBatchSize)
-	a.mu.RUnlock()
+	a.mu.Lock()
+	batch, idxs, ok := a.prb.Sample(jBatchSize)
 	if !ok {
+		a.mu.Unlock()
 		return
 	}
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	dqnTrainBatchAdam(a.qNet, a.target, a.adam, batch, jNumActions, jGamma, 0.001)
+	dqnTrainBatchAdamPER(a.qNet, a.target, a.adam, a.prb, batch, idxs, jNumActions, jGamma, 0.001, defaultEntropyCoeff)
+	a.temperature = math.Max(MinTemp, a.temperature*TempDecay)
 	cnt := atomic.AddInt64(&a.trainCount, 1)
+	temp := a.temperature
+	eps := a.epsilon
+	a.mu.Unlock()
 	if cnt%10 == 0 {
-		jLog.Debug("train#%d eps=%.3f steps=%d", cnt, a.epsilon, atomic.LoadInt64(&a.stepCount))
+		jLog.Debug("train#%d eps=%.3f temp=%.3f steps=%d", cnt, eps, temp, atomic.LoadInt64(&a.stepCount))
 	}
 }

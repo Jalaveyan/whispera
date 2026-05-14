@@ -21,7 +21,7 @@ const (
 	chunkHidden1      = 10
 	chunkHidden2      = 6
 	chunkNumActions   = 4 // len(ChunkSizes)
-	chunkBufferSize   = 600
+	chunkBufferSize   = 5000
 	chunkBatchSize    = 8
 	chunkGamma        = 0.95
 	chunkEpsilonStart = 0.40
@@ -33,9 +33,9 @@ const (
 
 // ChunkView — метрики пропускной способности для агента размера чанков.
 type ChunkView struct {
-	RTTMs       float64
-	BytesUpSec  float64 // байт/сек исходящий трафик
-	BytesDnSec  float64 // байт/сек входящий трафик
+	RTTMs      float64
+	BytesUpSec float64 // байт/сек исходящий трафик
+	BytesDnSec float64 // байт/сек входящий трафик
 }
 
 // RLChunkAgent выбирает оптимальный размер фрейма mux через DQN.
@@ -43,9 +43,6 @@ type ChunkView struct {
 // State (5): rtt_norm, up_rate_norm, dn_rate_norm, hour_sin, hour_cos
 // Actions: 8KB / 16KB / 32KB / 64KB
 // Reward: пропускная способность / RTT баланс
-//
-// Малые чанки — меньше задержка, большие — лучший throughput.
-// Агент учится выбирать оптимум под текущие условия сети.
 type RLChunkAgent struct {
 	mu sync.RWMutex
 
@@ -53,9 +50,12 @@ type RLChunkAgent struct {
 	target *gnet.GorgoniaNet
 	adam   *AdamState
 
-	buffer  []Experience
-	bufIdx  int
-	bufFull bool
+	prb        *PrioritizedReplayBuffer
+	thompson   *ThompsonSampler
+	sticky     StickyExplorer
+	curriculum CurriculumTracker
+	diversity  DiversityTracker
+	temperature float64
 
 	epsilon    float64
 	stepCount  int64
@@ -67,7 +67,12 @@ type RLChunkAgent struct {
 
 func NewRLChunkAgent() *RLChunkAgent {
 	a := &RLChunkAgent{
-		buffer:        make([]Experience, chunkBufferSize),
+		prb:           NewPrioritizedBuffer(chunkBufferSize),
+		thompson:      NewThompsonSampler(chunkNumActions),
+		sticky:        StickyExplorer{K: 1},
+		curriculum:    NewCurriculumTracker(20, 0.0),
+		diversity:     NewDiversityTracker(chunkNumActions, 0.05),
+		temperature:   InitTemp,
 		epsilon:       chunkEpsilonStart,
 		pendingAction: -1,
 	}
@@ -89,7 +94,6 @@ func (a *RLChunkAgent) encodeState(v ChunkView) []float64 {
 }
 
 // Decide возвращает оптимальный размер фрейма (байт).
-// Пока не накоплено 30 шагов — возвращает 65535 (текущий дефолт mux).
 func (a *RLChunkAgent) Decide(v ChunkView) int {
 	if atomic.LoadInt64(&a.stepCount) < 30 {
 		return ChunkSizes[3] // 65535 — дефолт
@@ -100,16 +104,21 @@ func (a *RLChunkAgent) Decide(v ChunkView) int {
 	defer a.mu.Unlock()
 
 	var idx int
-	if mrand.Float64() < a.epsilon {
-		idx = mrand.Intn(chunkNumActions)
+	if action, exploring := a.sticky.Explore(a.epsilon, chunkNumActions); exploring {
+		idx = action
 	} else {
-		idx = dqnArgmax(a.qNet, state, chunkNumActions)
+		qvals := a.qNet.Forward(state)
+		if mrand.Float64() < 0.30 {
+			idx = a.thompson.Sample(chunkNumActions)
+		} else {
+			idx = boltzmannSample(qvals, a.temperature)
+		}
 	}
 
 	a.pendingState = state
 	a.pendingAction = idx
-	chunkLog.Info("frame=%dB eps=%.2f rtt=%.0fms up=%.0fB/s dn=%.0fB/s steps=%d",
-		ChunkSizes[idx], a.epsilon, v.RTTMs, v.BytesUpSec, v.BytesDnSec, atomic.LoadInt64(&a.stepCount))
+	chunkLog.Info("frame=%dB eps=%.2f temp=%.2f rtt=%.0fms up=%.0fB/s dn=%.0fB/s steps=%d",
+		ChunkSizes[idx], a.epsilon, a.temperature, v.RTTMs, v.BytesUpSec, v.BytesDnSec, atomic.LoadInt64(&a.stepCount))
 	return ChunkSizes[idx]
 }
 
@@ -126,21 +135,26 @@ func (a *RLChunkAgent) RecordOutcome(quality float64) {
 
 	sizePenalty := float64(action) * 0.02
 	reward := quality - sizePenalty
-	chunkLog.Info("outcome: quality=%.2f reward=%.2f frame=%dB eps→%.3f",
-		quality, reward, ChunkSizes[action], a.epsilon*chunkEpsilonDecay)
 
 	a.mu.Lock()
-	a.buffer[a.bufIdx] = Experience{
+	divBonus := a.diversity.Record(action)
+	reward += divBonus
+	if a.curriculum.Add(reward) {
+		a.epsilon = math.Min(chunkEpsilonStart, a.epsilon*2)
+	} else {
+		a.epsilon = math.Max(chunkEpsilonMin, a.epsilon*chunkEpsilonDecay)
+	}
+	a.thompson.Update(action, reward)
+	a.prb.Add(Experience{
 		State: state, Action: action, Reward: reward,
 		NextState: state, Done: quality < 0.1,
-	}
-	a.bufIdx = (a.bufIdx + 1) % chunkBufferSize
-	if a.bufIdx == 0 {
-		a.bufFull = true
-	}
-	a.epsilon = math.Max(chunkEpsilonMin, a.epsilon*chunkEpsilonDecay)
+	})
 	step := atomic.AddInt64(&a.stepCount, 1)
+	eps := a.epsilon
 	a.mu.Unlock()
+
+	chunkLog.Info("outcome: quality=%.2f reward=%.2f frame=%dB eps=%.3f",
+		quality, reward, ChunkSizes[action], eps)
 
 	if step%chunkTrainEvery == 0 {
 		go a.trainStep()
@@ -159,17 +173,19 @@ func (a *RLChunkAgent) Epsilon() float64 {
 }
 
 func (a *RLChunkAgent) trainStep() {
-	a.mu.RLock()
-	batch, ok := sampleBatch(a.buffer, a.bufIdx, a.bufFull, chunkBatchSize)
-	a.mu.RUnlock()
+	a.mu.Lock()
+	batch, idxs, ok := a.prb.Sample(chunkBatchSize)
 	if !ok {
+		a.mu.Unlock()
 		return
 	}
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	dqnTrainBatchAdam(a.qNet, a.target, a.adam, batch, chunkNumActions, chunkGamma, 0.001)
+	dqnTrainBatchAdamPER(a.qNet, a.target, a.adam, a.prb, batch, idxs, chunkNumActions, chunkGamma, 0.001, defaultEntropyCoeff)
+	a.temperature = math.Max(MinTemp, a.temperature*TempDecay)
 	cnt := atomic.AddInt64(&a.trainCount, 1)
+	temp := a.temperature
+	eps := a.epsilon
+	a.mu.Unlock()
 	if cnt%10 == 0 {
-		chunkLog.Debug("train#%d eps=%.3f steps=%d", cnt, a.epsilon, atomic.LoadInt64(&a.stepCount))
+		chunkLog.Debug("train#%d eps=%.3f temp=%.3f steps=%d", cnt, eps, temp, atomic.LoadInt64(&a.stepCount))
 	}
 }

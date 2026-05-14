@@ -15,13 +15,12 @@ import (
 
 var trLog = logger.Module("rl-transport")
 
-
 const (
 	RLStateSize    = 16
 	RLActionSize   = 28
 	RLHidden1      = 64
 	RLHidden2      = 32
-	RLBufferSize   = 200
+	RLBufferSize   = 1000
 	RLBatchSize    = 4
 	RLGamma        = 0.95
 	RLEpsilonStart = 0.3
@@ -47,9 +46,13 @@ type RLTransportAgent struct {
 	worldNet  *gnet.GorgoniaNet // world model: прямое предсказание reward
 	adam      *AdamState
 	worldAdam *AdamState
-	buffer    []Experience
-	bufIdx    int
-	bufFull   bool
+
+	prb        *PrioritizedReplayBuffer
+	thompson   *ThompsonSampler
+	sticky     StickyExplorer
+	curriculum CurriculumTracker
+	diversity  DiversityTracker
+	temperature float64
 
 	epsilon    float64
 	stepCount  int64
@@ -58,10 +61,8 @@ type RLTransportAgent struct {
 	transportNames []string
 	transportIndex map[string]int
 
-	// активный пул: подмножество transportNames, реально доступных в данный момент
 	activePool []string
 
-	// для RecordOutcome / ShouldRotate
 	pendingState     []float64
 	pendingAction    int
 	consecutiveFails int32
@@ -72,10 +73,14 @@ type RLTransportAgent struct {
 
 func NewRLTransportAgent(modelDir string, _ []string) *RLTransportAgent {
 	agent := &RLTransportAgent{
-		qNet:       gnet.New([]int{RLStateSize, RLHidden1, RLHidden2, RLActionSize}),
-		buffer:     make([]Experience, RLBufferSize),
-		epsilon:    RLEpsilonStart,
-		modelDir:   modelDir,
+		prb:         NewPrioritizedBuffer(RLBufferSize),
+		thompson:    NewThompsonSampler(RLActionSize),
+		sticky:      StickyExplorer{K: 3},
+		curriculum:  NewCurriculumTracker(20, 0.0),
+		diversity:   NewDiversityTracker(RLActionSize, 0.03),
+		temperature: InitTemp,
+		epsilon:     RLEpsilonStart,
+		modelDir:    modelDir,
 		transportNames: []string{
 			"tcp", "udp", "h2c", "shadowtls", "ws", "wss",
 			"grpc", "quic", "kcp", "obfs4", "meek",
@@ -89,6 +94,7 @@ func NewRLTransportAgent(modelDir string, _ []string) *RLTransportAgent {
 	for i, name := range agent.transportNames {
 		agent.transportIndex[name] = i
 	}
+	agent.qNet = gnet.New([]int{RLStateSize, RLHidden1, RLHidden2, RLActionSize})
 	agent.target = gnet.Clone(agent.qNet)
 	agent.worldNet = gnet.New([]int{RLStateSize, RLHidden1, RLHidden2, RLActionSize})
 	agent.adam = NewAdamState(agent.qNet)
@@ -101,7 +107,6 @@ func NewRLTransportAgent(modelDir string, _ []string) *RLTransportAgent {
 }
 
 // SetActivePool ограничивает выбор транспортов реально доступными в данном соединении.
-// Вызывается из buildCandidates после фильтрации по конфигу.
 func (a *RLTransportAgent) SetActivePool(names []string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -112,8 +117,8 @@ func (a *RLTransportAgent) SetActivePool(names []string) {
 	a.activePool = names
 }
 
-// Select выбирает транспорт из activePool (epsilon-greedy + world model thinking).
-// Возвращает ("", -1) если агент ещё не обучен (< 20 шагов) — tunnel использует дефолт.
+// Select выбирает транспорт из activePool.
+// Возвращает ("", -1) если агент ещё не обучен (< 10 шагов).
 func (a *RLTransportAgent) Select(state []float64) (transport string, actionIdx int) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -128,31 +133,60 @@ func (a *RLTransportAgent) Select(state []float64) (transport string, actionIdx 
 
 	var idx int
 	var mode string
-	if mrand.Float64() < a.epsilon {
-		name := pool[mrand.Intn(len(pool))]
-		idx = a.transportIndex[name]
-		mode = "explore"
+
+	if stickyIdx, exploring := a.sticky.Explore(a.epsilon, RLActionSize); exploring {
+		// Проверяем, доступен ли sticky action в пуле.
+		found := false
+		for _, name := range pool {
+			if a.transportIndex[name] == stickyIdx {
+				idx = stickyIdx
+				mode = "explore-sticky"
+				found = true
+				break
+			}
+		}
+		if !found {
+			pidx := mrand.Intn(len(pool))
+			idx = a.transportIndex[pool[pidx]]
+			mode = "explore-random"
+		}
 	} else {
 		qvals := a.qNet.Forward(state)
 		wvals := a.worldNet.Forward(state)
-		bestName := pool[0]
-		bestScore := -1e9
-		for _, name := range pool {
-			i, ok := a.transportIndex[name]
-			if !ok || i >= len(qvals) {
-				continue
+		if mrand.Float64() < 0.30 {
+			// Thompson — выбор из пула по максимальному theta.
+			bestTheta := -1e9
+			idx = a.transportIndex[pool[0]]
+			for _, name := range pool {
+				i, ok := a.transportIndex[name]
+				if !ok || i >= len(a.thompson.alpha) {
+					continue
+				}
+				theta := betaSample(a.thompson.alpha[i], a.thompson.beta[i])
+				if theta > bestTheta {
+					bestTheta = theta
+					idx = i
+				}
 			}
-			score := 0.6*qvals[i] + 0.4*wvals[i]
-			if score > bestScore {
-				bestScore = score
-				bestName = name
-				idx = i
+			mode = "thompson"
+		} else {
+			// Boltzmann по комбинированному Q+W score в пуле.
+			scores := make([]float64, len(pool))
+			pIdxs := make([]int, len(pool))
+			for j, name := range pool {
+				i := a.transportIndex[name]
+				pIdxs[j] = i
+				if i < len(qvals) && i < len(wvals) {
+					scores[j] = 0.6*qvals[i] + 0.4*wvals[i]
+				}
 			}
+			best := boltzmannSample(scores, a.temperature)
+			idx = pIdxs[best]
+			mode = "boltzmann"
 		}
-		_ = bestName
-		mode = "think"
 	}
 
+	// Resolve name by index.
 	name := ""
 	for _, n := range pool {
 		if a.transportIndex[n] == idx {
@@ -165,7 +199,7 @@ func (a *RLTransportAgent) Select(state []float64) (transport string, actionIdx 
 		idx = a.transportIndex[name]
 	}
 
-	trLog.Info("%s → %s (eps=%.2f steps=%d)", mode, name, a.epsilon, atomic.LoadInt64(&a.stepCount))
+	trLog.Info("%s → %s (eps=%.2f temp=%.2f steps=%d)", mode, name, a.epsilon, a.temperature, atomic.LoadInt64(&a.stepCount))
 
 	a.pendingState = state
 	a.pendingAction = idx
@@ -184,8 +218,6 @@ func (a *RLTransportAgent) RecordOutcome(success bool, latencyMs float64) {
 	}
 
 	reward := ComputeReward(success, latencyMs)
-	trLog.Info("outcome: success=%v reward=%.2f latency=%.0fms eps→%.3f",
-		success, reward, latencyMs, a.epsilon*RLEpsilonDecay)
 
 	if success {
 		atomic.StoreInt32(&a.consecutiveFails, 0)
@@ -196,6 +228,17 @@ func (a *RLTransportAgent) RecordOutcome(success bool, latencyMs float64) {
 			trLog.Warn("rotate signal: %d consecutive transport failures — switching transport", fails)
 		}
 	}
+
+	a.mu.Lock()
+	divBonus := a.diversity.Record(action)
+	reward += divBonus
+	if a.curriculum.Add(reward) {
+		a.epsilon = math.Min(RLEpsilonStart, a.epsilon*2)
+	}
+	a.thompson.Update(action, reward)
+	a.mu.Unlock()
+
+	trLog.Info("outcome: success=%v reward=%.2f latency=%.0fms", success, reward, latencyMs)
 
 	nextState := make([]float64, len(state))
 	copy(nextState, state)
@@ -242,6 +285,8 @@ func (a *RLTransportAgent) EncodeState(
 func (a *RLTransportAgent) SelectTransport(state []float64) (transport string, actionIdx int, explored bool) {
 	a.mu.RLock()
 	eps := a.epsilon
+	temp := a.temperature
+	qvals := a.qNet.Forward(state)
 	a.mu.RUnlock()
 
 	if mrand.Float64() < eps {
@@ -249,16 +294,7 @@ func (a *RLTransportAgent) SelectTransport(state []float64) (transport string, a
 		return a.transportNames[idx], idx, true
 	}
 
-	a.mu.RLock()
-	qvals := a.qNet.Forward(state)
-	a.mu.RUnlock()
-
-	best := 0
-	for i := 1; i < len(qvals); i++ {
-		if qvals[i] > qvals[best] {
-			best = i
-		}
-	}
+	best := boltzmannSample(qvals, temp)
 	if best < len(a.transportNames) {
 		return a.transportNames[best], best, false
 	}
@@ -275,21 +311,14 @@ func ComputeReward(success bool, latencyMs float64) float64 {
 
 func (a *RLTransportAgent) RecordExperience(state []float64, action int, reward float64, nextState []float64, done bool) {
 	a.mu.Lock()
-	a.buffer[a.bufIdx] = Experience{
+	a.prb.Add(Experience{
 		State:     state,
 		Action:    action,
 		Reward:    reward,
 		NextState: nextState,
 		Done:      done,
-	}
-	a.bufIdx = (a.bufIdx + 1) % RLBufferSize
-	if a.bufIdx == 0 {
-		a.bufFull = true
-	}
+	})
 	step := atomic.AddInt64(&a.stepCount, 1)
-	a.mu.Unlock()
-
-	a.mu.Lock()
 	a.epsilon = math.Max(RLEpsilonMin, a.epsilon*RLEpsilonDecay)
 	a.mu.Unlock()
 
@@ -305,31 +334,18 @@ func (a *RLTransportAgent) RecordExperience(state []float64, action int, reward 
 }
 
 func (a *RLTransportAgent) trainStep() {
-	a.mu.RLock()
-	size := a.bufIdx
-	if a.bufFull {
-		size = RLBufferSize
-	}
-	if size < RLBatchSize*2 {
-		a.mu.RUnlock()
+	a.mu.Lock()
+	batch, idxs, ok := a.prb.Sample(RLBatchSize)
+	if !ok {
+		a.mu.Unlock()
 		return
 	}
-	a.mu.RUnlock()
-
-	batch := make([]Experience, RLBatchSize)
-	a.mu.RLock()
-	for i := 0; i < RLBatchSize; i++ {
-		idx := mrand.Intn(size)
-		batch[i] = a.buffer[idx]
-	}
-	a.mu.RUnlock()
-
-	a.mu.Lock()
-	defer a.mu.Unlock()
 
 	const lr = 0.005
-
-	for _, exp := range batch {
+	for i, exp := range batch {
+		if exp.Action >= RLActionSize {
+			continue
+		}
 		acts := a.qNet.ForwardActivations(exp.State)
 		qvals := acts[len(acts)-1]
 
@@ -344,14 +360,18 @@ func (a *RLTransportAgent) trainStep() {
 					maxNextQ = q
 				}
 			}
-			targetQ = exp.Reward + RLGamma*maxNextQ
+			bonus := defaultEntropyCoeff * entropy(softmaxVec(nextQ))
+			targetQ = exp.Reward + RLGamma*(maxNextQ+bonus)
 		}
 
+		tdErr := targetQ - qvals[exp.Action]
+		a.prb.UpdatePriority(idxs[i], tdErr)
+
 		dOutput := make([]float64, RLActionSize)
-		dOutput[exp.Action] = -(targetQ - qvals[exp.Action])
+		dOutput[exp.Action] = -tdErr
 		dqnBackpropAdam(a.qNet, a.adam, acts, dOutput, lr)
 
-		// World model: MSE на наблюдаемый reward
+		// World model: MSE на наблюдаемый reward.
 		if a.worldNet != nil && exp.Action < len(a.worldNet.Layers[len(a.worldNet.Layers)-1].B) {
 			wActs := a.worldNet.ForwardActivations(exp.State)
 			wvals := wActs[len(wActs)-1]
@@ -361,13 +381,19 @@ func (a *RLTransportAgent) trainStep() {
 		}
 	}
 
+	a.temperature = math.Max(MinTemp, a.temperature*TempDecay)
 	cnt := atomic.AddInt64(&a.trainCount, 1)
+	temp := a.temperature
+	eps := a.epsilon
+	a.mu.Unlock()
 
 	if cnt%100 == 0 {
-		trLog.Info("train#%d eps=%.3f steps=%d (saving policy)", cnt, a.epsilon, atomic.LoadInt64(&a.stepCount))
+		trLog.Info("train#%d eps=%.3f temp=%.3f steps=%d (saving policy)", cnt, eps, temp, atomic.LoadInt64(&a.stepCount))
+		a.mu.Lock()
 		a.savePolicyLocked()
+		a.mu.Unlock()
 	} else if cnt%20 == 0 {
-		trLog.Debug("train#%d eps=%.3f steps=%d", cnt, a.epsilon, atomic.LoadInt64(&a.stepCount))
+		trLog.Debug("train#%d eps=%.3f temp=%.3f steps=%d", cnt, eps, temp, atomic.LoadInt64(&a.stepCount))
 	}
 }
 
@@ -432,34 +458,23 @@ func (a *RLTransportAgent) PreSeed() {
 			nextState := make([]float64, RLStateSize)
 			copy(nextState, state)
 
-			a.buffer[a.bufIdx] = Experience{
+			a.prb.Add(Experience{
 				State:     state,
 				Action:    idx,
 				Reward:    reward,
 				NextState: nextState,
 				Done:      reward < 0,
-			}
-			a.bufIdx = (a.bufIdx + 1) % RLBufferSize
-			if a.bufIdx == 0 {
-				a.bufFull = true
-			}
+			})
 			atomic.AddInt64(&a.stepCount, 1)
 		}
 	}
 
 	for i := 0; i < 20; i++ {
-		size := a.bufIdx
-		if a.bufFull {
-			size = RLBufferSize
-		}
-		if size < RLBatchSize*2 {
+		batch, idxs, ok := a.prb.Sample(RLBatchSize)
+		if !ok {
 			break
 		}
-		batch := make([]Experience, RLBatchSize)
-		for j := 0; j < RLBatchSize; j++ {
-			batch[j] = a.buffer[mrand.Intn(size)]
-		}
-		for _, exp := range batch {
+		for j, exp := range batch {
 			acts := a.qNet.ForwardActivations(exp.State)
 			qvals := acts[len(acts)-1]
 
@@ -476,8 +491,10 @@ func (a *RLTransportAgent) PreSeed() {
 				}
 				targetQ = exp.Reward + RLGamma*maxNextQ
 			}
+			tdErr := targetQ - qvals[exp.Action]
+			a.prb.UpdatePriority(idxs[j], tdErr)
 			dOut := make([]float64, RLActionSize)
-			dOut[exp.Action] = -(targetQ - qvals[exp.Action])
+			dOut[exp.Action] = -tdErr
 			dqnBackpropAdam(a.qNet, a.adam, acts, dOut, 0.001)
 		}
 	}
@@ -495,15 +512,11 @@ func (a *RLTransportAgent) TransportIndex(name string) int {
 func (a *RLTransportAgent) Stats() map[string]interface{} {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
-	size := a.bufIdx
-	if a.bufFull {
-		size = RLBufferSize
-	}
 	return map[string]interface{}{
 		"epsilon":     a.epsilon,
 		"step_count":  atomic.LoadInt64(&a.stepCount),
 		"train_count": atomic.LoadInt64(&a.trainCount),
-		"buffer_size": size,
+		"buffer_size": a.prb.Size(),
 	}
 }
 

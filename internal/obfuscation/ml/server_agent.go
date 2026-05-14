@@ -15,19 +15,19 @@ import (
 var srvLog = logger.Module("rl-server")
 
 const (
-	srvMaxServers  = 8  // максимальный размер пула серверов
-	srvStateSize   = 10 // rtt[0..7]_norm + hour_sin + hour_cos
-	srvHidden1     = 16
-	srvHidden2     = 8
-	srvNumActions  = srvMaxServers
-	srvBufferSize  = 150
-	srvBatchSize   = 4
-	srvGamma       = 0.95
+	srvMaxServers   = 8  // максимальный размер пула серверов
+	srvStateSize    = 10 // rtt[0..7]_norm + hour_sin + hour_cos
+	srvHidden1      = 16
+	srvHidden2      = 8
+	srvNumActions   = srvMaxServers
+	srvBufferSize   = 800
+	srvBatchSize    = 4
+	srvGamma        = 0.95
 	srvEpsilonStart = 0.50
-	srvEpsilonMin  = 0.05
+	srvEpsilonMin   = 0.05
 	srvEpsilonDecay = 0.97
-	srvTargetSync  = 8
-	srvTrainEvery  = 1
+	srvTargetSync   = 8
+	srvTrainEvery   = 1
 )
 
 // ServerProbe — результат одного измерения задержки до сервера.
@@ -41,8 +41,6 @@ type ServerProbe struct {
 // State (10): нормированные RTT для 8 слотов (0 если слот пуст) + hour_sin + hour_cos
 // Actions: выбор слота 0..7 (ограничено реальным числом серверов)
 // Reward: −rtt_norm (чем быстрее, тем лучше) или −1 при отказе
-//
-// Агент учится, что «самый быстрый пинг» не всегда лучший (если сервер нестабилен).
 type RLServerAgent struct {
 	mu sync.RWMutex
 
@@ -50,9 +48,12 @@ type RLServerAgent struct {
 	target *gnet.GorgoniaNet
 	adam   *AdamState
 
-	buffer  []Experience
-	bufIdx  int
-	bufFull bool
+	prb        *PrioritizedReplayBuffer
+	thompson   *ThompsonSampler
+	sticky     StickyExplorer
+	curriculum CurriculumTracker
+	diversity  DiversityTracker
+	temperature float64
 
 	epsilon    float64
 	stepCount  int64
@@ -61,13 +62,17 @@ type RLServerAgent struct {
 	pendingState  []float64
 	pendingAction int
 
-	// последние зонды (обновляются при каждом Connect)
 	lastProbes []ServerProbe
 }
 
 func NewRLServerAgent() *RLServerAgent {
 	a := &RLServerAgent{
-		buffer:        make([]Experience, srvBufferSize),
+		prb:           NewPrioritizedBuffer(srvBufferSize),
+		thompson:      NewThompsonSampler(srvNumActions),
+		sticky:        StickyExplorer{K: 2},
+		curriculum:    NewCurriculumTracker(20, 0.0),
+		diversity:     NewDiversityTracker(srvNumActions, 0.05),
+		temperature:   InitTemp,
 		epsilon:       srvEpsilonStart,
 		pendingAction: -1,
 	}
@@ -95,8 +100,6 @@ func (a *RLServerAgent) encodeState(probes []ServerProbe) []float64 {
 }
 
 // Decide выбирает индекс сервера из отсортированного по RTT списка probes.
-// Возвращает "" если список пуст или агент не набрал минимальный опыт.
-// В режиме warmup tunnel использует pickFastestServer (чистый latency probe).
 func (a *RLServerAgent) Decide(probes []ServerProbe) string {
 	if len(probes) == 0 {
 		return ""
@@ -105,7 +108,6 @@ func (a *RLServerAgent) Decide(probes []ServerProbe) string {
 		return "" // warmup: fallback на fastest-ping
 	}
 
-	// Сортируем по RTT (недостижимые — в конец).
 	sorted := make([]ServerProbe, len(probes))
 	copy(sorted, probes)
 	sort.Slice(sorted, func(i, j int) bool {
@@ -125,10 +127,15 @@ func (a *RLServerAgent) Decide(probes []ServerProbe) string {
 	}
 
 	var idx int
-	if mrand.Float64() < a.epsilon {
-		idx = mrand.Intn(n)
+	if action, exploring := a.sticky.Explore(a.epsilon, n); exploring {
+		idx = action
 	} else {
-		idx = dqnArgmax(a.qNet, state, n)
+		qvals := a.qNet.Forward(state)
+		if mrand.Float64() < 0.30 {
+			idx = a.thompson.Sample(n)
+		} else {
+			idx = boltzmannSample(qvals[:n], a.temperature)
+		}
 	}
 	if idx >= n {
 		idx = 0
@@ -137,13 +144,12 @@ func (a *RLServerAgent) Decide(probes []ServerProbe) string {
 	a.pendingState = state
 	a.pendingAction = idx
 	chosen := sorted[idx]
-	srvLog.Info("pick[%d]=%s rtt=%v eps=%.2f steps=%d (pool=%d servers)",
-		idx, chosen.Addr, chosen.Latency, a.epsilon, atomic.LoadInt64(&a.stepCount), n)
+	srvLog.Info("pick[%d]=%s rtt=%v eps=%.2f temp=%.2f steps=%d (pool=%d servers)",
+		idx, chosen.Addr, chosen.Latency, a.epsilon, a.temperature, atomic.LoadInt64(&a.stepCount), n)
 	return chosen.Addr
 }
 
 // RecordOutcome фиксирует результат подключения к выбранному серверу.
-// success=true + latencyMs — успешное соединение; false — отказ.
 func (a *RLServerAgent) RecordOutcome(success bool, latencyMs float64) {
 	a.mu.Lock()
 	state := a.pendingState
@@ -159,21 +165,26 @@ func (a *RLServerAgent) RecordOutcome(success bool, latencyMs float64) {
 	} else {
 		reward = -1.0
 	}
-	srvLog.Info("outcome: success=%v reward=%.2f latency=%.0fms eps→%.3f",
-		success, reward, latencyMs, a.epsilon*srvEpsilonDecay)
 
 	a.mu.Lock()
-	a.buffer[a.bufIdx] = Experience{
+	divBonus := a.diversity.Record(action)
+	reward += divBonus
+	if a.curriculum.Add(reward) {
+		a.epsilon = math.Min(srvEpsilonStart, a.epsilon*2)
+	} else {
+		a.epsilon = math.Max(srvEpsilonMin, a.epsilon*srvEpsilonDecay)
+	}
+	a.thompson.Update(action, reward)
+	a.prb.Add(Experience{
 		State: state, Action: action, Reward: reward,
 		NextState: state, Done: !success,
-	}
-	a.bufIdx = (a.bufIdx + 1) % srvBufferSize
-	if a.bufIdx == 0 {
-		a.bufFull = true
-	}
-	a.epsilon = math.Max(srvEpsilonMin, a.epsilon*srvEpsilonDecay)
+	})
 	step := atomic.AddInt64(&a.stepCount, 1)
+	eps := a.epsilon
 	a.mu.Unlock()
+
+	srvLog.Info("outcome: success=%v reward=%.2f latency=%.0fms eps=%.3f",
+		success, reward, latencyMs, eps)
 
 	if step%srvTrainEvery == 0 {
 		go a.trainStep()
@@ -192,17 +203,19 @@ func (a *RLServerAgent) Epsilon() float64 {
 }
 
 func (a *RLServerAgent) trainStep() {
-	a.mu.RLock()
-	batch, ok := sampleBatch(a.buffer, a.bufIdx, a.bufFull, srvBatchSize)
-	a.mu.RUnlock()
+	a.mu.Lock()
+	batch, idxs, ok := a.prb.Sample(srvBatchSize)
 	if !ok {
+		a.mu.Unlock()
 		return
 	}
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	dqnTrainBatchAdam(a.qNet, a.target, a.adam, batch, srvNumActions, srvGamma, 0.005)
+	dqnTrainBatchAdamPER(a.qNet, a.target, a.adam, a.prb, batch, idxs, srvNumActions, srvGamma, 0.005, defaultEntropyCoeff)
+	a.temperature = math.Max(MinTemp, a.temperature*TempDecay)
 	cnt := atomic.AddInt64(&a.trainCount, 1)
+	temp := a.temperature
+	eps := a.epsilon
+	a.mu.Unlock()
 	if cnt%10 == 0 {
-		srvLog.Debug("train#%d eps=%.3f steps=%d", cnt, a.epsilon, atomic.LoadInt64(&a.stepCount))
+		srvLog.Debug("train#%d eps=%.3f temp=%.3f steps=%d", cnt, eps, temp, atomic.LoadInt64(&a.stepCount))
 	}
 }

@@ -17,7 +17,7 @@ var tlsLog = logger.Module("rl-tls")
 // TLSProfiles — набор JA3/TLS fingerprint профилей.
 // Пустая строка = не перекрывать (использовать Go default).
 var TLSProfiles = []string{
-	"",         // go default
+	"",        // go default
 	"chrome",
 	"firefox",
 	"safari",
@@ -29,7 +29,7 @@ const (
 	tlsHidden1      = 10
 	tlsHidden2      = 6
 	tlsNumActions   = 5 // len(TLSProfiles)
-	tlsBufferSize   = 150
+	tlsBufferSize   = 800
 	tlsBatchSize    = 4
 	tlsGamma        = 0.95
 	tlsEpsilonStart = 0.50
@@ -51,9 +51,6 @@ type TLSView struct {
 // State (5): tls_errors_norm, transport_hash_norm, hour_sin, hour_cos, is_phantom
 // Actions: go / chrome / firefox / safari / ios
 // Reward: +1 handshake успешен, −1 провал
-//
-// Разные ISP/DPI реагируют по-разному на JA3. Агент учится какой профиль
-// лучше всего проходит через конкретные блокировки.
 type RLTLSAgent struct {
 	mu sync.RWMutex
 
@@ -61,9 +58,12 @@ type RLTLSAgent struct {
 	target *gnet.GorgoniaNet
 	adam   *AdamState
 
-	buffer  []Experience
-	bufIdx  int
-	bufFull bool
+	prb        *PrioritizedReplayBuffer
+	thompson   *ThompsonSampler
+	sticky     StickyExplorer
+	curriculum CurriculumTracker
+	diversity  DiversityTracker
+	temperature float64
 
 	epsilon    float64
 	stepCount  int64
@@ -75,7 +75,12 @@ type RLTLSAgent struct {
 
 func NewRLTLSAgent() *RLTLSAgent {
 	a := &RLTLSAgent{
-		buffer:        make([]Experience, tlsBufferSize),
+		prb:           NewPrioritizedBuffer(tlsBufferSize),
+		thompson:      NewThompsonSampler(tlsNumActions),
+		sticky:        StickyExplorer{K: 2},
+		curriculum:    NewCurriculumTracker(20, 0.0),
+		diversity:     NewDiversityTracker(tlsNumActions, 0.05),
+		temperature:   InitTemp,
 		epsilon:       tlsEpsilonStart,
 		pendingAction: -1,
 	}
@@ -111,7 +116,6 @@ func transportHash(name string) float64 {
 }
 
 // Decide возвращает строку TLS fingerprint профиля (пустая = go default).
-// Пока не накоплено 30 шагов — не вмешивается (возвращает "").
 func (a *RLTLSAgent) Decide(v TLSView) string {
 	if atomic.LoadInt64(&a.stepCount) < 10 {
 		return "" // warmup: не менять TLS fingerprint
@@ -122,10 +126,15 @@ func (a *RLTLSAgent) Decide(v TLSView) string {
 	defer a.mu.Unlock()
 
 	var idx int
-	if mrand.Float64() < a.epsilon {
-		idx = mrand.Intn(tlsNumActions)
+	if action, exploring := a.sticky.Explore(a.epsilon, tlsNumActions); exploring {
+		idx = action
 	} else {
-		idx = dqnArgmax(a.qNet, state, tlsNumActions)
+		qvals := a.qNet.Forward(state)
+		if mrand.Float64() < 0.30 {
+			idx = a.thompson.Sample(tlsNumActions)
+		} else {
+			idx = boltzmannSample(qvals, a.temperature)
+		}
 	}
 
 	a.pendingState = state
@@ -134,8 +143,8 @@ func (a *RLTLSAgent) Decide(v TLSView) string {
 	if profile == "" {
 		profile = "go-default"
 	}
-	tlsLog.Info("profile=%s transport=%s tlsErrs=%d eps=%.2f steps=%d",
-		profile, v.TransportName, v.ConsecutiveTLSErrors, a.epsilon, atomic.LoadInt64(&a.stepCount))
+	tlsLog.Info("profile=%s transport=%s tlsErrs=%d eps=%.2f temp=%.2f steps=%d",
+		profile, v.TransportName, v.ConsecutiveTLSErrors, a.epsilon, a.temperature, atomic.LoadInt64(&a.stepCount))
 	return TLSProfiles[idx]
 }
 
@@ -157,21 +166,26 @@ func (a *RLTLSAgent) RecordOutcome(success bool) {
 	if profile == "" {
 		profile = "go-default"
 	}
-	tlsLog.Info("outcome: success=%v reward=%.1f profile=%s eps→%.3f",
-		success, reward, profile, a.epsilon*tlsEpsilonDecay)
 
 	a.mu.Lock()
-	a.buffer[a.bufIdx] = Experience{
+	divBonus := a.diversity.Record(action)
+	reward += divBonus
+	if a.curriculum.Add(reward) {
+		a.epsilon = math.Min(tlsEpsilonStart, a.epsilon*2)
+	} else {
+		a.epsilon = math.Max(tlsEpsilonMin, a.epsilon*tlsEpsilonDecay)
+	}
+	a.thompson.Update(action, reward)
+	a.prb.Add(Experience{
 		State: state, Action: action, Reward: reward,
 		NextState: state, Done: !success,
-	}
-	a.bufIdx = (a.bufIdx + 1) % tlsBufferSize
-	if a.bufIdx == 0 {
-		a.bufFull = true
-	}
-	a.epsilon = math.Max(tlsEpsilonMin, a.epsilon*tlsEpsilonDecay)
+	})
 	step := atomic.AddInt64(&a.stepCount, 1)
+	eps := a.epsilon
 	a.mu.Unlock()
+
+	tlsLog.Info("outcome: success=%v reward=%.1f profile=%s eps=%.3f",
+		success, reward, profile, eps)
 
 	if step%tlsTrainEvery == 0 {
 		go a.trainStep()
@@ -190,17 +204,19 @@ func (a *RLTLSAgent) Epsilon() float64 {
 }
 
 func (a *RLTLSAgent) trainStep() {
-	a.mu.RLock()
-	batch, ok := sampleBatch(a.buffer, a.bufIdx, a.bufFull, tlsBatchSize)
-	a.mu.RUnlock()
+	a.mu.Lock()
+	batch, idxs, ok := a.prb.Sample(tlsBatchSize)
 	if !ok {
+		a.mu.Unlock()
 		return
 	}
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	dqnTrainBatchAdam(a.qNet, a.target, a.adam, batch, tlsNumActions, tlsGamma, 0.005)
+	dqnTrainBatchAdamPER(a.qNet, a.target, a.adam, a.prb, batch, idxs, tlsNumActions, tlsGamma, 0.005, defaultEntropyCoeff)
+	a.temperature = math.Max(MinTemp, a.temperature*TempDecay)
 	cnt := atomic.AddInt64(&a.trainCount, 1)
+	temp := a.temperature
+	eps := a.epsilon
+	a.mu.Unlock()
 	if cnt%10 == 0 {
-		tlsLog.Debug("train#%d eps=%.3f steps=%d", cnt, a.epsilon, atomic.LoadInt64(&a.stepCount))
+		tlsLog.Debug("train#%d eps=%.3f temp=%.3f steps=%d", cnt, eps, temp, atomic.LoadInt64(&a.stepCount))
 	}
 }

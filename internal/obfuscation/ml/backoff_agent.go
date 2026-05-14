@@ -37,7 +37,7 @@ const (
 	boHidden1      = 12
 	boHidden2      = 8
 	boNumActions   = 5 // len(BackoffDelays)
-	boBufferSize   = 150
+	boBufferSize   = 800
 	boBatchSize    = 4
 	boGamma        = 0.95
 	boEpsilonStart = 0.40
@@ -66,9 +66,12 @@ type RLBackoffAgent struct {
 	target *gnet.GorgoniaNet
 	adam   *AdamState
 
-	buffer  []Experience
-	bufIdx  int
-	bufFull bool
+	prb        *PrioritizedReplayBuffer
+	thompson   *ThompsonSampler
+	sticky     StickyExplorer
+	curriculum CurriculumTracker
+	diversity  DiversityTracker
+	temperature float64
 
 	epsilon    float64
 	stepCount  int64
@@ -80,7 +83,12 @@ type RLBackoffAgent struct {
 
 func NewRLBackoffAgent() *RLBackoffAgent {
 	a := &RLBackoffAgent{
-		buffer:        make([]Experience, boBufferSize),
+		prb:           NewPrioritizedBuffer(boBufferSize),
+		thompson:      NewThompsonSampler(boNumActions),
+		sticky:        StickyExplorer{K: 2},
+		curriculum:    NewCurriculumTracker(20, 0.0),
+		diversity:     NewDiversityTracker(boNumActions, 0.05),
+		temperature:   InitTemp,
 		epsilon:       boEpsilonStart,
 		pendingAction: -1,
 	}
@@ -94,7 +102,7 @@ func (a *RLBackoffAgent) encodeState(v BackoffView) []float64 {
 	s := make([]float64, boStateSize)
 	s[0] = math.Min(float64(v.ConsecutiveFails)/10.0, 1.0)
 	s[1] = float64(v.LastErrType) / 3.0
-	s[2] = math.Min(v.TimeSinceSuccessSec/600.0, 1.0) // 10 мин → 1.0
+	s[2] = math.Min(v.TimeSinceSuccessSec/600.0, 1.0)
 	hour := float64(time.Now().Hour()) + float64(time.Now().Minute())/60.0
 	s[3] = math.Sin(2 * math.Pi * hour / 24.0)
 	s[4] = math.Cos(2 * math.Pi * hour / 24.0)
@@ -102,7 +110,6 @@ func (a *RLBackoffAgent) encodeState(v BackoffView) []float64 {
 }
 
 // Decide возвращает задержку перед следующей попыткой переподключения.
-// Пока не накоплено 30 шагов — возвращает 3s (близко к дефолтному ReconnectInterval).
 func (a *RLBackoffAgent) Decide(v BackoffView) time.Duration {
 	if atomic.LoadInt64(&a.stepCount) < 10 {
 		return BackoffDelays[1] // 3s — безопасный дефолт
@@ -113,16 +120,21 @@ func (a *RLBackoffAgent) Decide(v BackoffView) time.Duration {
 	defer a.mu.Unlock()
 
 	var idx int
-	if mrand.Float64() < a.epsilon {
-		idx = mrand.Intn(boNumActions)
+	if action, exploring := a.sticky.Explore(a.epsilon, boNumActions); exploring {
+		idx = action
 	} else {
-		idx = dqnArgmax(a.qNet, state, boNumActions)
+		qvals := a.qNet.Forward(state)
+		if mrand.Float64() < 0.30 {
+			idx = a.thompson.Sample(boNumActions)
+		} else {
+			idx = boltzmannSample(qvals, a.temperature)
+		}
 	}
 
 	a.pendingState = state
 	a.pendingAction = idx
-	boLog.Info("delay=%v fails=%d errType=%d eps=%.2f steps=%d",
-		BackoffDelays[idx], v.ConsecutiveFails, v.LastErrType, a.epsilon, atomic.LoadInt64(&a.stepCount))
+	boLog.Info("delay=%v fails=%d errType=%d eps=%.2f temp=%.2f steps=%d",
+		BackoffDelays[idx], v.ConsecutiveFails, v.LastErrType, a.epsilon, a.temperature, atomic.LoadInt64(&a.stepCount))
 	return BackoffDelays[idx]
 }
 
@@ -143,21 +155,26 @@ func (a *RLBackoffAgent) RecordOutcome(success bool) {
 	} else {
 		reward = -0.5
 	}
-	boLog.Info("outcome: success=%v reward=%.2f delay=%v eps→%.3f",
-		success, reward, BackoffDelays[action], a.epsilon*boEpsilonDecay)
 
 	a.mu.Lock()
-	a.buffer[a.bufIdx] = Experience{
+	divBonus := a.diversity.Record(action)
+	reward += divBonus
+	if a.curriculum.Add(reward) {
+		a.epsilon = math.Min(boEpsilonStart, a.epsilon*2)
+	} else {
+		a.epsilon = math.Max(boEpsilonMin, a.epsilon*boEpsilonDecay)
+	}
+	a.thompson.Update(action, reward)
+	a.prb.Add(Experience{
 		State: state, Action: action, Reward: reward,
 		NextState: state, Done: !success,
-	}
-	a.bufIdx = (a.bufIdx + 1) % boBufferSize
-	if a.bufIdx == 0 {
-		a.bufFull = true
-	}
-	a.epsilon = math.Max(boEpsilonMin, a.epsilon*boEpsilonDecay)
+	})
 	step := atomic.AddInt64(&a.stepCount, 1)
+	eps := a.epsilon
 	a.mu.Unlock()
+
+	boLog.Info("outcome: success=%v reward=%.2f delay=%v eps=%.3f",
+		success, reward, BackoffDelays[action], eps)
 
 	if step%boTrainEvery == 0 {
 		go a.trainStep()
@@ -169,7 +186,7 @@ func (a *RLBackoffAgent) RecordOutcome(success bool) {
 	}
 }
 
-// ClassifyErr переводит текст ошибки в BackoffErrType.
+// ClassifyBackoffErr переводит текст ошибки в BackoffErrType.
 func ClassifyBackoffErr(errStr string) BackoffErrType {
 	switch {
 	case containsAny(errStr, "timeout", "deadline", "i/o timeout"):
@@ -203,17 +220,19 @@ func (a *RLBackoffAgent) Epsilon() float64 {
 }
 
 func (a *RLBackoffAgent) trainStep() {
-	a.mu.RLock()
-	batch, ok := sampleBatch(a.buffer, a.bufIdx, a.bufFull, boBatchSize)
-	a.mu.RUnlock()
+	a.mu.Lock()
+	batch, idxs, ok := a.prb.Sample(boBatchSize)
 	if !ok {
+		a.mu.Unlock()
 		return
 	}
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	dqnTrainBatchAdam(a.qNet, a.target, a.adam, batch, boNumActions, boGamma, 0.005)
+	dqnTrainBatchAdamPER(a.qNet, a.target, a.adam, a.prb, batch, idxs, boNumActions, boGamma, 0.005, defaultEntropyCoeff)
+	a.temperature = math.Max(MinTemp, a.temperature*TempDecay)
 	cnt := atomic.AddInt64(&a.trainCount, 1)
+	temp := a.temperature
+	eps := a.epsilon
+	a.mu.Unlock()
 	if cnt%10 == 0 {
-		boLog.Debug("train#%d eps=%.3f steps=%d", cnt, a.epsilon, atomic.LoadInt64(&a.stepCount))
+		boLog.Debug("train#%d eps=%.3f temp=%.3f steps=%d", cnt, eps, temp, atomic.LoadInt64(&a.stepCount))
 	}
 }

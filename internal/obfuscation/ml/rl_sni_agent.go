@@ -3,10 +3,13 @@ package ml
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"math"
 	mrand "math/rand"
+	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -21,7 +24,7 @@ const (
 	sniStateSize    = 7
 	sniHidden1      = 32
 	sniHidden2      = 16
-	sniBufferSize   = 200
+	sniBufferSize   = 1000
 	sniBatchSize    = 4
 	sniGamma        = 0.95
 	sniEpsilonStart = 0.40
@@ -29,18 +32,13 @@ const (
 	sniEpsilonDecay = 0.97
 	sniTargetSync   = 8
 	sniTrainEvery   = 1
+	maxSNIPoolSize  = 256 // максимальный размер пула доменов
 
-	// Веса при комбинировании Q-сети и world model в режиме exploit.
-	// Q-сеть учится на долгосрочной ценности (Bellman),
-	// world model — на прямом наблюдении reward (MSE).
 	sniQWeight     = 0.6
 	sniWorldWeight = 0.4
 )
 
 // RLSNIAgent выбирает SNI-домены через DQN + world model.
-//
-// Режим "thinking": в exploit-ветке агент прогоняет каждый домен через
-// Q-сеть И world model, комбинирует оценки, выбирает лучший вариант.
 //
 // State (7 признаков): rtt_norm, success_rate, fail_rate, dpi_flag,
 //
@@ -52,28 +50,29 @@ type RLSNIAgent struct {
 	mu sync.RWMutex
 
 	pool      []string
-	qNet      *gnet.GorgoniaNet // Q-сеть (Bellman / долгосрочная ценность)
-	target    *gnet.GorgoniaNet // target network для стабильного обучения
-	worldNet  *gnet.GorgoniaNet // world model (direct reward prediction / "thinking")
+	qNet      *gnet.GorgoniaNet
+	target    *gnet.GorgoniaNet
+	worldNet  *gnet.GorgoniaNet
 	adam      *AdamState
 	worldAdam *AdamState
 
-	buffer  []Experience
-	bufIdx  int
-	bufFull bool
+	prb        *PrioritizedReplayBuffer
+	thompson   *ThompsonSampler
+	sticky     StickyExplorer
+	curriculum CurriculumTracker
+	diversity  DiversityTracker
+	temperature float64
 
 	epsilon    float64
 	stepCount  int64
 	trainCount int64
 	modelDir   string
 
-	// последнее действие для RecordOutcome
 	pendingState  []float64
 	pendingAction int
 
-	// agent-driven rotation signal
-	consecutiveFails int32 // atomic
-	rotateSignal     int32 // atomic: 1 = rotate now
+	consecutiveFails int32
+	rotateSignal     int32
 }
 
 type sniPolicyState struct {
@@ -88,15 +87,26 @@ func NewRLSNIAgent(modelDir string, pool []string) *RLSNIAgent {
 	if len(pool) == 0 {
 		pool = sniDefaultPool()
 	}
-	a := &RLSNIAgent{
-		pool:     pool,
-		buffer:   make([]Experience, sniBufferSize),
-		epsilon:  sniEpsilonStart,
-		modelDir: modelDir,
+	n := len(pool)
+	if n > maxSNIPoolSize {
+		n = maxSNIPoolSize
+		pool = pool[:n]
 	}
-	a.qNet = gnet.New([]int{sniStateSize, sniHidden1, sniHidden2, len(pool)})
+	a := &RLSNIAgent{
+		pool:          pool,
+		prb:           NewPrioritizedBuffer(sniBufferSize),
+		thompson:      NewThompsonSampler(maxSNIPoolSize),
+		sticky:        StickyExplorer{K: 3},
+		curriculum:    NewCurriculumTracker(20, 0.0),
+		diversity:     NewDiversityTracker(maxSNIPoolSize, 0.03),
+		temperature:   InitTemp,
+		epsilon:       sniEpsilonStart,
+		modelDir:      modelDir,
+		pendingAction: -1,
+	}
+	a.qNet = gnet.New([]int{sniStateSize, sniHidden1, sniHidden2, n})
 	a.target = gnet.Clone(a.qNet)
-	a.worldNet = gnet.New([]int{sniStateSize, sniHidden1, sniHidden2, len(pool)})
+	a.worldNet = gnet.New([]int{sniStateSize, sniHidden1, sniHidden2, n})
 	a.adam = NewAdamState(a.qNet)
 	a.worldAdam = NewAdamState(a.worldNet)
 	a.load(pool)
@@ -104,9 +114,13 @@ func NewRLSNIAgent(modelDir string, pool []string) *RLSNIAgent {
 }
 
 // SetPool обновляет список доменов. Если размер пула изменился — сети пересоздаются.
+// Максимум maxSNIPoolSize доменов.
 func (a *RLSNIAgent) SetPool(pool []string) {
 	if len(pool) == 0 {
 		return
+	}
+	if len(pool) > maxSNIPoolSize {
+		pool = pool[:maxSNIPoolSize]
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -114,7 +128,7 @@ func (a *RLSNIAgent) SetPool(pool []string) {
 		a.pool = pool
 		return
 	}
-	// Пул вырос — сохраняем веса скрытых слоёв, добавляем нули для новых действий.
+	// Сохраняем веса скрытых слоёв, добавляем нули для новых действий.
 	oldQLayers := a.qNet.Layers
 	oldWLayers := a.worldNet.Layers
 	newQ := gnet.New([]int{sniStateSize, sniHidden1, sniHidden2, len(pool)})
@@ -133,6 +147,64 @@ func (a *RLSNIAgent) SetPool(pool []string) {
 	a.qNet = newQ
 	a.target = gnet.Clone(newQ)
 	a.worldNet = newW
+	a.adam = NewAdamState(newQ)
+	a.worldAdam = NewAdamState(newW)
+}
+
+// StartAutoFetch запускает фоновую горутину, которая каждые 24ч скачивает
+// список доменов (plain-text, один домен на строку) и добавляет их в пул.
+func (a *RLSNIAgent) StartAutoFetch(domainsURL string) {
+	go func() {
+		a.fetchAndUpdatePool(domainsURL)
+		ticker := time.NewTicker(24 * time.Hour)
+		defer ticker.Stop()
+		for range ticker.C {
+			a.fetchAndUpdatePool(domainsURL)
+		}
+	}()
+}
+
+func (a *RLSNIAgent) fetchAndUpdatePool(url string) {
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Get(url)
+	if err != nil {
+		sniLog.Warn("auto-fetch domains failed: %v", err)
+		return
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return
+	}
+	var fetched []string
+	for _, line := range strings.Split(string(body), "\n") {
+		d := strings.TrimSpace(line)
+		if d != "" && !strings.HasPrefix(d, "#") {
+			fetched = append(fetched, d)
+		}
+	}
+	if len(fetched) == 0 {
+		return
+	}
+
+	a.mu.Lock()
+	existing := make(map[string]bool, len(a.pool))
+	for _, d := range a.pool {
+		existing[d] = true
+	}
+	oldLen := len(a.pool)
+	newPool := append([]string{}, a.pool...)
+	for _, d := range fetched {
+		if !existing[d] && len(newPool) < maxSNIPoolSize {
+			newPool = append(newPool, d)
+		}
+	}
+	a.mu.Unlock()
+
+	if len(newPool) > oldLen {
+		a.SetPool(newPool)
+		sniLog.Info("auto-fetch: pool updated %d → %d domains", oldLen, len(newPool))
+	}
 }
 
 // EncodeState строит вектор состояния из доступных метрик.
@@ -152,10 +224,6 @@ func (a *RLSNIAgent) EncodeState(rttMs float64, successRate, failRate float64, d
 }
 
 // Select выбирает SNI-домен.
-//
-// Explore (epsilon-greedy): случайный домен для исследования.
-// Exploit (thinking): агент прогоняет все домены через Q-сеть и world model,
-// комбинирует оценки (Q*0.6 + world*0.4) и выбирает домен с максимальным score.
 func (a *RLSNIAgent) Select(state []float64) (domain string, actionIdx int) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -172,31 +240,44 @@ func (a *RLSNIAgent) Select(state []float64) (domain string, actionIdx int) {
 		return pool[idx], idx
 	}
 
+	n := len(pool)
 	var idx int
 	var mode string
-	if mrand.Float64() < a.epsilon {
-		idx = mrand.Intn(len(pool))
-		mode = "explore"
+
+	if stickyIdx, exploring := a.sticky.Explore(a.epsilon, n); exploring {
+		idx = stickyIdx
+		if idx >= n {
+			idx = mrand.Intn(n)
+		}
+		mode = "explore-sticky"
 	} else {
 		qvals := a.qNet.Forward(state)
 		wvals := a.worldNet.Forward(state)
-
-		best := 0
-		for i := 1; i < len(qvals) && i < len(pool); i++ {
-			scoreI := sniQWeight*qvals[i] + sniWorldWeight*wvals[i]
-			scoreBest := sniQWeight*qvals[best] + sniWorldWeight*wvals[best]
-			if scoreI > scoreBest {
-				best = i
+		if mrand.Float64() < 0.30 {
+			// Thompson restricted to current pool.
+			bestTheta := -1e9
+			idx = 0
+			for i := 0; i < n && i < len(a.thompson.alpha); i++ {
+				theta := betaSample(a.thompson.alpha[i], a.thompson.beta[i])
+				if theta > bestTheta {
+					bestTheta = theta
+					idx = i
+				}
 			}
+			mode = "thompson"
+		} else {
+			// Boltzmann over combined Q+W scores.
+			scores := make([]float64, n)
+			for i := 0; i < n && i < len(qvals) && i < len(wvals); i++ {
+				scores[i] = sniQWeight*qvals[i] + sniWorldWeight*wvals[i]
+			}
+			idx = boltzmannSample(scores, a.temperature)
+			mode = fmt.Sprintf("boltzmann Q=%.3f W=%.3f", qvals[idx], wvals[idx])
 		}
-		idx = best
-		mode = fmt.Sprintf("think Q=%.3f W=%.3f score=%.3f",
-			qvals[idx], wvals[idx],
-			sniQWeight*qvals[idx]+sniWorldWeight*wvals[idx])
 	}
 
-	sniLog.Info("%s → %s (eps=%.2f pool=%d steps=%d train=%d)",
-		mode, pool[idx], a.epsilon, len(pool),
+	sniLog.Info("%s → %s (eps=%.2f temp=%.2f pool=%d steps=%d train=%d)",
+		mode, pool[idx], a.epsilon, a.temperature, n,
 		atomic.LoadInt64(&a.stepCount), atomic.LoadInt64(&a.trainCount))
 
 	a.pendingState = state
@@ -216,8 +297,7 @@ func (a *RLSNIAgent) RecordOutcome(success bool, latencyMs float64) {
 	}
 
 	reward := ComputeReward(success, latencyMs)
-	sniLog.Info("outcome: success=%v reward=%.2f latency=%.0fms eps→%.3f",
-		success, reward, latencyMs, a.epsilon*sniEpsilonDecay)
+	sniLog.Info("outcome: success=%v reward=%.2f latency=%.0fms", success, reward, latencyMs)
 
 	if success {
 		atomic.StoreInt32(&a.consecutiveFails, 0)
@@ -230,18 +310,21 @@ func (a *RLSNIAgent) RecordOutcome(success bool, latencyMs float64) {
 	}
 
 	a.mu.Lock()
-	a.buffer[a.bufIdx] = Experience{
+	divBonus := a.diversity.Record(action)
+	reward += divBonus
+	if a.curriculum.Add(reward) {
+		a.epsilon = math.Min(sniEpsilonStart, a.epsilon*2)
+	} else {
+		a.epsilon = math.Max(sniEpsilonMin, a.epsilon*sniEpsilonDecay)
+	}
+	a.thompson.Update(action, reward)
+	a.prb.Add(Experience{
 		State:     state,
 		Action:    action,
 		Reward:    reward,
 		NextState: state,
 		Done:      !success,
-	}
-	a.bufIdx = (a.bufIdx + 1) % sniBufferSize
-	if a.bufIdx == 0 {
-		a.bufFull = true
-	}
-	a.epsilon = math.Max(sniEpsilonMin, a.epsilon*sniEpsilonDecay)
+	})
 	step := atomic.AddInt64(&a.stepCount, 1)
 	a.mu.Unlock()
 
@@ -255,7 +338,7 @@ func (a *RLSNIAgent) RecordOutcome(success bool, latencyMs float64) {
 	}
 }
 
-// Epsilon возвращает текущее значение epsilon (для логов/диагностики).
+// Epsilon возвращает текущее значение epsilon.
 func (a *RLSNIAgent) Epsilon() float64 {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
@@ -268,33 +351,23 @@ func (a *RLSNIAgent) ShouldRotate() bool {
 }
 
 func (a *RLSNIAgent) trainStep() {
-	a.mu.RLock()
-	size := a.bufIdx
-	if a.bufFull {
-		size = sniBufferSize
-	}
-	if size < sniBatchSize*2 {
-		a.mu.RUnlock()
+	a.mu.Lock()
+	batch, idxs, ok := a.prb.Sample(sniBatchSize)
+	if !ok {
+		a.mu.Unlock()
 		return
 	}
-	batch := make([]Experience, sniBatchSize)
-	for i := range batch {
-		batch[i] = a.buffer[mrand.Intn(size)]
-	}
-	a.mu.RUnlock()
-
-	a.mu.Lock()
-	defer a.mu.Unlock()
 
 	const lr = 0.005
 	outSize := len(a.qNet.Layers[len(a.qNet.Layers)-1].B)
 	wOutSize := len(a.worldNet.Layers[len(a.worldNet.Layers)-1].B)
-	for _, exp := range batch {
+
+	for i, exp := range batch {
 		if exp.Action >= outSize {
 			continue
 		}
 
-		// --- Q-сеть: Bellman update ---
+		// Q-сеть: Bellman update с энтропийным бонусом.
 		qActs := a.qNet.ForwardActivations(exp.State)
 		qvals := qActs[len(qActs)-1]
 
@@ -309,14 +382,18 @@ func (a *RLSNIAgent) trainStep() {
 					maxQ = q
 				}
 			}
-			targetQ = exp.Reward + sniGamma*maxQ
+			bonus := defaultEntropyCoeff * entropy(softmaxVec(nextQ))
+			targetQ = exp.Reward + sniGamma*(maxQ+bonus)
 		}
 
+		tdErr := targetQ - qvals[exp.Action]
+		a.prb.UpdatePriority(idxs[i], tdErr)
+
 		dQ := make([]float64, outSize)
-		dQ[exp.Action] = -(targetQ - qvals[exp.Action])
+		dQ[exp.Action] = -tdErr
 		dqnBackpropAdam(a.qNet, a.adam, qActs, dQ, lr)
 
-		// --- World model: прямой MSE на наблюдаемый reward ---
+		// World model: прямой MSE на наблюдаемый reward.
 		if exp.Action >= wOutSize {
 			continue
 		}
@@ -328,12 +405,19 @@ func (a *RLSNIAgent) trainStep() {
 		dqnBackpropAdam(a.worldNet, a.worldAdam, wActs, dW, lr)
 	}
 
+	a.temperature = math.Max(MinTemp, a.temperature*TempDecay)
 	cnt := atomic.AddInt64(&a.trainCount, 1)
+	temp := a.temperature
+	eps := a.epsilon
+	a.mu.Unlock()
+
 	if cnt%50 == 0 {
-		sniLog.Info("train#%d eps=%.3f steps=%d (saving policy)", cnt, a.epsilon, atomic.LoadInt64(&a.stepCount))
+		sniLog.Info("train#%d eps=%.3f temp=%.3f steps=%d (saving policy)", cnt, eps, temp, atomic.LoadInt64(&a.stepCount))
+		a.mu.Lock()
 		a.saveLocked()
+		a.mu.Unlock()
 	} else if cnt%10 == 0 {
-		sniLog.Debug("train#%d eps=%.3f steps=%d", cnt, a.epsilon, atomic.LoadInt64(&a.stepCount))
+		sniLog.Debug("train#%d eps=%.3f temp=%.3f steps=%d", cnt, eps, temp, atomic.LoadInt64(&a.stepCount))
 	}
 }
 
@@ -358,6 +442,8 @@ func (a *RLSNIAgent) load(pool []string) {
 	if len(st.WorldLayers) > 0 && st.WorldLayers[len(st.WorldLayers)-1].OutSize == len(pool) {
 		a.worldNet = &gnet.GorgoniaNet{Layers: st.WorldLayers}
 	}
+	a.adam = NewAdamState(a.qNet)
+	a.worldAdam = NewAdamState(a.worldNet)
 	a.epsilon = st.Epsilon
 	atomic.StoreInt64(&a.stepCount, st.Steps)
 	a.mu.Unlock()
