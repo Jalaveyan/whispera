@@ -62,8 +62,7 @@ func NewMarionette() *Marionette {
 		Ctx:          ctx,
 		Cancel:       cancel,
 	}
-	m.EvasionPool = NewEvasionPool(m, 100)
-	m.EvasionPool.Start()
+	m.EvasionPool = NewEvasionPool(m, 0) // generators are cheap — on-demand via Get* default branch
 	m.initDynamicProfileManager()
 	m.initDefaultProfiles()
 	m.initDefaultRules()

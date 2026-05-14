@@ -37,6 +37,13 @@ var handshakeBufferPool = sync.Pool{
 	},
 }
 
+var mtprotoCopyBufPool = sync.Pool{
+	New: func() any {
+		buf := make([]byte, 32*1024)
+		return &buf
+	},
+}
+
 const (
 	ModuleName    = "transport.mtproto"
 	ModuleVersion = "1.0.0"
@@ -397,7 +404,9 @@ func (t *Transport) ProxyToTelegram(clientConn net.Conn, session *MTProtoSession
 
 	go func() {
 		defer func() { done <- struct{}{} }()
-		buf := make([]byte, 32*1024)
+		bufp := mtprotoCopyBufPool.Get().(*[]byte)
+		buf := *bufp
+		defer mtprotoCopyBufPool.Put(bufp)
 		for {
 			n, err := clientConn.Read(buf)
 			if err != nil {
@@ -413,7 +422,9 @@ func (t *Transport) ProxyToTelegram(clientConn net.Conn, session *MTProtoSession
 
 	go func() {
 		defer func() { done <- struct{}{} }()
-		buf := make([]byte, 32*1024)
+		bufp := mtprotoCopyBufPool.Get().(*[]byte)
+		buf := *bufp
+		defer mtprotoCopyBufPool.Put(bufp)
 		for {
 			n, err := telegramConn.Read(buf)
 			if err != nil {
