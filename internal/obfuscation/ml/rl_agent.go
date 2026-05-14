@@ -39,11 +39,12 @@ type Experience struct {
 type RLTransportAgent struct {
 	mu sync.RWMutex
 
-	qNet    *gnet.GorgoniaNet
-	target  *gnet.GorgoniaNet
-	buffer  []Experience
-	bufIdx  int
-	bufFull bool
+	qNet     *gnet.GorgoniaNet
+	target   *gnet.GorgoniaNet
+	worldNet *gnet.GorgoniaNet // world model: прямое предсказание reward
+	buffer   []Experience
+	bufIdx   int
+	bufFull  bool
 
 	epsilon    float64
 	stepCount  int64
@@ -52,10 +53,19 @@ type RLTransportAgent struct {
 	transportNames []string
 	transportIndex map[string]int
 
+	// активный пул: подмножество transportNames, реально доступных в данный момент
+	activePool []string
+
+	// для RecordOutcome / ShouldRotate
+	pendingState     []float64
+	pendingAction    int
+	consecutiveFails int32
+	rotateSignal     int32
+
 	modelDir string
 }
 
-func NewRLTransportAgent(modelDir string) *RLTransportAgent {
+func NewRLTransportAgent(modelDir string, _ []string) *RLTransportAgent {
 	agent := &RLTransportAgent{
 		qNet:       gnet.New([]int{RLStateSize, RLHidden1, RLHidden2, RLActionSize}),
 		buffer:     make([]Experience, RLBufferSize),
@@ -75,10 +85,124 @@ func NewRLTransportAgent(modelDir string) *RLTransportAgent {
 		agent.transportIndex[name] = i
 	}
 	agent.target = gnet.Clone(agent.qNet)
+	agent.worldNet = gnet.New([]int{RLStateSize, RLHidden1, RLHidden2, RLActionSize})
+	agent.activePool = agent.transportNames
 	if !agent.loadPolicy() {
 		agent.PreSeed()
 	}
 	return agent
+}
+
+// SetActivePool ограничивает выбор транспортов реально доступными в данном соединении.
+// Вызывается из buildCandidates после фильтрации по конфигу.
+func (a *RLTransportAgent) SetActivePool(names []string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if len(names) == 0 {
+		a.activePool = a.transportNames
+		return
+	}
+	a.activePool = names
+}
+
+// Select выбирает транспорт из activePool (epsilon-greedy + world model thinking).
+// Возвращает ("", -1) если агент ещё не обучен (< 20 шагов) — tunnel использует дефолт.
+func (a *RLTransportAgent) Select(state []float64) (transport string, actionIdx int) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	pool := a.activePool
+	if len(pool) == 0 {
+		return "", -1
+	}
+	if atomic.LoadInt64(&a.stepCount) < 20 {
+		return "", -1
+	}
+
+	var idx int
+	var mode string
+	if mrand.Float64() < a.epsilon {
+		name := pool[mrand.Intn(len(pool))]
+		idx = a.transportIndex[name]
+		mode = "explore"
+	} else {
+		qvals := a.qNet.Forward(state)
+		wvals := a.worldNet.Forward(state)
+		bestName := pool[0]
+		bestScore := -1e9
+		for _, name := range pool {
+			i, ok := a.transportIndex[name]
+			if !ok || i >= len(qvals) {
+				continue
+			}
+			score := 0.6*qvals[i] + 0.4*wvals[i]
+			if score > bestScore {
+				bestScore = score
+				bestName = name
+				idx = i
+			}
+		}
+		_ = bestName
+		mode = "think"
+	}
+
+	name := ""
+	for _, n := range pool {
+		if a.transportIndex[n] == idx {
+			name = n
+			break
+		}
+	}
+	if name == "" {
+		name = pool[0]
+		idx = a.transportIndex[name]
+	}
+
+	transportLog := func(f string, args ...interface{}) {}
+	_ = transportLog
+	_ = mode
+
+	a.pendingState = state
+	a.pendingAction = idx
+	return name, idx
+}
+
+// RecordOutcome записывает результат последнего Select и обучает сеть.
+func (a *RLTransportAgent) RecordOutcome(success bool, latencyMs float64) {
+	a.mu.Lock()
+	state := a.pendingState
+	action := a.pendingAction
+	a.mu.Unlock()
+
+	if state == nil || action < 0 {
+		return
+	}
+
+	reward := ComputeReward(success, latencyMs)
+
+	if success {
+		atomic.StoreInt32(&a.consecutiveFails, 0)
+	} else {
+		if atomic.AddInt32(&a.consecutiveFails, 1) >= 3 {
+			atomic.StoreInt32(&a.rotateSignal, 1)
+		}
+	}
+
+	nextState := make([]float64, len(state))
+	copy(nextState, state)
+	a.RecordExperience(state, action, reward, nextState, !success)
+}
+
+// ShouldRotate возвращает true и сбрасывает флаг если нужно сменить транспорт.
+func (a *RLTransportAgent) ShouldRotate() bool {
+	return atomic.CompareAndSwapInt32(&a.rotateSignal, 1, 0)
+}
+
+// Epsilon возвращает текущий epsilon для диагностики.
+func (a *RLTransportAgent) Epsilon() float64 {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.epsilon
 }
 
 func (a *RLTransportAgent) EncodeState(
@@ -218,6 +342,15 @@ func (a *RLTransportAgent) trainStep() {
 		dOutput[exp.Action] = -(targetQ - qvals[exp.Action])
 
 		a.fullBackprop(layerOutputs, dOutput, lr)
+
+		// World model: MSE на наблюдаемый reward
+		if a.worldNet != nil && exp.Action < len(a.worldNet.Layers[len(a.worldNet.Layers)-1].B) {
+			wOut := a.worldForward(exp.State)
+			wvals := wOut[len(wOut)-1]
+			dW := make([]float64, len(wvals))
+			dW[exp.Action] = wvals[exp.Action] - exp.Reward
+			a.worldBackprop(wOut, dW, lr)
+		}
 	}
 
 	atomic.AddInt64(&a.trainCount, 1)
@@ -287,6 +420,62 @@ func (a *RLTransportAgent) fullBackprop(activations [][]float64, dOutput []float
 		}
 
 		delta = prevDelta
+	}
+}
+
+func (a *RLTransportAgent) worldForward(input []float64) [][]float64 {
+	acts := make([][]float64, len(a.worldNet.Layers)+1)
+	acts[0] = input
+	cur := input
+	for i, ld := range a.worldNet.Layers {
+		out := make([]float64, ld.OutSize)
+		for j := 0; j < ld.OutSize; j++ {
+			sum := ld.B[j]
+			for k := 0; k < ld.InSize && k < len(cur); k++ {
+				sum += cur[k] * ld.W[k*ld.OutSize+j]
+			}
+			if i < len(a.worldNet.Layers)-1 && sum < 0 {
+				sum = 0
+			}
+			out[j] = sum
+		}
+		acts[i+1] = out
+		cur = out
+	}
+	return acts
+}
+
+func (a *RLTransportAgent) worldBackprop(acts [][]float64, dOut []float64, lr float64) {
+	delta := dOut
+	for i := len(a.worldNet.Layers) - 1; i >= 0; i-- {
+		ld := &a.worldNet.Layers[i]
+		input := acts[i]
+		output := acts[i+1]
+		if i < len(a.worldNet.Layers)-1 {
+			for j := range delta {
+				if output[j] <= 0 {
+					delta[j] = 0
+				}
+			}
+		}
+		var prev []float64
+		if i > 0 {
+			prev = make([]float64, ld.InSize)
+			for k := 0; k < ld.InSize; k++ {
+				for j := 0; j < ld.OutSize; j++ {
+					prev[k] += ld.W[k*ld.OutSize+j] * delta[j]
+				}
+			}
+		}
+		for k := 0; k < ld.InSize && k < len(input); k++ {
+			for j := 0; j < ld.OutSize; j++ {
+				ld.W[k*ld.OutSize+j] -= lr * delta[j] * input[k]
+			}
+		}
+		for j := 0; j < ld.OutSize; j++ {
+			ld.B[j] -= lr * delta[j]
+		}
+		delta = prev
 	}
 }
 

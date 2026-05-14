@@ -196,7 +196,7 @@ func NewNativeMLEngine(modelDir string) *NativeMLEngine {
 	e.anomalyNet = gnet.New([]int{InputSize, HiddenSize2, HiddenSize3, HiddenSize4, 1})
 	e.transportNet = gnet.New([]int{TransportFeatures, HiddenSize2, HiddenSize3, HiddenSize4, TransportChoices})
 	e.flowAnalyzer = NewFlowAnalyzer()
-	e.rlAgent = NewRLTransportAgent(modelDir)
+	e.rlAgent = NewRLTransportAgent(modelDir, nil)
 	e.tspuDetector = NewTSPUDetector()
 	e.loadModel()
 	if e.ShouldPretrain() {

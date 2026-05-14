@@ -391,8 +391,9 @@ type Manager struct {
 	currentSNI    string
 	lastRotation  time.Time
 	sniAgent      *mlpkg.RLSNIAgent
-	connAgent     *mlpkg.RLConnAgent
-	connAgentStop chan struct{}
+	connAgent          *mlpkg.RLConnAgent
+	connAgentStop      chan struct{}
+	transportAgent     *mlpkg.RLTransportAgent
 
 	russianTunneler *russian.RussianTunneler
 
@@ -577,6 +578,9 @@ func New(cfg *Config) (*Manager, error) {
 
 	m.connAgent = mlpkg.NewRLConnAgent()
 	log.Info("RL Conn agent initialized")
+
+	m.transportAgent = mlpkg.NewRLTransportAgent(cfg.SNIModelDir, nil)
+	log.Info("RL Transport agent initialized (eps=%.2f)", m.transportAgent.Epsilon())
 
 	if cfg.CustomSNI != "" {
 		if cfg.TransportConfig == nil {
@@ -1132,7 +1136,18 @@ func (m *Manager) buildCandidates() []dialCandidate {
 		}
 	}
 
-	return m.applyTransportPolicy(cc)
+	cc = m.applyTransportPolicy(cc)
+
+	// Сообщаем транспортному агенту какие транспорты реально доступны.
+	if m.transportAgent != nil && len(cc) > 0 {
+		names := make([]string, len(cc))
+		for i, c := range cc {
+			names[i] = c.name
+		}
+		m.transportAgent.SetActivePool(names)
+	}
+
+	return cc
 }
 
 func (m *Manager) applyTransportPolicy(cc []dialCandidate) []dialCandidate {
@@ -3251,128 +3266,39 @@ func (m *Manager) getReconnectDelay() time.Duration {
 }
 
 func (m *Manager) mlRecommendTransport(ctx context.Context) (transport string, confidence float64) {
-	if m.config.MLServerURL == "" {
+	if m.transportAgent == nil {
 		return "", 0
 	}
-
-	host, port, _ := net.SplitHostPort(m.config.ServerAddr)
-	if host == "" {
-		host = m.config.ServerAddr
-		port = "443"
-	}
-
-	body, _ := json.Marshal(map[string]interface{}{
-		"server_host": host,
-		"server_port": func() int {
-			p := 443
-			fmt.Sscanf(port, "%d", &p)
-			return p
-		}(),
-	})
-
-	reqCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
-	defer cancel()
-
-	mlURL := m.config.MLServerURL
-	if !strings.HasPrefix(mlURL, "http://") && !strings.HasPrefix(mlURL, "https://") {
-		mlURL = "http://" + mlURL
-	}
-
-	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost,
-		mlURL+"/recommend/transport", bytes.NewReader(body))
-	if err != nil {
-		log.Warn("ML recommend: invalid URL %q: %v", mlURL, err)
+	rttMs := float64(atomic.LoadInt64(&m.qualityRTTEWMA)) / 1e6
+	missed := float64(atomic.LoadInt32(&m.missedKAs))
+	state := m.transportAgent.EncodeState(
+		[4]float64{rttMs, rttMs, rttMs, rttMs},
+		0,
+		math.Min(missed/5.0, 1.0),
+		false,
+		0,
+		time.Now().Hour(),
+		0,
+	)
+	tr, _ := m.transportAgent.Select(state)
+	if tr == "" {
 		return "", 0
 	}
-	req.Header.Set("Content-Type", "application/json")
-	if m.config.MLToken != "" {
-		req.Header.Set("Authorization", "Bearer "+m.config.MLToken)
-	}
-
-	resp, err := mlHTTPClient.Do(req)
-	if err != nil {
-		log.Warn("ML transport recommendation unavailable: %v — using config transport", err)
-		return "", 0
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode == http.StatusUnauthorized {
-		log.Warn("ML recommend: 401 Unauthorized — check ML API token")
-		return "", 0
-	}
-	if resp.StatusCode != http.StatusOK {
-		log.Warn("ML recommend: unexpected status %d", resp.StatusCode)
-		return "", 0
-	}
-
-	var result struct {
-		Transport  string  `json:"transport"`
-		Confidence float64 `json:"confidence"`
-		UsedML     bool    `json:"used_ml"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		log.Warn("ML recommend: decode error: %v", err)
-		return "", 0
-	}
-	if result.Transport == "" {
-		log.Warn("ML recommend: empty transport in response")
-		return "", 0
-	}
-
-	log.Info("ML transport recommendation: %s (confidence=%.2f, ml=%v)",
-		result.Transport, result.Confidence, result.UsedML)
-	return result.Transport, result.Confidence
+	return tr, 1.0
 }
 
 func (m *Manager) mlSendFeedback(transport string, success bool, latencyMs float64) {
-	if m.config.MLServerURL == "" || transport == "" {
+	if transport == "" || m.transportAgent == nil {
 		return
 	}
-
-	host, _, _ := net.SplitHostPort(m.config.ServerAddr)
-	if host == "" {
-		host = m.config.ServerAddr
+	m.transportAgent.RecordOutcome(success, latencyMs)
+	if !success && m.transportAgent.ShouldRotate() {
+		go m.rotateTransport()
 	}
-
-	go func() {
-		body, _ := json.Marshal(map[string]interface{}{
-			"transport":   transport,
-			"success":     success,
-			"latency_ms":  latencyMs,
-			"destination": host,
-		})
-
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		defer cancel()
-
-		mlURL := m.config.MLServerURL
-		if !strings.HasPrefix(mlURL, "http://") && !strings.HasPrefix(mlURL, "https://") {
-			mlURL = "https://" + mlURL
-		}
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-			mlURL+"/feedback/connection", bytes.NewReader(body))
-		if err != nil {
-			return
-		}
-		req.Header.Set("Content-Type", "application/json")
-		if m.config.MLToken != "" {
-			req.Header.Set("Authorization", "Bearer "+m.config.MLToken)
-		}
-
-		resp, err := mlHTTPClient.Do(req)
-		if err != nil {
-			log.Debug("ML feedback send failed: %v", err)
-			return
-		}
-		if resp.StatusCode == http.StatusUnauthorized {
-			log.Warn("ML feedback: 401 Unauthorized — check ML API token")
-		}
-		resp.Body.Close()
-	}()
 }
 
 func (m *Manager) mlStartTransportWatchdog(ctx context.Context) {
-	if m.config.MLServerURL == "" {
+	if m.transportAgent == nil {
 		return
 	}
 	go func() {
@@ -3383,15 +3309,12 @@ func (m *Manager) mlStartTransportWatchdog(ctx context.Context) {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				rec, conf := m.mlRecommendTransport(ctx)
-				if rec == "" || conf < 0.65 {
+				rec, _ := m.mlRecommendTransport(ctx)
+				if rec == "" || rec == m.config.Transport {
 					continue
 				}
-				if rec == m.config.Transport {
-					continue
-				}
-				log.Info("[ML-Watchdog] Transport change recommended: %s → %s (confidence=%.2f)",
-					m.config.Transport, rec, conf)
+				log.Info("[RL-Transport] Watchdog: switching %s → %s (eps=%.2f)",
+					m.config.Transport, rec, m.transportAgent.Epsilon())
 				m.config.Transport = rec
 				m.rotateTransport()
 			}
