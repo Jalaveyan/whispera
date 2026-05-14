@@ -2,6 +2,7 @@ package keylimits
 
 import (
 	"fmt"
+	"log"
 	"sort"
 	"sync"
 	"time"
@@ -50,11 +51,15 @@ type burstWindow struct {
 }
 
 type Manager struct {
-	mu             sync.RWMutex
-	defaultLimits  Limits
-	keyLimits      map[string]Limits
-	sessions       map[string]map[string]*Session // keyID -> sessionID -> Session
-	burst          map[string]*burstWindow
+	mu            sync.RWMutex
+	defaultLimits Limits
+	keyLimits     map[string]Limits
+	sessions      map[string]map[string]*Session // keyID -> sessionID -> Session
+	burst         map[string]*burstWindow
+
+	closersMu sync.Mutex
+	closers   map[string]map[string]func() // keyID -> sessionID -> conn.Close
+
 	onSessionsDrop func(keyID, sessionID string)
 }
 
@@ -64,6 +69,7 @@ func New(defaults Limits) *Manager {
 		keyLimits:     make(map[string]Limits),
 		sessions:      make(map[string]map[string]*Session),
 		burst:         make(map[string]*burstWindow),
+		closers:       make(map[string]map[string]func()),
 	}
 	go m.gcLoop()
 	return m
@@ -161,12 +167,82 @@ func (m *Manager) Touch(keyID, sessionID string) {
 
 func (m *Manager) Release(keyID, sessionID string) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	if km, ok := m.sessions[keyID]; ok {
 		delete(km, sessionID)
 		if len(km) == 0 {
 			delete(m.sessions, keyID)
 		}
+	}
+	m.mu.Unlock()
+
+	m.closersMu.Lock()
+	if km, ok := m.closers[keyID]; ok {
+		delete(km, sessionID)
+		if len(km) == 0 {
+			delete(m.closers, keyID)
+		}
+	}
+	m.closersMu.Unlock()
+}
+
+// RegisterCloser associates a conn.Close function with an admitted session.
+// Called by the connection handler after the connection is fully set up.
+// The closer is called by EvictOldest and gcExpired to forcibly terminate the TCP connection.
+func (m *Manager) RegisterCloser(keyID, sessionID string, fn func()) {
+	m.closersMu.Lock()
+	defer m.closersMu.Unlock()
+	km := m.closers[keyID]
+	if km == nil {
+		km = make(map[string]func())
+		m.closers[keyID] = km
+	}
+	km[sessionID] = fn
+}
+
+// EvictOldest closes the n oldest sessions (by StartedAt) across all keys.
+// Closing the connection causes the handler goroutine to exit and call Release.
+func (m *Manager) EvictOldest(n int) {
+	type entry struct {
+		keyID     string
+		sessionID string
+		startedAt time.Time
+	}
+
+	m.mu.RLock()
+	all := make([]entry, 0, 64)
+	for keyID, km := range m.sessions {
+		for sid, s := range km {
+			all = append(all, entry{keyID, sid, s.StartedAt})
+		}
+	}
+	m.mu.RUnlock()
+
+	sort.Slice(all, func(i, j int) bool {
+		return all[i].startedAt.Before(all[j].startedAt)
+	})
+
+	if n > len(all) {
+		n = len(all)
+	}
+
+	m.closersMu.Lock()
+	toClose := make([]func(), 0, n)
+	for i := 0; i < n; i++ {
+		e := all[i]
+		if km, ok := m.closers[e.keyID]; ok {
+			if fn, ok := km[e.keyID+"/"+e.sessionID]; ok {
+				toClose = append(toClose, fn)
+			} else if fn, ok := km[e.sessionID]; ok {
+				toClose = append(toClose, fn)
+			}
+		}
+		log.Printf("[keylimits] evicting session %s/%s (age %s)",
+			e.keyID, e.sessionID, time.Since(e.startedAt).Round(time.Second))
+	}
+	m.closersMu.Unlock()
+
+	for _, fn := range toClose {
+		fn()
 	}
 }
 
@@ -223,9 +299,11 @@ func (m *Manager) gcLoop() {
 
 func (m *Manager) gcExpired() {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 
 	now := time.Now()
+	type dead struct{ keyID, sessionID string }
+	var toClose []dead
+
 	for keyID, km := range m.sessions {
 		ttl := m.limitsFor(keyID).SessionTTL
 		if ttl <= 0 {
@@ -234,6 +312,7 @@ func (m *Manager) gcExpired() {
 		for sid, s := range km {
 			if now.Sub(s.LastSeen) > ttl {
 				delete(km, sid)
+				toClose = append(toClose, dead{keyID, sid})
 			}
 		}
 		if len(km) == 0 {
@@ -243,6 +322,28 @@ func (m *Manager) gcExpired() {
 	for keyID, bw := range m.burst {
 		if now.Sub(bw.since) > 5*time.Minute {
 			delete(m.burst, keyID)
+		}
+	}
+	m.mu.Unlock()
+
+	// Close expired connections outside the sessions lock.
+	if len(toClose) > 0 {
+		m.closersMu.Lock()
+		fns := make([]func(), 0, len(toClose))
+		for _, d := range toClose {
+			if km, ok := m.closers[d.keyID]; ok {
+				if fn, ok := km[d.sessionID]; ok {
+					fns = append(fns, fn)
+					delete(km, d.sessionID)
+				}
+				if len(km) == 0 {
+					delete(m.closers, d.keyID)
+				}
+			}
+		}
+		m.closersMu.Unlock()
+		for _, fn := range fns {
+			fn()
 		}
 	}
 }

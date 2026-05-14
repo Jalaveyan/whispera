@@ -116,6 +116,11 @@ type Config struct {
 	// be invoked exactly once when the session ends.
 	AdmitSession func(clientID, sessionID, remoteIP string) (release func(), reason string) `yaml:"-"`
 
+	// OnConnReady is called after admission and connection setup, before the
+	// connection handler goroutine takes over. Use it to register a conn.Close
+	// closer so the connection can be forcibly terminated from outside.
+	OnConnReady func(clientID, sessionID string, conn net.Conn) `yaml:"-"`
+
 	GetUsers func() []UserEntry `yaml:"-"`
 }
 
@@ -570,6 +575,9 @@ func (h *Handler) HandleConnection(conn net.Conn) {
 				delete(h.authedConns, remoteAddr)
 				h.mu.Unlock()
 			}()
+			if h.config.OnConnReady != nil {
+				h.config.OnConnReady(clientID, fmt.Sprintf("%x", sessionID), trackedConn)
+			}
 			h.config.OnAuthenticated(trackedConn, clientID)
 		}
 		return

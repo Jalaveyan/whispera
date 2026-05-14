@@ -357,10 +357,18 @@ func StartInbound(inbound modconfig.InboundConfig, serverConfig *modconfig.Serve
 			},
 			AdmitSession: func(clientID, sessionID, remoteIP string) (func(), string) {
 				reason, msg := globalKeyLimits.Admit(clientID, sessionID, remoteIP)
+				if reason == keylimits.ReasonActiveCap {
+					// Evict the 10 oldest stuck connections and retry once.
+					globalKeyLimits.EvictOldest(10)
+					reason, msg = globalKeyLimits.Admit(clientID, sessionID, remoteIP)
+				}
 				if reason != keylimits.ReasonNone {
 					return nil, msg
 				}
 				return func() { globalKeyLimits.Release(clientID, sessionID) }, ""
+			},
+			OnConnReady: func(clientID, sessionID string, conn net.Conn) {
+				globalKeyLimits.RegisterCloser(clientID, sessionID, func() { conn.Close() })
 			},
 			OnAuthenticated: func(conn net.Conn, clientID string) {
 				log.Printf("[Dynamic-Phantom] Authenticated: %s on inbound %s", clientID, inbound.Tag)
