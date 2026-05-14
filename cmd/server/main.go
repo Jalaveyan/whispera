@@ -378,11 +378,6 @@ func StartInbound(inbound modconfig.InboundConfig, serverConfig *modconfig.Serve
 			},
 			OnConnReady: func(clientID, sessionID string, conn net.Conn) {
 				globalKeyLimits.RegisterCloser(clientID, sessionID, func() { conn.Close() })
-				if tc, ok := conn.(*stats.TrafficConn); ok {
-					tc.SetTouchFunc(func() {
-						globalKeyLimits.Touch(clientID, sessionID)
-					})
-				}
 			},
 			OnAuthenticated: func(conn net.Conn, clientID string) {
 				log.Printf("[Dynamic-Phantom] Authenticated: %s on inbound %s", clientID, inbound.Tag)

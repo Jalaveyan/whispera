@@ -324,32 +324,12 @@ type TrafficConn struct {
 	net.Conn
 	UserID    string
 	closeOnce sync.Once
-	touchFn   atomic.Value  // stores func()
-	lastTouch atomic.Int64  // unix seconds of last touch
-}
-
-// SetTouchFunc registers a function called at most once per 30 s when data flows.
-func (c *TrafficConn) SetTouchFunc(fn func()) {
-	c.touchFn.Store(fn)
-}
-
-func (c *TrafficConn) touch() {
-	v := c.touchFn.Load()
-	if v == nil {
-		return
-	}
-	now := time.Now().Unix()
-	last := c.lastTouch.Load()
-	if now-last >= 30 && c.lastTouch.CompareAndSwap(last, now) {
-		v.(func())()
-	}
 }
 
 func (c *TrafficConn) Read(b []byte) (n int, err error) {
 	n, err = c.Conn.Read(b)
 	if n > 0 {
 		AddRx(c.UserID, int64(n))
-		c.touch()
 	}
 	return
 }
@@ -358,7 +338,6 @@ func (c *TrafficConn) Write(b []byte) (n int, err error) {
 	n, err = c.Conn.Write(b)
 	if n > 0 {
 		AddTx(c.UserID, int64(n))
-		c.touch()
 	}
 	return
 }

@@ -418,12 +418,29 @@ func (m *Manager) gcExpired() {
 	type dead struct{ keyID, sessionID string }
 	var expired []dead
 
+	// Snapshot which sessions have an active closer (= live connection).
+	// Sessions with a closer are owned by a live conn and will be released
+	// via Release() when that conn closes — TTL must not evict them.
+	m.closersMu.Lock()
+	hasCloser := make(map[string]map[string]bool, len(m.closers))
+	for kid, km := range m.closers {
+		inner := make(map[string]bool, len(km))
+		for sid := range km {
+			inner[sid] = true
+		}
+		hasCloser[kid] = inner
+	}
+	m.closersMu.Unlock()
+
 	for keyID, km := range m.sessions {
 		ttl := m.limitsFor(keyID).SessionTTL
 		if ttl <= 0 {
 			ttl = 30 * time.Minute
 		}
 		for sid, s := range km {
+			if hasCloser[keyID][sid] {
+				continue // live connection — never evict by TTL
+			}
 			if now.Sub(s.LastSeen) > ttl {
 				delete(km, sid)
 				expired = append(expired, dead{keyID, sid})
