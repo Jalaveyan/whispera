@@ -5,6 +5,7 @@ import (
 	"log"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -13,15 +14,19 @@ import (
 type DenyReason string
 
 const (
-	ReasonNone       DenyReason = ""
-	ReasonActiveCap  DenyReason = "active_cap"
-	ReasonSoftIPCap  DenyReason = "soft_ip_cap"
-	ReasonRateLimit  DenyReason = "rate_limit"
+	ReasonNone      DenyReason = ""
+	ReasonActiveCap DenyReason = "active_cap"
+	ReasonGlobalCap DenyReason = "global_cap"
+	ReasonSoftIPCap DenyReason = "soft_ip_cap"
+	ReasonRateLimit DenyReason = "rate_limit"
 )
 
 // Limits holds per-key policy. Zero values mean "unlimited".
+// GlobalCap is server-wide: it is always read from the Manager default,
+// never from per-key overrides.
 type Limits struct {
 	MaxActiveSessions int           `json:"max_active_sessions"`
+	GlobalCap         int           `json:"global_cap"`
 	SoftIPCap         int           `json:"soft_ip_cap"`
 	BurstPerMinute    int           `json:"burst_per_minute"`
 	SessionTTL        time.Duration `json:"session_ttl"`
@@ -36,13 +41,13 @@ type Session struct {
 }
 
 type Snapshot struct {
-	KeyID          string        `json:"key_id"`
-	ActiveSessions int           `json:"active_sessions"`
-	UniqueIPs      int           `json:"unique_ips"`
-	Limits         Limits        `json:"limits"`
-	Sessions       []Session     `json:"sessions,omitempty"`
-	BurstWindow    int           `json:"burst_window"`
-	BurstSince     time.Time     `json:"burst_since,omitempty"`
+	KeyID          string    `json:"key_id"`
+	ActiveSessions int       `json:"active_sessions"`
+	UniqueIPs      int       `json:"unique_ips"`
+	Limits         Limits    `json:"limits"`
+	Sessions       []Session `json:"sessions,omitempty"`
+	BurstWindow    int       `json:"burst_window"`
+	BurstSince     time.Time `json:"burst_since,omitempty"`
 }
 
 type burstWindow struct {
@@ -56,6 +61,7 @@ type Manager struct {
 	keyLimits     map[string]Limits
 	sessions      map[string]map[string]*Session // keyID -> sessionID -> Session
 	burst         map[string]*burstWindow
+	totalSessions atomic.Int64 // server-wide session count (no lock needed)
 
 	closersMu sync.Mutex
 	closers   map[string]map[string]func() // keyID -> sessionID -> conn.Close
@@ -100,6 +106,23 @@ func (m *Manager) limitsFor(keyID string) Limits {
 	return m.defaultLimits
 }
 
+// deleteSession removes a session from the map and returns true if it was present.
+// Must be called with m.mu held for writing.
+func (m *Manager) deleteSession(keyID, sessionID string) bool {
+	km, ok := m.sessions[keyID]
+	if !ok {
+		return false
+	}
+	if _, ok := km[sessionID]; !ok {
+		return false
+	}
+	delete(km, sessionID)
+	if len(km) == 0 {
+		delete(m.sessions, keyID)
+	}
+	return true
+}
+
 // Admit attempts to register a new session. On success returns an admission
 // handle that MUST be closed via Release when the session ends.
 // On denial returns a non-empty DenyReason and a human-readable message.
@@ -120,6 +143,16 @@ func (m *Manager) Admit(keyID, sessionID, remoteIP string) (DenyReason, string) 
 			return ReasonRateLimit, "too many reconnects in the last minute — wait and try again"
 		}
 		bw.count++
+	}
+
+	// GlobalCap is always the server default — per-key overrides don't affect it.
+	if cap := m.defaultLimits.GlobalCap; cap > 0 {
+		if int(m.totalSessions.Load()) >= cap {
+			return ReasonGlobalCap, fmt.Sprintf(
+				"Server connection limit reached (%d). Try again later.",
+				cap,
+			)
+		}
 	}
 
 	km := m.sessions[keyID]
@@ -152,6 +185,7 @@ func (m *Manager) Admit(keyID, sessionID, remoteIP string) (DenyReason, string) 
 		StartedAt: time.Now(),
 		LastSeen:  time.Now(),
 	}
+	m.totalSessions.Add(1)
 	return ReasonNone, ""
 }
 
@@ -167,13 +201,11 @@ func (m *Manager) Touch(keyID, sessionID string) {
 
 func (m *Manager) Release(keyID, sessionID string) {
 	m.mu.Lock()
-	if km, ok := m.sessions[keyID]; ok {
-		delete(km, sessionID)
-		if len(km) == 0 {
-			delete(m.sessions, keyID)
-		}
-	}
+	deleted := m.deleteSession(keyID, sessionID)
 	m.mu.Unlock()
+	if deleted {
+		m.totalSessions.Add(-1)
+	}
 
 	m.closersMu.Lock()
 	if km, ok := m.closers[keyID]; ok {
@@ -211,7 +243,7 @@ func (m *Manager) EvictOldest(keyID string, n int) {
 	}
 
 	m.mu.RLock()
-	all := make([]entry, 0, 64)
+	all := make([]entry, 0, 16)
 	for sid, s := range m.sessions[keyID] {
 		all = append(all, entry{keyID, sid, s.StartedAt})
 	}
@@ -220,29 +252,26 @@ func (m *Manager) EvictOldest(keyID string, n int) {
 	sort.Slice(all, func(i, j int) bool {
 		return all[i].startedAt.Before(all[j].startedAt)
 	})
-
 	if n > len(all) {
 		n = len(all)
 	}
 
-	// Remove sessions from the admission map immediately so that a retry Admit
-	// after EvictOldest sees the freed slots without waiting for goroutines to
-	// call Release (which happens asynchronously after conn.Close unblocks them).
+	// Remove sessions from the map synchronously so a retry Admit sees freed slots.
 	m.mu.Lock()
+	var deleted int64
 	for i := 0; i < n; i++ {
 		e := all[i]
-		if km, ok := m.sessions[e.keyID]; ok {
-			delete(km, e.sessionID)
-			if len(km) == 0 {
-				delete(m.sessions, e.keyID)
-			}
+		if m.deleteSession(e.keyID, e.sessionID) {
+			deleted++
+			log.Printf("[keylimits] evicting session %s/%s (age %s)",
+				e.keyID, e.sessionID, time.Since(e.startedAt).Round(time.Second))
 		}
-		log.Printf("[keylimits] evicting session %s/%s (age %s)",
-			e.keyID, e.sessionID, time.Since(e.startedAt).Round(time.Second))
 	}
 	m.mu.Unlock()
+	if deleted > 0 {
+		m.totalSessions.Add(-deleted)
+	}
 
-	// Collect and call closers to terminate the underlying TCP connections.
 	m.closersMu.Lock()
 	toClose := make([]func(), 0, n)
 	for i := 0; i < n; i++ {
@@ -262,6 +291,73 @@ func (m *Manager) EvictOldest(keyID string, n int) {
 	for _, fn := range toClose {
 		fn()
 	}
+}
+
+// EvictOldestGlobal closes the n oldest sessions server-wide (across all keys).
+// Used when the global server cap is reached. Sessions are removed from the
+// admission map synchronously so a retry Admit immediately sees freed slots.
+func (m *Manager) EvictOldestGlobal(n int) {
+	type entry struct {
+		keyID     string
+		sessionID string
+		startedAt time.Time
+	}
+
+	m.mu.RLock()
+	all := make([]entry, 0, 256)
+	for kid, km := range m.sessions {
+		for sid, s := range km {
+			all = append(all, entry{kid, sid, s.StartedAt})
+		}
+	}
+	m.mu.RUnlock()
+
+	sort.Slice(all, func(i, j int) bool {
+		return all[i].startedAt.Before(all[j].startedAt)
+	})
+	if n > len(all) {
+		n = len(all)
+	}
+
+	m.mu.Lock()
+	var deleted int64
+	for i := 0; i < n; i++ {
+		e := all[i]
+		if m.deleteSession(e.keyID, e.sessionID) {
+			deleted++
+			log.Printf("[keylimits] global-evict session %s/%s (age %s)",
+				e.keyID, e.sessionID, time.Since(e.startedAt).Round(time.Second))
+		}
+	}
+	m.mu.Unlock()
+	if deleted > 0 {
+		m.totalSessions.Add(-deleted)
+	}
+
+	m.closersMu.Lock()
+	toClose := make([]func(), 0, n)
+	for i := 0; i < n; i++ {
+		e := all[i]
+		if km, ok := m.closers[e.keyID]; ok {
+			if fn, ok := km[e.sessionID]; ok {
+				toClose = append(toClose, fn)
+				delete(km, e.sessionID)
+			}
+			if len(km) == 0 {
+				delete(m.closers, e.keyID)
+			}
+		}
+	}
+	m.closersMu.Unlock()
+
+	for _, fn := range toClose {
+		fn()
+	}
+}
+
+// TotalSessions returns the current server-wide active session count.
+func (m *Manager) TotalSessions() int {
+	return int(m.totalSessions.Load())
 }
 
 func (m *Manager) Snapshot(keyID string) Snapshot {
@@ -320,7 +416,7 @@ func (m *Manager) gcExpired() {
 
 	now := time.Now()
 	type dead struct{ keyID, sessionID string }
-	var toClose []dead
+	var expired []dead
 
 	for keyID, km := range m.sessions {
 		ttl := m.limitsFor(keyID).SessionTTL
@@ -330,7 +426,7 @@ func (m *Manager) gcExpired() {
 		for sid, s := range km {
 			if now.Sub(s.LastSeen) > ttl {
 				delete(km, sid)
-				toClose = append(toClose, dead{keyID, sid})
+				expired = append(expired, dead{keyID, sid})
 			}
 		}
 		if len(km) == 0 {
@@ -344,11 +440,15 @@ func (m *Manager) gcExpired() {
 	}
 	m.mu.Unlock()
 
+	if len(expired) > 0 {
+		m.totalSessions.Add(-int64(len(expired)))
+	}
+
 	// Close expired connections outside the sessions lock.
-	if len(toClose) > 0 {
+	if len(expired) > 0 {
 		m.closersMu.Lock()
-		fns := make([]func(), 0, len(toClose))
-		for _, d := range toClose {
+		fns := make([]func(), 0, len(expired))
+		for _, d := range expired {
 			if km, ok := m.closers[d.keyID]; ok {
 				if fn, ok := km[d.sessionID]; ok {
 					fns = append(fns, fn)

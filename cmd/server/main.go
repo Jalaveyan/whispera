@@ -159,7 +159,8 @@ var globalP2PRelay *relay.P2PRelay
 var globalBridgePool *bridgepool.Registry
 var globalWiraidEngine *wiraid.Engine
 var globalKeyLimits = keylimits.New(keylimits.Limits{
-	MaxActiveSessions: 200,
+	MaxActiveSessions: 10,    // per-user
+	GlobalCap:         10000, // server-wide
 	SoftIPCap:         50,
 	BurstPerMinute:    0, // disabled: connection pools reconnect at high frequency
 	SessionTTL:        2 * time.Minute,
@@ -357,10 +358,15 @@ func StartInbound(inbound modconfig.InboundConfig, serverConfig *modconfig.Serve
 			},
 			AdmitSession: func(clientID, sessionID, remoteIP string) (func(), string) {
 				reason, msg := globalKeyLimits.Admit(clientID, sessionID, remoteIP)
-				if reason == keylimits.ReasonActiveCap {
-					// Evict this client's 10 oldest stuck connections, then retry.
+				switch reason {
+				case keylimits.ReasonActiveCap:
+					// Evict this client's 5 oldest stuck connections, then retry.
 					// Only this client's sessions are evicted — other clients unaffected.
-					globalKeyLimits.EvictOldest(clientID, 10)
+					globalKeyLimits.EvictOldest(clientID, 5)
+					reason, msg = globalKeyLimits.Admit(clientID, sessionID, remoteIP)
+				case keylimits.ReasonGlobalCap:
+					// Server-wide cap hit — evict 20 oldest sessions across all clients.
+					globalKeyLimits.EvictOldestGlobal(20)
 					reason, msg = globalKeyLimits.Admit(clientID, sessionID, remoteIP)
 				}
 				if reason != keylimits.ReasonNone {
