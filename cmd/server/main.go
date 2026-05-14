@@ -358,8 +358,9 @@ func StartInbound(inbound modconfig.InboundConfig, serverConfig *modconfig.Serve
 			AdmitSession: func(clientID, sessionID, remoteIP string) (func(), string) {
 				reason, msg := globalKeyLimits.Admit(clientID, sessionID, remoteIP)
 				if reason == keylimits.ReasonActiveCap {
-					// Evict the 10 oldest stuck connections and retry once.
-					globalKeyLimits.EvictOldest(10)
+					// Evict this client's 10 oldest stuck connections, then retry.
+					// Only this client's sessions are evicted — other clients unaffected.
+					globalKeyLimits.EvictOldest(clientID, 10)
 					reason, msg = globalKeyLimits.Admit(clientID, sessionID, remoteIP)
 				}
 				if reason != keylimits.ReasonNone {

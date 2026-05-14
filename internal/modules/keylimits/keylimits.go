@@ -199,9 +199,11 @@ func (m *Manager) RegisterCloser(keyID, sessionID string, fn func()) {
 	km[sessionID] = fn
 }
 
-// EvictOldest closes the n oldest sessions (by StartedAt) across all keys.
-// Closing the connection causes the handler goroutine to exit and call Release.
-func (m *Manager) EvictOldest(n int) {
+// EvictOldest closes the n oldest sessions for a specific key (client).
+// Only that client's sessions are touched — other clients are unaffected.
+// Sessions are removed from the admission map synchronously so that a retry
+// Admit immediately sees the freed slots.
+func (m *Manager) EvictOldest(keyID string, n int) {
 	type entry struct {
 		keyID     string
 		sessionID string
@@ -210,10 +212,8 @@ func (m *Manager) EvictOldest(n int) {
 
 	m.mu.RLock()
 	all := make([]entry, 0, 64)
-	for keyID, km := range m.sessions {
-		for sid, s := range km {
-			all = append(all, entry{keyID, sid, s.StartedAt})
-		}
+	for sid, s := range m.sessions[keyID] {
+		all = append(all, entry{keyID, sid, s.StartedAt})
 	}
 	m.mu.RUnlock()
 
