@@ -51,6 +51,7 @@ type RLChunkAgent struct {
 
 	qNet   *gnet.GorgoniaNet
 	target *gnet.GorgoniaNet
+	adam   *AdamState
 
 	buffer  []Experience
 	bufIdx  int
@@ -72,6 +73,7 @@ func NewRLChunkAgent() *RLChunkAgent {
 	}
 	a.qNet = gnet.New([]int{chunkStateSize, chunkHidden1, chunkHidden2, chunkNumActions})
 	a.target = gnet.Clone(a.qNet)
+	a.adam = NewAdamState(a.qNet)
 	return a
 }
 
@@ -165,7 +167,7 @@ func (a *RLChunkAgent) trainStep() {
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	dqnTrainBatch(a.qNet, a.target, batch, chunkNumActions, chunkGamma, 0.001)
+	dqnTrainBatchAdam(a.qNet, a.target, a.adam, batch, chunkNumActions, chunkGamma, 0.001)
 	cnt := atomic.AddInt64(&a.trainCount, 1)
 	if cnt%10 == 0 {
 		chunkLog.Debug("train#%d eps=%.3f steps=%d", cnt, a.epsilon, atomic.LoadInt64(&a.stepCount))

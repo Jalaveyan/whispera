@@ -75,6 +75,7 @@ type RLConnAgent struct {
 
 	qNet   *gnet.GorgoniaNet
 	target *gnet.GorgoniaNet
+	adam   *AdamState
 
 	buffer  []Experience
 	bufIdx  int
@@ -95,6 +96,7 @@ func NewRLConnAgent() *RLConnAgent {
 	}
 	a.qNet = gnet.New([]int{connStateSize, connHidden1, connHidden2, connNumActions})
 	a.target = gnet.Clone(a.qNet)
+	a.adam = NewAdamState(a.qNet)
 	return a
 }
 
@@ -221,90 +223,10 @@ func (a *RLConnAgent) trainStep() {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	const lr = 0.001
-	for _, exp := range batch {
-		if exp.Action >= connNumActions {
-			continue
-		}
-		acts := a.netForward(a.qNet, exp.State)
-		qvals := acts[len(acts)-1]
+	dqnTrainBatchAdam(a.qNet, a.target, a.adam, batch, connNumActions, connGamma, 0.001)
 
-		var targetQ float64
-		if exp.Done {
-			targetQ = exp.Reward
-		} else {
-			nextQ := a.target.Forward(exp.NextState)
-			maxQ := nextQ[0]
-			for _, q := range nextQ[1:] {
-				if q > maxQ {
-					maxQ = q
-				}
-			}
-			targetQ = exp.Reward + connGamma*maxQ
-		}
-
-		dOut := make([]float64, connNumActions)
-		dOut[exp.Action] = -(targetQ - qvals[exp.Action])
-		a.netBackprop(a.qNet, acts, dOut, lr)
-	}
 	cnt := atomic.AddInt64(&a.trainCount, 1)
 	if cnt%10 == 0 {
 		connLog.Debug("train#%d eps=%.3f steps=%d", cnt, a.epsilon, atomic.LoadInt64(&a.stepCount))
-	}
-}
-
-func (a *RLConnAgent) netForward(net *gnet.GorgoniaNet, input []float64) [][]float64 {
-	acts := make([][]float64, len(net.Layers)+1)
-	acts[0] = input
-	cur := input
-	for i, ld := range net.Layers {
-		out := make([]float64, ld.OutSize)
-		for j := 0; j < ld.OutSize; j++ {
-			sum := ld.B[j]
-			for k := 0; k < ld.InSize && k < len(cur); k++ {
-				sum += cur[k] * ld.W[k*ld.OutSize+j]
-			}
-			if i < len(net.Layers)-1 && sum < 0 {
-				sum = 0
-			}
-			out[j] = sum
-		}
-		acts[i+1] = out
-		cur = out
-	}
-	return acts
-}
-
-func (a *RLConnAgent) netBackprop(net *gnet.GorgoniaNet, acts [][]float64, dOut []float64, lr float64) {
-	delta := dOut
-	for i := len(net.Layers) - 1; i >= 0; i-- {
-		ld := &net.Layers[i]
-		input := acts[i]
-		output := acts[i+1]
-		if i < len(net.Layers)-1 {
-			for j := range delta {
-				if output[j] <= 0 {
-					delta[j] = 0
-				}
-			}
-		}
-		var prev []float64
-		if i > 0 {
-			prev = make([]float64, ld.InSize)
-			for k := 0; k < ld.InSize; k++ {
-				for j := 0; j < ld.OutSize; j++ {
-					prev[k] += ld.W[k*ld.OutSize+j] * delta[j]
-				}
-			}
-		}
-		for k := 0; k < ld.InSize && k < len(input); k++ {
-			for j := 0; j < ld.OutSize; j++ {
-				ld.W[k*ld.OutSize+j] -= lr * delta[j] * input[k]
-			}
-		}
-		for j := 0; j < ld.OutSize; j++ {
-			ld.B[j] -= lr * delta[j]
-		}
-		delta = prev
 	}
 }

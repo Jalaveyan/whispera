@@ -2,12 +2,15 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/base64"
+	"encoding/json"
 	"flag"
 	"io"
 	stdlog "log"
 	mrand "math/rand"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -76,6 +79,7 @@ var (
 	regionFlag       = flag.String("region", "", "Preferred server region: auto|ru|eu|us|cn (overrides config)")
 	subURL           = flag.String("sub-url", "", "Subscription URL for automatic key refresh (checked every 24h)")
 	subInterval      = flag.Duration("sub-interval", 24*time.Hour, "Subscription refresh interval")
+	weightsURL       = flag.String("weights-url", "", "Server weights URL for warm-start (e.g. https://server:8080/api/ml/weights)")
 )
 
 // pickServerAddress returns the best server address for the given transport,
@@ -1000,6 +1004,10 @@ func main() {
 		primaryEntry.mu.Unlock()
 		stdlog.Printf("Connected to VPN server via %s", transports[0])
 
+		if *weightsURL != "" {
+			go fetchAndApplyMLWeights(ctx, tunnelMod, *weightsURL, *mlTokenFlag)
+		}
+
 		dnsMod.SetDialContext(tunnelMod.DialStream)
 		stdlog.Printf("DNS now routed through tunnel")
 
@@ -1227,4 +1235,51 @@ func main() {
 // sniModelDir возвращает путь для хранения rl_sni_policy.json.
 func sniModelDir() string {
 	return filepath.Join(mlDefaultDataDir(), "sni_model")
+}
+
+// fetchAndApplyMLWeights загружает веса с сервера и применяет их к агентам туннеля.
+// Запускается в горутине после успешного подключения. Ошибки не фатальны.
+func fetchAndApplyMLWeights(ctx context.Context, mgr *tunnel.Manager, weightsURL, token string) {
+	httpClient := &http.Client{
+		Timeout: 15 * time.Second,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: false},
+		},
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, weightsURL, nil)
+	if err != nil {
+		stdlog.Printf("[ml-sync] bad weights URL: %v", err)
+		return
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		stdlog.Printf("[ml-sync] fetch failed: %v", err)
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		stdlog.Printf("[ml-sync] server returned %d", resp.StatusCode)
+		return
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		stdlog.Printf("[ml-sync] read body: %v", err)
+		return
+	}
+
+	var snap mlpkg.WeightSnapshot
+	if err := json.Unmarshal(body, &snap); err != nil {
+		stdlog.Printf("[ml-sync] parse: %v", err)
+		return
+	}
+
+	mgr.ImportMLWeights(&snap)
+	stdlog.Printf("[ml-sync] weights applied (v%d)", snap.Version)
 }

@@ -51,10 +51,12 @@ const (
 type RLSNIAgent struct {
 	mu sync.RWMutex
 
-	pool     []string
-	qNet     *gnet.GorgoniaNet // Q-сеть (Bellman / долгосрочная ценность)
-	target   *gnet.GorgoniaNet // target network для стабильного обучения
-	worldNet *gnet.GorgoniaNet // world model (direct reward prediction / "thinking")
+	pool      []string
+	qNet      *gnet.GorgoniaNet // Q-сеть (Bellman / долгосрочная ценность)
+	target    *gnet.GorgoniaNet // target network для стабильного обучения
+	worldNet  *gnet.GorgoniaNet // world model (direct reward prediction / "thinking")
+	adam      *AdamState
+	worldAdam *AdamState
 
 	buffer  []Experience
 	bufIdx  int
@@ -95,6 +97,8 @@ func NewRLSNIAgent(modelDir string, pool []string) *RLSNIAgent {
 	a.qNet = gnet.New([]int{sniStateSize, sniHidden1, sniHidden2, len(pool)})
 	a.target = gnet.Clone(a.qNet)
 	a.worldNet = gnet.New([]int{sniStateSize, sniHidden1, sniHidden2, len(pool)})
+	a.adam = NewAdamState(a.qNet)
+	a.worldAdam = NewAdamState(a.worldNet)
 	a.load(pool)
 	return a
 }
@@ -283,15 +287,16 @@ func (a *RLSNIAgent) trainStep() {
 	defer a.mu.Unlock()
 
 	const lr = 0.005
+	outSize := len(a.qNet.Layers[len(a.qNet.Layers)-1].B)
+	wOutSize := len(a.worldNet.Layers[len(a.worldNet.Layers)-1].B)
 	for _, exp := range batch {
-		outSize := len(a.qNet.Layers[len(a.qNet.Layers)-1].B)
 		if exp.Action >= outSize {
 			continue
 		}
 
 		// --- Q-сеть: Bellman update ---
-		qOut := a.netForward(a.qNet, exp.State)
-		qvals := qOut[len(qOut)-1]
+		qActs := a.qNet.ForwardActivations(exp.State)
+		qvals := qActs[len(qActs)-1]
 
 		var targetQ float64
 		if exp.Done {
@@ -307,21 +312,20 @@ func (a *RLSNIAgent) trainStep() {
 			targetQ = exp.Reward + sniGamma*maxQ
 		}
 
-		dQ := make([]float64, len(qvals))
+		dQ := make([]float64, outSize)
 		dQ[exp.Action] = -(targetQ - qvals[exp.Action])
-		a.netBackprop(a.qNet, qOut, dQ, lr)
+		dqnBackpropAdam(a.qNet, a.adam, qActs, dQ, lr)
 
 		// --- World model: прямой MSE на наблюдаемый reward ---
-		wOutSize := len(a.worldNet.Layers[len(a.worldNet.Layers)-1].B)
 		if exp.Action >= wOutSize {
 			continue
 		}
-		wOut := a.netForward(a.worldNet, exp.State)
-		wvals := wOut[len(wOut)-1]
+		wActs := a.worldNet.ForwardActivations(exp.State)
+		wvals := wActs[len(wActs)-1]
 
-		dW := make([]float64, len(wvals))
-		dW[exp.Action] = wvals[exp.Action] - exp.Reward // MSE gradient
-		a.netBackprop(a.worldNet, wOut, dW, lr)
+		dW := make([]float64, wOutSize)
+		dW[exp.Action] = wvals[exp.Action] - exp.Reward
+		dqnBackpropAdam(a.worldNet, a.worldAdam, wActs, dW, lr)
 	}
 
 	cnt := atomic.AddInt64(&a.trainCount, 1)
@@ -332,65 +336,6 @@ func (a *RLSNIAgent) trainStep() {
 		sniLog.Debug("train#%d eps=%.3f steps=%d", cnt, a.epsilon, atomic.LoadInt64(&a.stepCount))
 	}
 }
-
-// netForward — универсальный forward pass для любой сети (ReLU на скрытых, linear на выходе).
-func (a *RLSNIAgent) netForward(net *gnet.GorgoniaNet, input []float64) [][]float64 {
-	acts := make([][]float64, len(net.Layers)+1)
-	acts[0] = input
-	cur := input
-	for i, ld := range net.Layers {
-		out := make([]float64, ld.OutSize)
-		for j := 0; j < ld.OutSize; j++ {
-			sum := ld.B[j]
-			for k := 0; k < ld.InSize && k < len(cur); k++ {
-				sum += cur[k] * ld.W[k*ld.OutSize+j]
-			}
-			if i < len(net.Layers)-1 && sum < 0 {
-				sum = 0 // ReLU
-			}
-			out[j] = sum
-		}
-		acts[i+1] = out
-		cur = out
-	}
-	return acts
-}
-
-// netBackprop — универсальный backprop для любой сети.
-func (a *RLSNIAgent) netBackprop(net *gnet.GorgoniaNet, acts [][]float64, dOut []float64, lr float64) {
-	delta := dOut
-	for i := len(net.Layers) - 1; i >= 0; i-- {
-		ld := &net.Layers[i]
-		input := acts[i]
-		output := acts[i+1]
-		if i < len(net.Layers)-1 {
-			for j := range delta {
-				if output[j] <= 0 {
-					delta[j] = 0 // ReLU mask
-				}
-			}
-		}
-		var prev []float64
-		if i > 0 {
-			prev = make([]float64, ld.InSize)
-			for k := 0; k < ld.InSize; k++ {
-				for j := 0; j < ld.OutSize; j++ {
-					prev[k] += ld.W[k*ld.OutSize+j] * delta[j]
-				}
-			}
-		}
-		for k := 0; k < ld.InSize && k < len(input); k++ {
-			for j := 0; j < ld.OutSize; j++ {
-				ld.W[k*ld.OutSize+j] -= lr * delta[j] * input[k]
-			}
-		}
-		for j := 0; j < ld.OutSize; j++ {
-			ld.B[j] -= lr * delta[j]
-		}
-		delta = prev
-	}
-}
-
 
 func (a *RLSNIAgent) load(pool []string) {
 	if a.modelDir == "" {

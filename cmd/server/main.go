@@ -1456,6 +1456,22 @@ func createModules(manager *lifecycle.Manager, ctx context.Context) error {
 			w.Write(data)
 		})
 
+		apiServer.Handle("/api/ml/weights", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			snap := mlpkg.GetGlobalSnapshot()
+			if snap == nil {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				fmt.Fprintf(w, `{"error":"weights not ready yet"}`)
+				return
+			}
+			data, err := json.Marshal(snap)
+			if err != nil {
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			w.Write(data)
+		})
+
 		wiraidBaseDir := os.Getenv("WHISPERA_WIRAID_DIR")
 		if wiraidBaseDir == "" {
 			wiraidBaseDir = "/var/lib/whispera/wiraid"

@@ -3,11 +3,7 @@ package gnet
 import (
 	"crypto/rand"
 	"encoding/binary"
-	"fmt"
 	"math"
-
-	"gorgonia.org/gorgonia"
-	"gorgonia.org/tensor"
 )
 
 type LayerDef struct {
@@ -25,8 +21,8 @@ func New(sizes []int) *GorgoniaNet {
 	net := &GorgoniaNet{}
 	for i := 0; i < len(sizes)-1; i++ {
 		in, out := sizes[i], sizes[i+1]
-		scale := math.Sqrt(2.0 / float64(in))
-		w := make([]float64, out*in)
+		scale := math.Sqrt(2.0 / float64(in)) // He init
+		w := make([]float64, in*out)
 		for j := range w {
 			w[j] = RandNorm() * scale
 		}
@@ -36,42 +32,48 @@ func New(sizes []int) *GorgoniaNet {
 	return net
 }
 
+// Forward runs a fast inference pass (ReLU hidden, linear output).
 func (net *GorgoniaNet) Forward(input []float64) []float64 {
-	g := gorgonia.NewGraph()
-	inSize := net.Layers[0].InSize
-
-	inp := make([]float64, inSize)
-	copy(inp, input)
-	xVal := tensor.New(tensor.WithShape(1, inSize), tensor.WithBacking(inp))
-	x := gorgonia.NewMatrix(g, gorgonia.Float64, gorgonia.WithShape(1, inSize), gorgonia.WithValue(xVal), gorgonia.WithName("x"))
-
-	result := x
+	cur := input
 	for i, ld := range net.Layers {
-		wVal := tensor.New(tensor.WithShape(ld.InSize, ld.OutSize), tensor.WithBacking(CopyF64(ld.W)))
-		bVal := tensor.New(tensor.WithShape(1, ld.OutSize), tensor.WithBacking(CopyF64(ld.B)))
-		wNode := gorgonia.NewMatrix(g, gorgonia.Float64, gorgonia.WithShape(ld.InSize, ld.OutSize), gorgonia.WithValue(wVal), gorgonia.WithName(fmt.Sprintf("w%d", i)))
-		bNode := gorgonia.NewMatrix(g, gorgonia.Float64, gorgonia.WithShape(1, ld.OutSize), gorgonia.WithValue(bVal), gorgonia.WithName(fmt.Sprintf("b%d", i)))
-
-		linear := gorgonia.Must(gorgonia.Mul(result, wNode))
-		linear = gorgonia.Must(gorgonia.Add(linear, bNode))
-
-		if i < len(net.Layers)-1 {
-			result = gorgonia.Must(gorgonia.Rectify(linear))
-		} else {
-			result = linear
+		out := make([]float64, ld.OutSize)
+		for j := 0; j < ld.OutSize; j++ {
+			sum := ld.B[j]
+			for k := 0; k < ld.InSize && k < len(cur); k++ {
+				sum += cur[k] * ld.W[k*ld.OutSize+j]
+			}
+			if i < len(net.Layers)-1 && sum < 0 {
+				sum = 0 // ReLU
+			}
+			out[j] = sum
 		}
+		cur = out
 	}
+	return cur
+}
 
-	vm := gorgonia.NewTapeMachine(g)
-	defer vm.Close()
-	if err := vm.RunAll(); err != nil {
-		return make([]float64, net.Layers[len(net.Layers)-1].OutSize)
+// ForwardActivations runs a forward pass and returns activations at every layer
+// (index 0 = input, index L = output). Required for backpropagation.
+func (net *GorgoniaNet) ForwardActivations(input []float64) [][]float64 {
+	acts := make([][]float64, len(net.Layers)+1)
+	acts[0] = input
+	cur := input
+	for i, ld := range net.Layers {
+		out := make([]float64, ld.OutSize)
+		for j := 0; j < ld.OutSize; j++ {
+			sum := ld.B[j]
+			for k := 0; k < ld.InSize && k < len(cur); k++ {
+				sum += cur[k] * ld.W[k*ld.OutSize+j]
+			}
+			if i < len(net.Layers)-1 && sum < 0 {
+				sum = 0 // ReLU
+			}
+			out[j] = sum
+		}
+		acts[i+1] = out
+		cur = out
 	}
-
-	outTensor := result.Value().(tensor.Tensor)
-	out := make([]float64, net.Layers[len(net.Layers)-1].OutSize)
-	copy(out, outTensor.Data().([]float64))
-	return out
+	return acts
 }
 
 func (net *GorgoniaNet) LoadWeights(layers []LayerDef) {

@@ -59,6 +59,7 @@ type RLTLSAgent struct {
 
 	qNet   *gnet.GorgoniaNet
 	target *gnet.GorgoniaNet
+	adam   *AdamState
 
 	buffer  []Experience
 	bufIdx  int
@@ -80,6 +81,7 @@ func NewRLTLSAgent() *RLTLSAgent {
 	}
 	a.qNet = gnet.New([]int{tlsStateSize, tlsHidden1, tlsHidden2, tlsNumActions})
 	a.target = gnet.Clone(a.qNet)
+	a.adam = NewAdamState(a.qNet)
 	return a
 }
 
@@ -196,7 +198,7 @@ func (a *RLTLSAgent) trainStep() {
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	dqnTrainBatch(a.qNet, a.target, batch, tlsNumActions, tlsGamma, 0.005)
+	dqnTrainBatchAdam(a.qNet, a.target, a.adam, batch, tlsNumActions, tlsGamma, 0.005)
 	cnt := atomic.AddInt64(&a.trainCount, 1)
 	if cnt%10 == 0 {
 		tlsLog.Debug("train#%d eps=%.3f steps=%d", cnt, a.epsilon, atomic.LoadInt64(&a.stepCount))

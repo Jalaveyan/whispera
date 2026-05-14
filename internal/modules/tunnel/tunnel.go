@@ -627,6 +627,10 @@ func New(cfg *Config) (*Manager, error) {
 	m.tlsAgent = mlpkg.NewRLTLSAgent()
 	log.Info("RL agents initialized: keepalive, backoff, jitter, server, chunk, tls")
 
+	// Периодически экспортируем веса в глобальный снапшот.
+	// Сервер отдаёт его через /api/ml/weights; клиент тянет при первом подключении.
+	go m.runWeightSnapshotLoop()
+
 	if cfg.CustomSNI != "" {
 		if cfg.TransportConfig == nil {
 			cfg.TransportConfig = make(map[string]interface{})
@@ -3832,4 +3836,85 @@ func (m *Manager) SetBehavioralProfile(profile string) error {
 		return nil
 	}
 	return m.obfuscator.SetProfile(profile)
+}
+
+// runWeightSnapshotLoop pushes a weight snapshot to the global store every 5 minutes.
+// This lets the server's /api/ml/weights endpoint always return fresh weights.
+func (m *Manager) runWeightSnapshotLoop() {
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+	// Push once immediately so the endpoint has data right away.
+	mlpkg.SetGlobalSnapshot(m.ExportMLWeights())
+	for range ticker.C {
+		mlpkg.SetGlobalSnapshot(m.ExportMLWeights())
+	}
+}
+
+// ExportMLWeights snapshots q-net weights from all RL agents.
+// Called by the server to build the /api/ml/weights response.
+func (m *Manager) ExportMLWeights() *mlpkg.WeightSnapshot {
+	snap := &mlpkg.WeightSnapshot{}
+	if m.transportAgent != nil {
+		snap.Transport = m.transportAgent.ExportWeights()
+	}
+	if m.sniAgent != nil {
+		snap.SNI = m.sniAgent.ExportWeights()
+	}
+	if m.kaAgent != nil {
+		snap.Keepalive = m.kaAgent.ExportWeights()
+	}
+	if m.jitterAgent != nil {
+		snap.Jitter = m.jitterAgent.ExportWeights()
+	}
+	if m.chunkAgent != nil {
+		snap.Chunk = m.chunkAgent.ExportWeights()
+	}
+	if m.connAgent != nil {
+		snap.Conn = m.connAgent.ExportWeights()
+	}
+	if m.boAgent != nil {
+		snap.Backoff = m.boAgent.ExportWeights()
+	}
+	if m.serverAgent != nil {
+		snap.Server = m.serverAgent.ExportWeights()
+	}
+	if m.tlsAgent != nil {
+		snap.TLS = m.tlsAgent.ExportWeights()
+	}
+	return snap
+}
+
+// ImportMLWeights loads a snapshot into all matching RL agents (warm start).
+// Called by the client after receiving weights from the server.
+func (m *Manager) ImportMLWeights(snap *mlpkg.WeightSnapshot) {
+	if snap == nil {
+		return
+	}
+	if m.transportAgent != nil && len(snap.Transport) > 0 {
+		m.transportAgent.ImportWeights(snap.Transport)
+	}
+	if m.sniAgent != nil && len(snap.SNI) > 0 {
+		m.sniAgent.ImportWeights(snap.SNI)
+	}
+	if m.kaAgent != nil && len(snap.Keepalive) > 0 {
+		m.kaAgent.ImportWeights(snap.Keepalive)
+	}
+	if m.jitterAgent != nil && len(snap.Jitter) > 0 {
+		m.jitterAgent.ImportWeights(snap.Jitter)
+	}
+	if m.chunkAgent != nil && len(snap.Chunk) > 0 {
+		m.chunkAgent.ImportWeights(snap.Chunk)
+	}
+	if m.connAgent != nil && len(snap.Conn) > 0 {
+		m.connAgent.ImportWeights(snap.Conn)
+	}
+	if m.boAgent != nil && len(snap.Backoff) > 0 {
+		m.boAgent.ImportWeights(snap.Backoff)
+	}
+	if m.serverAgent != nil && len(snap.Server) > 0 {
+		m.serverAgent.ImportWeights(snap.Server)
+	}
+	if m.tlsAgent != nil && len(snap.TLS) > 0 {
+		m.tlsAgent.ImportWeights(snap.TLS)
+	}
 }

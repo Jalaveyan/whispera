@@ -54,6 +54,7 @@ type RLKeepaliveAgent struct {
 
 	qNet   *gnet.GorgoniaNet
 	target *gnet.GorgoniaNet
+	adam   *AdamState
 
 	buffer  []Experience
 	bufIdx  int
@@ -75,6 +76,7 @@ func NewRLKeepaliveAgent() *RLKeepaliveAgent {
 	}
 	a.qNet = gnet.New([]int{kaStateSize, kaHidden1, kaHidden2, kaNumActions})
 	a.target = gnet.Clone(a.qNet)
+	a.adam = NewAdamState(a.qNet)
 	return a
 }
 
@@ -168,7 +170,7 @@ func (a *RLKeepaliveAgent) trainStep() {
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	dqnTrainBatch(a.qNet, a.target, batch, kaNumActions, kaGamma, 0.001)
+	dqnTrainBatchAdam(a.qNet, a.target, a.adam, batch, kaNumActions, kaGamma, 0.001)
 	cnt := atomic.AddInt64(&a.trainCount, 1)
 	if cnt%10 == 0 {
 		kaLog.Debug("train#%d eps=%.3f steps=%d", cnt, a.epsilon, atomic.LoadInt64(&a.stepCount))
