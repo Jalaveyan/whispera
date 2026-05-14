@@ -435,17 +435,6 @@ func (m *Manager) cleanupExpired() {
 	}
 }
 
-type sessionAge struct {
-	id           uint32
-	lastActivity time.Time
-	shard        *sessionShard
-}
-
-// cleanupOldest evicts the n oldest idle sessions to free capacity.
-func (m *Manager) cleanupOldest() {
-	m.evictOldest(10)
-}
-
 func (m *Manager) evictOldest(n int) {
 	type candidate struct {
 		id    uint32
