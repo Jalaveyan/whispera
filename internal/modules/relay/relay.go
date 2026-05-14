@@ -458,7 +458,7 @@ func (s *Server) handleProxyStream(stream net.Conn) {
 	}
 	if err != nil {
 		stream.Write([]byte{0x01})
-		s.log.Warn("Dial %s:%d failed: %v", addr, port, err)
+		s.log.Debug("Dial %s:%d failed: %v", addr, port, err)
 		return
 	}
 	defer target.Close()

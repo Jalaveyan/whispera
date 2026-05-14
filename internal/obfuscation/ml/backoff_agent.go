@@ -1,19 +1,17 @@
 package ml
 
 import (
-	"fmt"
 	"math"
 	mrand "math/rand"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"whispera/internal/logger"
 	"whispera/internal/obfuscation/ml/gnet"
 )
 
-var boLog = func(format string, args ...interface{}) {
-	fmt.Printf("[RL-BACKOFF] "+format+"\n", args...)
-}
+var boLog = logger.Module("rl-backoff")
 
 // BackoffDelays — дискретный набор задержек переподключения.
 var BackoffDelays = []time.Duration{
@@ -116,7 +114,8 @@ func (a *RLBackoffAgent) Decide(v BackoffView) time.Duration {
 
 	a.pendingState = state
 	a.pendingAction = idx
-	boLog("delay=%v fails=%d err=%d eps=%.2f", BackoffDelays[idx], v.ConsecutiveFails, v.LastErrType, a.epsilon)
+	boLog.Info("delay=%v fails=%d errType=%d eps=%.2f steps=%d",
+		BackoffDelays[idx], v.ConsecutiveFails, v.LastErrType, a.epsilon, atomic.LoadInt64(&a.stepCount))
 	return BackoffDelays[idx]
 }
 
@@ -132,12 +131,13 @@ func (a *RLBackoffAgent) RecordOutcome(success bool) {
 
 	var reward float64
 	if success {
-		// Короткая задержка + успех → лучшая награда.
 		delayCost := float64(action) * 0.05
 		reward = 1.0 - delayCost
 	} else {
 		reward = -0.5
 	}
+	boLog.Info("outcome: success=%v reward=%.2f delay=%v eps→%.3f",
+		success, reward, BackoffDelays[action], a.epsilon*boEpsilonDecay)
 
 	a.mu.Lock()
 	a.buffer[a.bufIdx] = Experience{
@@ -205,5 +205,8 @@ func (a *RLBackoffAgent) trainStep() {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	dqnTrainBatch(a.qNet, a.target, batch, boNumActions, boGamma, 0.001)
-	atomic.AddInt64(&a.trainCount, 1)
+	cnt := atomic.AddInt64(&a.trainCount, 1)
+	if cnt%10 == 0 {
+		boLog.Debug("train#%d eps=%.3f steps=%d", cnt, a.epsilon, atomic.LoadInt64(&a.stepCount))
+	}
 }

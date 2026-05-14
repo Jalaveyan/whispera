@@ -1,19 +1,17 @@
 package ml
 
 import (
-	"fmt"
 	"math"
 	mrand "math/rand"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"whispera/internal/logger"
 	"whispera/internal/obfuscation/ml/gnet"
 )
 
-var jLog = func(format string, args ...interface{}) {
-	fmt.Printf("[RL-JITTER] "+format+"\n", args...)
-}
+var jLog = logger.Module("rl-jitter")
 
 // JitterFractions — доля от базового интервала keepalive, добавляемая как ±jitter.
 // 0.10 = ±10%, 0.70 = ±70%.
@@ -105,7 +103,8 @@ func (a *RLJitterAgent) Decide(v JitterView) float64 {
 
 	a.pendingState = state
 	a.pendingAction = idx
-	jLog("frac=±%.0f%% eps=%.2f", JitterFractions[idx]*100, a.epsilon)
+	jLog.Info("jitter=±%.0f%% eps=%.2f rtt=%.0fms missed=%d steps=%d",
+		JitterFractions[idx]*100, a.epsilon, v.RTTMs, v.MissedKAs, atomic.LoadInt64(&a.stepCount))
 	return JitterFractions[idx]
 }
 
@@ -119,9 +118,10 @@ func (a *RLJitterAgent) RecordOutcome(quality float64) {
 		return
 	}
 
-	// Высокий джиттер стоит чуть дороже (0.05 * tier).
 	jitterCost := float64(action) * 0.05
 	reward := quality - jitterCost
+	jLog.Info("outcome: quality=%.2f reward=%.2f jitter=±%.0f%% eps→%.3f",
+		quality, reward, JitterFractions[action]*100, a.epsilon*jEpsilonDecay)
 
 	a.mu.Lock()
 	a.buffer[a.bufIdx] = Experience{
@@ -162,5 +162,8 @@ func (a *RLJitterAgent) trainStep() {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	dqnTrainBatch(a.qNet, a.target, batch, jNumActions, jGamma, 0.001)
-	atomic.AddInt64(&a.trainCount, 1)
+	cnt := atomic.AddInt64(&a.trainCount, 1)
+	if cnt%10 == 0 {
+		jLog.Debug("train#%d eps=%.3f steps=%d", cnt, a.epsilon, atomic.LoadInt64(&a.stepCount))
+	}
 }

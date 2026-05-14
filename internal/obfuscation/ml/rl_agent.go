@@ -9,8 +9,11 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"whispera/internal/logger"
 	"whispera/internal/obfuscation/ml/gnet"
 )
+
+var trLog = logger.Module("rl-transport")
 
 
 const (
@@ -158,9 +161,7 @@ func (a *RLTransportAgent) Select(state []float64) (transport string, actionIdx 
 		idx = a.transportIndex[name]
 	}
 
-	transportLog := func(f string, args ...interface{}) {}
-	_ = transportLog
-	_ = mode
+	trLog.Info("%s → %s (eps=%.2f steps=%d)", mode, name, a.epsilon, atomic.LoadInt64(&a.stepCount))
 
 	a.pendingState = state
 	a.pendingAction = idx
@@ -179,12 +180,16 @@ func (a *RLTransportAgent) RecordOutcome(success bool, latencyMs float64) {
 	}
 
 	reward := ComputeReward(success, latencyMs)
+	trLog.Info("outcome: success=%v reward=%.2f latency=%.0fms eps→%.3f",
+		success, reward, latencyMs, a.epsilon*RLEpsilonDecay)
 
 	if success {
 		atomic.StoreInt32(&a.consecutiveFails, 0)
 	} else {
-		if atomic.AddInt32(&a.consecutiveFails, 1) >= 3 {
+		fails := atomic.AddInt32(&a.consecutiveFails, 1)
+		if fails >= 3 {
 			atomic.StoreInt32(&a.rotateSignal, 1)
+			trLog.Warn("rotate signal: %d consecutive transport failures — switching transport", fails)
 		}
 	}
 
@@ -353,10 +358,13 @@ func (a *RLTransportAgent) trainStep() {
 		}
 	}
 
-	atomic.AddInt64(&a.trainCount, 1)
+	cnt := atomic.AddInt64(&a.trainCount, 1)
 
-	if a.trainCount%100 == 0 {
+	if cnt%100 == 0 {
+		trLog.Info("train#%d eps=%.3f steps=%d (saving policy)", cnt, a.epsilon, atomic.LoadInt64(&a.stepCount))
 		a.savePolicyLocked()
+	} else if cnt%20 == 0 {
+		trLog.Debug("train#%d eps=%.3f steps=%d", cnt, a.epsilon, atomic.LoadInt64(&a.stepCount))
 	}
 }
 

@@ -11,12 +11,11 @@ import (
 	"sync/atomic"
 	"time"
 
+	"whispera/internal/logger"
 	"whispera/internal/obfuscation/ml/gnet"
 )
 
-var sniLog = func(format string, args ...interface{}) {
-	fmt.Printf("[RL-SNI] "+format+"\n", args...)
-}
+var sniLog = logger.Module("rl-sni")
 
 const (
 	sniStateSize    = 7
@@ -185,8 +184,9 @@ func (a *RLSNIAgent) Select(state []float64) (domain string, actionIdx int) {
 			sniQWeight*qvals[idx]+sniWorldWeight*wvals[idx])
 	}
 
-	sniLog("%s → %s (eps=%.2f, pool=%d, steps=%d)",
-		mode, pool[idx], a.epsilon, len(pool), atomic.LoadInt64(&a.stepCount))
+	sniLog.Info("%s → %s (eps=%.2f pool=%d steps=%d train=%d)",
+		mode, pool[idx], a.epsilon, len(pool),
+		atomic.LoadInt64(&a.stepCount), atomic.LoadInt64(&a.trainCount))
 
 	a.pendingState = state
 	a.pendingAction = idx
@@ -205,7 +205,7 @@ func (a *RLSNIAgent) RecordOutcome(success bool, latencyMs float64) {
 	}
 
 	reward := ComputeReward(success, latencyMs)
-	sniLog("outcome: success=%v reward=%.2f latency=%.0fms eps→%.3f",
+	sniLog.Info("outcome: success=%v reward=%.2f latency=%.0fms eps→%.3f",
 		success, reward, latencyMs, a.epsilon*sniEpsilonDecay)
 
 	if success {
@@ -214,7 +214,7 @@ func (a *RLSNIAgent) RecordOutcome(success bool, latencyMs float64) {
 		fails := atomic.AddInt32(&a.consecutiveFails, 1)
 		if fails >= 3 {
 			atomic.StoreInt32(&a.rotateSignal, 1)
-			sniLog("rotate signal: %d consecutive failures — triggering rotation", fails)
+			sniLog.Warn("rotate signal: %d consecutive failures — triggering SNI rotation", fails)
 		}
 	}
 
@@ -319,7 +319,10 @@ func (a *RLSNIAgent) trainStep() {
 
 	cnt := atomic.AddInt64(&a.trainCount, 1)
 	if cnt%50 == 0 {
+		sniLog.Info("train#%d eps=%.3f steps=%d (saving policy)", cnt, a.epsilon, atomic.LoadInt64(&a.stepCount))
 		a.saveLocked()
+	} else if cnt%10 == 0 {
+		sniLog.Debug("train#%d eps=%.3f steps=%d", cnt, a.epsilon, atomic.LoadInt64(&a.stepCount))
 	}
 }
 
@@ -406,7 +409,7 @@ func (a *RLSNIAgent) load(pool []string) {
 	a.epsilon = st.Epsilon
 	atomic.StoreInt64(&a.stepCount, st.Steps)
 	a.mu.Unlock()
-	sniLog("loaded policy (steps=%d eps=%.3f world=%v)", st.Steps, st.Epsilon, len(st.WorldLayers) > 0)
+	sniLog.Info("loaded policy (steps=%d eps=%.3f world=%v)", st.Steps, st.Epsilon, len(st.WorldLayers) > 0)
 }
 
 func (a *RLSNIAgent) saveLocked() {

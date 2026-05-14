@@ -1,7 +1,6 @@
 package ml
 
 import (
-	"fmt"
 	"math"
 	mrand "math/rand"
 	"sort"
@@ -9,12 +8,11 @@ import (
 	"sync/atomic"
 	"time"
 
+	"whispera/internal/logger"
 	"whispera/internal/obfuscation/ml/gnet"
 )
 
-var srvLog = func(format string, args ...interface{}) {
-	fmt.Printf("[RL-SRV] "+format+"\n", args...)
-}
+var srvLog = logger.Module("rl-server")
 
 const (
 	srvMaxServers  = 8  // максимальный размер пула серверов
@@ -133,7 +131,8 @@ func (a *RLServerAgent) Decide(probes []ServerProbe) string {
 	a.pendingState = state
 	a.pendingAction = idx
 	chosen := sorted[idx]
-	srvLog("pick[%d]=%s rtt=%v eps=%.2f", idx, chosen.Addr, chosen.Latency, a.epsilon)
+	srvLog.Info("pick[%d]=%s rtt=%v eps=%.2f steps=%d (pool=%d servers)",
+		idx, chosen.Addr, chosen.Latency, a.epsilon, atomic.LoadInt64(&a.stepCount), n)
 	return chosen.Addr
 }
 
@@ -154,6 +153,8 @@ func (a *RLServerAgent) RecordOutcome(success bool, latencyMs float64) {
 	} else {
 		reward = -1.0
 	}
+	srvLog.Info("outcome: success=%v reward=%.2f latency=%.0fms eps→%.3f",
+		success, reward, latencyMs, a.epsilon*srvEpsilonDecay)
 
 	a.mu.Lock()
 	a.buffer[a.bufIdx] = Experience{
@@ -194,5 +195,8 @@ func (a *RLServerAgent) trainStep() {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	dqnTrainBatch(a.qNet, a.target, batch, srvNumActions, srvGamma, 0.001)
-	atomic.AddInt64(&a.trainCount, 1)
+	cnt := atomic.AddInt64(&a.trainCount, 1)
+	if cnt%10 == 0 {
+		srvLog.Debug("train#%d eps=%.3f steps=%d", cnt, a.epsilon, atomic.LoadInt64(&a.stepCount))
+	}
 }

@@ -1,7 +1,6 @@
 package ml
 
 import (
-	"fmt"
 	"math"
 	mrand "math/rand"
 	"strings"
@@ -9,12 +8,11 @@ import (
 	"sync/atomic"
 	"time"
 
+	"whispera/internal/logger"
 	"whispera/internal/obfuscation/ml/gnet"
 )
 
-var tlsLog = func(format string, args ...interface{}) {
-	fmt.Printf("[RL-TLS] "+format+"\n", args...)
-}
+var tlsLog = logger.Module("rl-tls")
 
 // TLSProfiles — набор JA3/TLS fingerprint профилей.
 // Пустая строка = не перекрывать (использовать Go default).
@@ -129,7 +127,8 @@ func (a *RLTLSAgent) Decide(v TLSView) string {
 	if profile == "" {
 		profile = "go-default"
 	}
-	tlsLog("profile=%s transport=%s eps=%.2f", profile, v.TransportName, a.epsilon)
+	tlsLog.Info("profile=%s transport=%s tlsErrs=%d eps=%.2f steps=%d",
+		profile, v.TransportName, v.ConsecutiveTLSErrors, a.epsilon, atomic.LoadInt64(&a.stepCount))
 	return TLSProfiles[idx]
 }
 
@@ -147,6 +146,12 @@ func (a *RLTLSAgent) RecordOutcome(success bool) {
 	if success {
 		reward = 1.0
 	}
+	profile := TLSProfiles[action]
+	if profile == "" {
+		profile = "go-default"
+	}
+	tlsLog.Info("outcome: success=%v reward=%.1f profile=%s eps→%.3f",
+		success, reward, profile, a.epsilon*tlsEpsilonDecay)
 
 	a.mu.Lock()
 	a.buffer[a.bufIdx] = Experience{
@@ -187,5 +192,8 @@ func (a *RLTLSAgent) trainStep() {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	dqnTrainBatch(a.qNet, a.target, batch, tlsNumActions, tlsGamma, 0.001)
-	atomic.AddInt64(&a.trainCount, 1)
+	cnt := atomic.AddInt64(&a.trainCount, 1)
+	if cnt%10 == 0 {
+		tlsLog.Debug("train#%d eps=%.3f steps=%d", cnt, a.epsilon, atomic.LoadInt64(&a.stepCount))
+	}
 }

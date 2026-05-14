@@ -1,19 +1,17 @@
 package ml
 
 import (
-	"fmt"
 	"math"
 	mrand "math/rand"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"whispera/internal/logger"
 	"whispera/internal/obfuscation/ml/gnet"
 )
 
-var chunkLog = func(format string, args ...interface{}) {
-	fmt.Printf("[RL-CHUNK] "+format+"\n", args...)
-}
+var chunkLog = logger.Module("rl-chunk")
 
 // ChunkSizes — дискретный набор размеров фреймов mux (байт).
 var ChunkSizes = []int{8192, 16384, 32768, 65535}
@@ -103,7 +101,8 @@ func (a *RLChunkAgent) Decide(v ChunkView) int {
 
 	a.pendingState = state
 	a.pendingAction = idx
-	chunkLog("size=%d eps=%.2f rtt=%.0fms", ChunkSizes[idx], a.epsilon, v.RTTMs)
+	chunkLog.Info("frame=%dB eps=%.2f rtt=%.0fms up=%.0fB/s dn=%.0fB/s steps=%d",
+		ChunkSizes[idx], a.epsilon, v.RTTMs, v.BytesUpSec, v.BytesDnSec, atomic.LoadInt64(&a.stepCount))
 	return ChunkSizes[idx]
 }
 
@@ -118,9 +117,10 @@ func (a *RLChunkAgent) RecordOutcome(quality float64) {
 		return
 	}
 
-	// Небольшой штраф за очень большие чанки (они увеличивают латентность).
 	sizePenalty := float64(action) * 0.02
 	reward := quality - sizePenalty
+	chunkLog.Info("outcome: quality=%.2f reward=%.2f frame=%dB eps→%.3f",
+		quality, reward, ChunkSizes[action], a.epsilon*chunkEpsilonDecay)
 
 	a.mu.Lock()
 	a.buffer[a.bufIdx] = Experience{
@@ -161,5 +161,8 @@ func (a *RLChunkAgent) trainStep() {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	dqnTrainBatch(a.qNet, a.target, batch, chunkNumActions, chunkGamma, 0.001)
-	atomic.AddInt64(&a.trainCount, 1)
+	cnt := atomic.AddInt64(&a.trainCount, 1)
+	if cnt%10 == 0 {
+		chunkLog.Debug("train#%d eps=%.3f steps=%d", cnt, a.epsilon, atomic.LoadInt64(&a.stepCount))
+	}
 }

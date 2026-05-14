@@ -8,12 +8,11 @@ import (
 	"sync/atomic"
 	"time"
 
+	"whispera/internal/logger"
 	"whispera/internal/obfuscation/ml/gnet"
 )
 
-var connLog = func(format string, args ...interface{}) {
-	fmt.Printf("[RL-CONN] "+format+"\n", args...)
-}
+var connLog = logger.Module("rl-conn")
 
 // ConnAction — действие агента управления пулом соединений.
 type ConnAction int
@@ -151,8 +150,9 @@ func (a *RLConnAgent) Decide(view ConnPoolView) ConnAction {
 		mode += " →KEEP(maxpool)"
 	}
 
-	connLog("%s → %s (pool=%d eps=%.2f steps=%d)",
-		mode, action, view.Size, a.epsilon, atomic.LoadInt64(&a.stepCount))
+	connLog.Info("%s → %s (pool=%d eps=%.2f steps=%d train=%d)",
+		mode, action, view.Size, a.epsilon,
+		atomic.LoadInt64(&a.stepCount), atomic.LoadInt64(&a.trainCount))
 
 	a.pendingState = state
 	a.pendingAction = actionIdx
@@ -174,7 +174,7 @@ func (a *RLConnAgent) RecordOutcome(quality float64) {
 	// Reward: качество пула − штраф за излишние соединения.
 	connCountNorm := state[0]
 	reward := quality - 0.05*connCountNorm // лёгкий штраф за избыточность
-	connLog("outcome: quality=%.3f reward=%.3f", quality, reward)
+	connLog.Info("outcome: quality=%.3f reward=%.3f eps→%.3f", quality, reward, a.epsilon*connEpsilonDecay)
 
 	a.mu.Lock()
 	a.buffer[a.bufIdx] = Experience{
@@ -247,7 +247,10 @@ func (a *RLConnAgent) trainStep() {
 		dOut[exp.Action] = -(targetQ - qvals[exp.Action])
 		a.netBackprop(a.qNet, acts, dOut, lr)
 	}
-	atomic.AddInt64(&a.trainCount, 1)
+	cnt := atomic.AddInt64(&a.trainCount, 1)
+	if cnt%10 == 0 {
+		connLog.Debug("train#%d eps=%.3f steps=%d", cnt, a.epsilon, atomic.LoadInt64(&a.stepCount))
+	}
 }
 
 func (a *RLConnAgent) netForward(net *gnet.GorgoniaNet, input []float64) [][]float64 {

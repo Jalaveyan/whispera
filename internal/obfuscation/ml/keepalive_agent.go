@@ -1,19 +1,17 @@
 package ml
 
 import (
-	"fmt"
 	"math"
 	mrand "math/rand"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"whispera/internal/logger"
 	"whispera/internal/obfuscation/ml/gnet"
 )
 
-var kaLog = func(format string, args ...interface{}) {
-	fmt.Printf("[RL-KA] "+format+"\n", args...)
-}
+var kaLog = logger.Module("rl-ka")
 
 // KeepaliveIntervals — дискретный набор интервалов keepalive (агент выбирает индекс).
 var KeepaliveIntervals = []time.Duration{
@@ -106,7 +104,8 @@ func (a *RLKeepaliveAgent) Decide(v KeepaliveView) time.Duration {
 
 	a.pendingState = state
 	a.pendingAction = idx
-	kaLog("interval=%v eps=%.2f rtt=%.0fms missed=%d", KeepaliveIntervals[idx], a.epsilon, v.RTTMs, v.MissedKAs)
+	kaLog.Info("interval=%v eps=%.2f rtt=%.0fms missed=%d steps=%d",
+		KeepaliveIntervals[idx], a.epsilon, v.RTTMs, v.MissedKAs, atomic.LoadInt64(&a.stepCount))
 	return KeepaliveIntervals[idx]
 }
 
@@ -123,6 +122,8 @@ func (a *RLKeepaliveAgent) RecordOutcome(quality float64) {
 	// Лёгкий штраф за длинные интервалы (предпочитаем чаще проверять стабильность).
 	intervalPenalty := float64(action) * 0.03
 	reward := quality - intervalPenalty
+	kaLog.Info("outcome: quality=%.2f reward=%.2f interval=%v eps→%.3f",
+		quality, reward, KeepaliveIntervals[action], a.epsilon*kaEpsilonDecay)
 
 	a.mu.Lock()
 	a.buffer[a.bufIdx] = Experience{
@@ -163,5 +164,8 @@ func (a *RLKeepaliveAgent) trainStep() {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	dqnTrainBatch(a.qNet, a.target, batch, kaNumActions, kaGamma, 0.001)
-	atomic.AddInt64(&a.trainCount, 1)
+	cnt := atomic.AddInt64(&a.trainCount, 1)
+	if cnt%10 == 0 {
+		kaLog.Debug("train#%d eps=%.3f steps=%d", cnt, a.epsilon, atomic.LoadInt64(&a.stepCount))
+	}
 }
