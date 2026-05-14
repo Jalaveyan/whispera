@@ -100,6 +100,44 @@ func (c *prependConn) Read(b []byte) (int, error) {
 	return c.Conn.Read(b)
 }
 
+// chanListener delivers pre-accepted connections to h2c when sharing a TCP port.
+type chanListener struct {
+	ch   chan net.Conn
+	addr net.Addr
+	once sync.Once
+	done chan struct{}
+}
+
+func (l *chanListener) Accept() (net.Conn, error) {
+	select {
+	case conn, ok := <-l.ch:
+		if !ok {
+			return nil, fmt.Errorf("listener closed")
+		}
+		return conn, nil
+	case <-l.done:
+		return nil, fmt.Errorf("listener closed")
+	}
+}
+
+func (l *chanListener) Close() error {
+	l.once.Do(func() { close(l.done) })
+	return nil
+}
+
+func (l *chanListener) Addr() net.Addr { return l.addr }
+
+// findListenerByAddr returns the active listener bound to addr.
+// Must be called with listenersMutex held.
+func findListenerByAddr(addr string) net.Listener {
+	for _, l := range activeListeners {
+		if l.Addr().String() == addr {
+			return l
+		}
+	}
+	return nil
+}
+
 var globalProbeDetector *probedetector.Detector
 
 var (
@@ -146,6 +184,11 @@ var (
 
 	phantomHandlers   = make(map[string]*phantom.Handler)
 	phantomHandlersMu sync.RWMutex
+
+	// portH2CChans maps listenAddr → channel used to hand off H2C connections
+	// detected by the TCP mux (first 3 bytes == "PRI").
+	portH2CChans   = make(map[string]chan net.Conn)
+	portH2CChansMu sync.Mutex
 )
 
 var udpIPRate struct {
@@ -553,18 +596,35 @@ func StartInbound(inbound modconfig.InboundConfig, serverConfig *modconfig.Serve
 			return fmt.Errorf("failed to create h2c transport: %w", err)
 		}
 
-		if listener != nil {
-			listener.Close()
+		if sharedL := findListenerByAddr(listenAddr); sharedL != nil {
+			// Port already owned by a TCP inbound — share it via protocol mux.
+			if listener != nil {
+				listener.Close()
+			}
+			ch := make(chan net.Conn, 64)
+			portH2CChansMu.Lock()
+			portH2CChans[listenAddr] = ch
+			portH2CChansMu.Unlock()
+			cL := &chanListener{ch: ch, addr: sharedL.Addr(), done: make(chan struct{})}
+			if err := h2cTrans.ServeOn(cL); err != nil {
+				return fmt.Errorf("failed to serve h2c on shared port %s: %w", listenAddr, err)
+			}
+			log.Printf("✅ [Dynamic] Inbound %s muxed on %s (H2C+TCP shared port)", inbound.Tag, listenAddr)
+		} else {
+			if listener != nil {
+				listener.Close()
+			}
+			if err := h2cTrans.Listen(listenAddr); err != nil {
+				return fmt.Errorf("failed to listen h2c on %s: %w", listenAddr, err)
+			}
+			log.Printf("✅ [Dynamic] Inbound %s listening on %s (H2C)", inbound.Tag, listenAddr)
 		}
-
-		if err := h2cTrans.Listen(listenAddr); err != nil {
-			return fmt.Errorf("failed to listen h2c on %s: %w", listenAddr, err)
-		}
-
-		log.Printf("✅ [Dynamic] Inbound %s listening on %s (H2C)", inbound.Tag, listenAddr)
 
 		go func() {
 			defer func() {
+				portH2CChansMu.Lock()
+				delete(portH2CChans, listenAddr)
+				portH2CChansMu.Unlock()
 				h2cTrans.Close()
 				log.Printf("⏹ [Dynamic] Stopped inbound %s (H2C)", inbound.Tag)
 			}()
@@ -589,7 +649,8 @@ func StartInbound(inbound modconfig.InboundConfig, serverConfig *modconfig.Serve
 	if network == "shadowtls" {
 		password := paramStr("password", "")
 		if password == "" {
-			return fmt.Errorf("shadowtls inbound %s: 'password' required in params", inbound.Tag)
+			log.Printf("ℹ [Dynamic] ShadowTLS inbound %s: no password configured, skipping", inbound.Tag)
+			return nil
 		}
 		shadowHost := paramStr("shadow_server", "www.apple.com:443")
 		sni := paramStr("sni", "")
@@ -655,10 +716,31 @@ func StartInbound(inbound modconfig.InboundConfig, serverConfig *modconfig.Serve
 				continue
 			}
 
+			// Peek first 3 bytes to detect H2C preface ("PRI").
+			var peek [3]byte
+			conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond)) //nolint:errcheck
+			n, _ := io.ReadFull(conn, peek[:])
+			conn.SetReadDeadline(time.Time{}) //nolint:errcheck
+
+			pConn := &prependConn{Conn: conn, prepend: peek[:n]}
+
+			portH2CChansMu.Lock()
+			h2cCh, hasH2C := portH2CChans[listenAddr]
+			portH2CChansMu.Unlock()
+
+			if hasH2C && n == 3 && peek[0] == 'P' && peek[1] == 'R' && peek[2] == 'I' {
+				select {
+				case h2cCh <- pConn:
+				default:
+					pConn.Close()
+				}
+				continue
+			}
+
 			if phantomHandler != nil {
-				go phantomHandler.HandleConnection(conn)
+				go phantomHandler.HandleConnection(pConn)
 			} else {
-				go handleTCPConnection(conn, hsHandler)
+				go handleTCPConnection(pConn, hsHandler)
 			}
 		}
 	}()

@@ -134,6 +134,25 @@ func (t *Transport) Listen(addr string) error {
 }
 
 func (t *Transport) listenInternal(ctx context.Context) error {
+	listener, err := (&net.ListenConfig{}).Listen(ctx, "tcp", t.config.ListenAddr)
+	if err != nil {
+		return fmt.Errorf("failed to listen: %w", err)
+	}
+	t.mu.Lock()
+	t.listener = listener
+	t.mu.Unlock()
+	return t.startServe(listener)
+}
+
+// ServeOn starts H2C on an externally provided listener (shared-port mux).
+func (t *Transport) ServeOn(l net.Listener) error {
+	t.mu.Lock()
+	t.listener = l
+	t.mu.Unlock()
+	return t.startServe(l)
+}
+
+func (t *Transport) startServe(l net.Listener) error {
 	h2s := &http2.Server{
 		MaxConcurrentStreams:         t.config.MaxConcurrentStreams,
 		MaxReadFrameSize:             1 << 20,
@@ -153,19 +172,10 @@ func (t *Transport) listenInternal(ctx context.Context) error {
 		WriteTimeout: t.config.WriteTimeout,
 	}
 
-	listener, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", t.config.ListenAddr)
-	if err != nil {
-		return fmt.Errorf("failed to listen: %w", err)
-	}
-
-	t.mu.Lock()
-	t.listener = listener
-	t.mu.Unlock()
-
-	log.Info("H2C listening on %s", t.config.ListenAddr)
+	log.Info("H2C listening on %s", l.Addr())
 
 	go func() {
-		if err := t.server.Serve(listener); err != nil && err != http.ErrServerClosed {
+		if err := t.server.Serve(l); err != nil && err != http.ErrServerClosed {
 			log.Error("Server error: %v", err)
 		}
 	}()

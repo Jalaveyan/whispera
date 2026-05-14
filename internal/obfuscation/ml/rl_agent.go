@@ -291,13 +291,16 @@ func (a *RLTransportAgent) SelectTransport(state []float64) (transport string, a
 
 	if mrand.Float64() < eps {
 		idx := mrand.Intn(len(a.transportNames))
+		trLog.Info("explore → %s (eps=%.2f steps=%d buf=%d)", a.transportNames[idx], eps, atomic.LoadInt64(&a.stepCount), a.prb.Size())
 		return a.transportNames[idx], idx, true
 	}
 
 	best := boltzmannSample(qvals, temp)
 	if best < len(a.transportNames) {
+		trLog.Info("boltzmann → %s (eps=%.2f temp=%.2f steps=%d buf=%d)", a.transportNames[best], eps, temp, atomic.LoadInt64(&a.stepCount), a.prb.Size())
 		return a.transportNames[best], best, false
 	}
+	trLog.Info("fallback → %s (eps=%.2f steps=%d)", a.transportNames[0], eps, atomic.LoadInt64(&a.stepCount))
 	return a.transportNames[0], 0, false
 }
 

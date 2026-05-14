@@ -607,6 +607,7 @@ func (s *MLServer) handleRecommendTransport(w http.ResponseWriter, r *http.Reque
 			confidence = 0.90
 			reason = fmt.Sprintf("RL-DQN selected (buffer=%d, eps=%.3f)", bufSize, rlStats["epsilon"])
 			usedRL = true
+			log.Info("RL override: %s (buf=%d eps=%.3f)", rlTransport, bufSize, rlStats["epsilon"])
 		}
 	}
 
@@ -666,6 +667,10 @@ func (s *MLServer) handleFeedbackConnection(w http.ResponseWriter, r *http.Reque
 		if actionIdx >= 0 {
 			state := make([]float64, ml.RLStateSize)
 			rlAgent.RecordExperience(state, actionIdx, reward, state, !req.Success)
+			bufSize := rlAgent.Stats()["buffer_size"].(int)
+			if bufSize == ml.RLBatchSize*4+1 {
+				log.Info("RL agent activated: buffer threshold reached (buf=%d)", bufSize)
+			}
 		}
 	}
 
