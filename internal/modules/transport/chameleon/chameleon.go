@@ -127,7 +127,7 @@ func Client(ctx context.Context, cfg *Config) (net.Conn, error) {
 	// Must NOT be tied to ctx: ctx carries a short ConnectionTimeout deadline
 	// that only covers the dial phase. The TCP dial is already capped by
 	// Dialer.Timeout=10s; once client.Do returns we have the connection and
-	// tunnelCtx is cancelled only when the caller closes the returned conn.
+	// tunnelCtx is canceled only when the caller closes the returned conn.
 	tunnelCtx, tunnelCancel := context.WithCancel(context.Background())
 
 	req, err := http.NewRequestWithContext(tunnelCtx, http.MethodPost, url, pr)
