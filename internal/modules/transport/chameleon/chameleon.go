@@ -123,18 +123,12 @@ func Client(ctx context.Context, cfg *Config) (net.Conn, error) {
 	pr, pw := io.Pipe()
 	url := fmt.Sprintf("https://%s%s", cfg.ServerAddr, path)
 
-	// tunnelCtx outlives the dial ctx (which may have a short ConnectionTimeout).
-	// The HTTP/2 POST must stay open for the full tunnel lifetime, not just during dialing.
-	// bgCancel is called when the tunnel closes (h2ClientConn.Close) or when the caller
-	// cancels (e.g., process shutdown).
+	// tunnelCtx controls the HTTP/2 POST lifetime (= tunnel lifetime).
+	// Must NOT be tied to ctx: ctx carries a short ConnectionTimeout deadline
+	// that only covers the dial phase. The TCP dial is already capped by
+	// Dialer.Timeout=10s; once client.Do returns we have the connection and
+	// tunnelCtx is cancelled only when the caller closes the returned conn.
 	tunnelCtx, tunnelCancel := context.WithCancel(context.Background())
-	go func() {
-		select {
-		case <-ctx.Done():
-			tunnelCancel()
-		case <-tunnelCtx.Done():
-		}
-	}()
 
 	req, err := http.NewRequestWithContext(tunnelCtx, http.MethodPost, url, pr)
 	if err != nil {
