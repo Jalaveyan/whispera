@@ -10,8 +10,6 @@ import (
 	"syscall"
 	"time"
 
-	sddaemon "github.com/coreos/go-systemd/v22/daemon"
-
 	"whispera/internal/core/events"
 	"whispera/internal/core/interfaces"
 	"whispera/internal/core/registry"
@@ -181,23 +179,6 @@ func (m *Manager) Stop() error {
 func (m *Manager) Run() error {
 	if err := m.Start(); err != nil {
 		return err
-	}
-
-	// Notify systemd: service is ready. No-op outside systemd.
-	_, _ = sddaemon.SdNotify(false, sddaemon.SdNotifyReady)
-
-	// Send WATCHDOG=1 heartbeats if systemd watchdog is enabled.
-	if interval, err := sddaemon.SdWatchdogEnabled(false); err == nil && interval > 0 {
-		go func() {
-			t := time.NewTicker(interval / 2)
-			defer t.Stop()
-			for range t.C {
-				if !m.IsRunning() {
-					return
-				}
-				_, _ = sddaemon.SdNotify(false, sddaemon.SdNotifyWatchdog)
-			}
-		}()
 	}
 
 	sigChan := make(chan os.Signal, 1)

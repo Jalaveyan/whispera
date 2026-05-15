@@ -1210,23 +1210,24 @@ ENVEOF
             sed -i 's| /run/ufw\.lock||g' "$SVC"
             RELOAD=true
         fi
-        # Systemd notify integration: add Type=notify + WatchdogSec, fix TimeoutStopSec
-        if ! grep -q "^Type=notify" "$SVC"; then
-            sed -i '/^\[Service\]/a Type=notify' "$SVC"
+        # Remove watchdog settings that cause spurious 'timeout' failures
+        if grep -q "^Type=notify" "$SVC"; then
+            sed -i '/^Type=notify/d' "$SVC"
             RELOAD=true
-            log_info "Added Type=notify to whispera.service"
+            log_info "Removed Type=notify from whispera.service"
         fi
         if grep -q "^WatchdogSec=" "$SVC"; then
-            sed -i 's/^WatchdogSec=.*/WatchdogSec=30/' "$SVC"
+            sed -i '/^WatchdogSec=/d' "$SVC"
             RELOAD=true
-        else
-            sed -i '/^RestartSec=/a WatchdogSec=30' "$SVC"
-            RELOAD=true
-            log_info "Added WatchdogSec=30 to whispera.service"
+            log_info "Removed WatchdogSec from whispera.service"
         fi
         if grep -q "^TimeoutStopSec=" "$SVC"; then
             sed -i 's/^TimeoutStopSec=.*/TimeoutStopSec=90/' "$SVC"
             RELOAD=true
+        else
+            sed -i '/^RestartSec=/a TimeoutStopSec=90' "$SVC"
+            RELOAD=true
+            log_info "Added TimeoutStopSec=90 to whispera.service"
         fi
         if [[ "$RELOAD" == true ]]; then
             systemctl daemon-reload

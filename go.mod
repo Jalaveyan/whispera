@@ -3,7 +3,6 @@ module whispera
 go 1.25.6
 
 require (
-	github.com/coreos/go-systemd/v22 v22.7.0
 	github.com/go-telegram-bot-api/telegram-bot-api/v5 v5.5.1
 	github.com/google/uuid v1.6.0
 	github.com/hashicorp/yamux v0.1.2
