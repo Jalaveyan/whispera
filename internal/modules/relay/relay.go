@@ -483,6 +483,8 @@ func (s *Server) handleProxyStream(stream net.Conn) {
 
 	if tcpTarget, ok := target.(*net.TCPConn); ok {
 		tcpTarget.SetNoDelay(true)
+		tcpTarget.SetReadBuffer(4 * 1024 * 1024)
+		tcpTarget.SetWriteBuffer(4 * 1024 * 1024)
 	}
 
 	errCh := make(chan error, 2)

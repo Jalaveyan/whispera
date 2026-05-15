@@ -22,7 +22,7 @@ const (
 )
 
 var copyBufPool = sync.Pool{
-	New: func() interface{} { b := make([]byte, 32*1024); return &b },
+	New: func() interface{} { b := make([]byte, 512*1024); return &b },
 }
 
 type Config struct {
