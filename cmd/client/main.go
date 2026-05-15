@@ -438,8 +438,15 @@ func main() {
 	phantomShortId := ""
 	phantomServerPubKey := "jDwJpsAOm/dizeRNOMyUkoiHzslRkEmSQ/SKvigNtQw="
 	var phantomPSK []byte
+	var chameleonSecret []byte
 	chatFSMEnabled := false
 	var chatFSMInterval time.Duration
+
+	if cfg.Phantom != nil && cfg.Phantom.PSK != "" {
+		if pskBytes, err := base64.StdEncoding.DecodeString(cfg.Phantom.PSK); err == nil && len(pskBytes) == 32 {
+			chameleonSecret = pskBytes
+		}
+	}
 
 	if cfg.Phantom != nil && cfg.Phantom.Enabled {
 		phantomEnabled = true
@@ -558,6 +565,8 @@ func main() {
 			PhantomShortId:      phantomShortId,
 			PhantomServerPubKey: phantomServerPubKey,
 			PhantomPSK:          phantomPSK,
+			EnableChameleon:     len(chameleonSecret) == 32,
+			ChameleonSecret:     chameleonSecret,
 			EnableChatFSM:        chatFSMEnabled,
 			ChatFSMCoverInterval: chatFSMInterval,
 			RussianService:      cfg.RussianService,
@@ -614,6 +623,8 @@ func main() {
 			PhantomShortId:      phantomShortId,
 			PhantomServerPubKey: phantomServerPubKey,
 			PhantomPSK:          phantomPSK,
+			EnableChameleon:     len(chameleonSecret) == 32,
+			ChameleonSecret:     chameleonSecret,
 			EnableChatFSM:        chatFSMEnabled,
 			ChatFSMCoverInterval: chatFSMInterval,
 			RussianService:      cfg.RussianService,
@@ -872,6 +883,8 @@ func main() {
 			PhantomShortId:      phantomShortId,
 			PhantomServerPubKey: phantomServerPubKey,
 			PhantomPSK:          phantomPSK,
+			EnableChameleon:     len(chameleonSecret) == 32,
+			ChameleonSecret:     chameleonSecret,
 			EnableChatFSM:        chatFSMEnabled,
 			ChatFSMCoverInterval: chatFSMInterval,
 			RussianService:      cfg.RussianService,

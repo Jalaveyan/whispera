@@ -116,3 +116,13 @@ phantom:
   max_time_diff: 1800000
   
   fingerprint: "chrome"
+
+chameleon:
+  enabled: true
+  listen_addr: ":443"
+  # Автоматический сертификат Let's Encrypt (рекомендуется):
+  domain: ""          # e.g. "vpn.example.com" — заполнить домен сервера
+  acme_dir: "/var/lib/whispera/acme"
+  # Либо ручные пути к сертификату (приоритет над domain):
+  tls_cert: ""
+  tls_key: ""

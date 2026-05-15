@@ -32,6 +32,7 @@ import (
 	"whispera/internal/modules/phantom"
 	"whispera/internal/modules/transport"
 	asnbypass "whispera/internal/modules/transport/asn_bypass"
+	"whispera/internal/modules/transport/chameleon"
 	"whispera/internal/modules/transport/domainfront"
 	grpc_transport "whispera/internal/modules/transport/grpc"
 	h2c_transport "whispera/internal/modules/transport/h2c"
@@ -242,6 +243,13 @@ type Config struct {
 	PhantomShortId      string
 	PhantomServerPubKey string
 	PhantomPSK          []byte
+
+	// Chameleon — invisible HTTPS transport with GRU traffic shaping.
+	// Enabled by default when SharedSecret is non-empty and no other transport is forced.
+	EnableChameleon   bool
+	ChameleonAddr     string // host:port of chameleon server (defaults to ServerAddr)
+	ChameleonSNI      string // TLS SNI (defaults to ChameleonAddr host)
+	ChameleonSecret   []byte // 32-byte pre-shared secret derived from user key
 
 	EnableChatFSM        bool
 	ChatFSMCoverInterval time.Duration
@@ -1057,6 +1065,32 @@ func (m *Manager) dial(ctx context.Context) (net.Conn, error) {
 	if m.config.CustomDialFn != nil {
 		return m.config.CustomDialFn(ctx)
 	}
+
+	// Chameleon is the preferred transport when enabled — invisible HTTPS with GRU shaping.
+	if m.config.EnableChameleon && len(m.config.ChameleonSecret) > 0 {
+		addr := m.config.ChameleonAddr
+		if addr == "" {
+			addr = m.config.ServerAddr
+		}
+		sni := m.config.ChameleonSNI
+		if sni == "" {
+			host, _, _ := net.SplitHostPort(addr)
+			if host == "" {
+				host = addr
+			}
+			sni = host
+		}
+		conn, err := chameleon.Client(ctx, &chameleon.Config{
+			ServerAddr:   addr,
+			ServerName:   sni,
+			SharedSecret: m.config.ChameleonSecret,
+		})
+		if err == nil {
+			return conn, nil
+		}
+		log.Warn("chameleon dial failed (%v), falling back to standard transports", err)
+	}
+
 	m.preparePhantomASN()
 	candidates := m.buildCandidates()
 	if len(candidates) == 0 {

@@ -51,6 +51,7 @@ import (
 	"whispera/pkg/wiraid"
 	"whispera/internal/modules/router"
 	"whispera/internal/modules/session"
+	"whispera/internal/modules/transport/chameleon"
 	_ "whispera/internal/modules/transport/domainfront"
 	_ "whispera/internal/modules/transport/grpc"
 	h2c_transport "whispera/internal/modules/transport/h2c"
@@ -1605,6 +1606,41 @@ func createModules(manager *lifecycle.Manager, ctx context.Context) error {
 		}
 		phantomHandlersMu.RUnlock()
 		log.Printf("[Server] ProbeDetector propagated to %d phantom handler(s)", len(phantomHandlers))
+	}
+
+	if serverConfig.Chameleon.Enabled && (serverConfig.Chameleon.TLSCert != "" || serverConfig.Chameleon.Domain != "") {
+		cCfg := &chameleon.Config{
+			ListenAddr: serverConfig.Chameleon.ListenAddr,
+			TLSCert:    serverConfig.Chameleon.TLSCert,
+			TLSKey:     serverConfig.Chameleon.TLSKey,
+			Domain:     serverConfig.Chameleon.Domain,
+			ACMEDir:    serverConfig.Chameleon.ACMEDir,
+			GetUsers: func() []chameleon.UserEntry {
+				registered := apiserver.GetRegisteredUsers()
+				entries := make([]chameleon.UserEntry, 0, len(registered))
+				for _, u := range registered {
+					psk, err := base64.StdEncoding.DecodeString(u.PrivateKey)
+					if err != nil || len(psk) != 32 {
+						continue
+					}
+					entries = append(entries, chameleon.UserEntry{UserID: u.UserID, PSK: psk})
+				}
+				return entries
+			},
+			OnConn: func(conn net.Conn, userID string) {
+				if globalRelay != nil {
+					go globalRelay.ServeTunnel(conn, true)
+				} else {
+					conn.Close()
+				}
+			},
+		}
+		go func() {
+			if err := chameleon.ListenAndServe(ctx, cCfg); err != nil {
+				log.Printf("[Chameleon] server stopped: %v", err)
+			}
+		}()
+		log.Printf("✅ Chameleon HTTPS transport on %s", serverConfig.Chameleon.ListenAddr)
 	}
 
 	if serverConfig.Bot.Enabled {

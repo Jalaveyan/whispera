@@ -68,6 +68,7 @@ type ServerConfig struct {
 	Logging        LoggingConfig      `yaml:"logging"`
 	Relay          RelayConfig        `yaml:"relay"`
 	Phantom        PhantomConfig      `yaml:"phantom"`
+	Chameleon      ChameleonConfig    `yaml:"chameleon"`
 	Inbounds       []InboundConfig    `yaml:"inbounds" json:"inbounds"`
 	Outbounds      []OutboundConfig   `yaml:"outbounds" json:"outbounds"`
 	RelayMode      string             `yaml:"relay_mode" json:"relay_mode"`
@@ -372,6 +373,17 @@ type PhantomConfig struct {
 
 	EnableChatFSM        bool `yaml:"enable_chat_fsm" json:"enable_chat_fsm"`
 	ChatFSMCoverInterval int  `yaml:"chat_fsm_cover_interval_sec" json:"chat_fsm_cover_interval_sec"`
+}
+
+type ChameleonConfig struct {
+	Enabled    bool   `yaml:"enabled" json:"enabled"`
+	ListenAddr string `yaml:"listen_addr" json:"listen_addr"` // default ":443"
+	// Manual TLS — takes priority over autocert.
+	TLSCert string `yaml:"tls_cert" json:"tls_cert"`
+	TLSKey  string `yaml:"tls_key" json:"tls_key"`
+	// Autocert (Let's Encrypt) — used when TLSCert is empty.
+	Domain  string `yaml:"domain" json:"domain"`    // e.g. "vpn.example.com"
+	ACMEDir string `yaml:"acme_dir" json:"acme_dir"` // cert cache dir
 }
 
 type ServerSettings struct {

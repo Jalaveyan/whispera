@@ -418,6 +418,11 @@ func (h *Handler) acceptLoop() {
 			continue
 		}
 
+		if tc, ok := conn.(*net.TCPConn); ok {
+			tc.SetKeepAlive(true)
+			tc.SetKeepAlivePeriod(30 * time.Second)
+		}
+
 		if h.config.BlockLocalPeers && !h.isAddrAllowed(conn.RemoteAddr()) {
 			log.Debug("Rejected local/private peer: %s", conn.RemoteAddr())
 			h.stats.BlockedLocalPeers++
