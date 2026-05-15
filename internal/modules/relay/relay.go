@@ -407,6 +407,7 @@ func (s *Server) handleProxyStream(stream net.Conn) {
 
 	hdr := make([]byte, 3)
 	if _, err := io.ReadFull(stream, hdr); err != nil {
+		s.log.Debug("handleProxyStream: read header failed: %v", err)
 		return
 	}
 	proto := hdr[0]
@@ -421,6 +422,8 @@ func (s *Server) handleProxyStream(stream net.Conn) {
 	}
 	addr := string(rest[:addrLen])
 	port := binary.BigEndian.Uint16(rest[addrLen:])
+
+	s.log.Info("proxy stream: %s:%d", addr, port)
 
 	network := "tcp"
 	if proto == 0x11 {
@@ -472,7 +475,7 @@ func (s *Server) handleProxyStream(stream net.Conn) {
 	}
 	if err != nil {
 		stream.Write([]byte{0x01})
-		s.log.Debug("Dial %s:%d failed: %v", addr, port, err)
+		s.log.Info("Dial %s:%d failed: %v", addr, port, err)
 		return
 	}
 	defer target.Close()

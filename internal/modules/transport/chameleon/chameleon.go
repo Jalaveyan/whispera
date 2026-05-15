@@ -123,8 +123,22 @@ func Client(ctx context.Context, cfg *Config) (net.Conn, error) {
 	pr, pw := io.Pipe()
 	url := fmt.Sprintf("https://%s%s", cfg.ServerAddr, path)
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, pr)
+	// tunnelCtx outlives the dial ctx (which may have a short ConnectionTimeout).
+	// The HTTP/2 POST must stay open for the full tunnel lifetime, not just during dialing.
+	// bgCancel is called when the tunnel closes (h2ClientConn.Close) or when the caller
+	// cancels (e.g., process shutdown).
+	tunnelCtx, tunnelCancel := context.WithCancel(context.Background())
+	go func() {
+		select {
+		case <-ctx.Done():
+			tunnelCancel()
+		case <-tunnelCtx.Done():
+		}
+	}()
+
+	req, err := http.NewRequestWithContext(tunnelCtx, http.MethodPost, url, pr)
 	if err != nil {
+		tunnelCancel()
 		pr.Close(); pw.Close()
 		return nil, fmt.Errorf("chameleon: build request: %w", err)
 	}
@@ -136,19 +150,20 @@ func Client(ctx context.Context, cfg *Config) (net.Conn, error) {
 	client := &http.Client{Transport: transport}
 	resp, err := client.Do(req)
 	if err != nil {
+		tunnelCancel()
 		pr.Close(); pw.Close()
 		return nil, fmt.Errorf("chameleon: connect: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
+		tunnelCancel()
 		pr.Close(); pw.Close(); resp.Body.Close()
 		return nil, fmt.Errorf("chameleon: server rejected: %s", resp.Status)
 	}
 
-	_, cancel := context.WithCancel(ctx)
 	local := staticAddr{"tcp", cfg.ServerAddr}
 	remote := staticAddr{"tcp", cfg.ServerAddr}
 
-	h2c := newH2ClientConn(pr, pw, resp.Body, cancel, local, remote)
+	h2c := newH2ClientConn(pr, pw, resp.Body, tunnelCancel, local, remote)
 
 	fc, err := NewFrameConn(h2c, keys.DataSend, keys.DataRecv)
 	if err != nil {
