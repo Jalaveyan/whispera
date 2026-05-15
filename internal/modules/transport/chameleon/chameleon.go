@@ -219,6 +219,8 @@ func handleRequest(w http.ResponseWriter, r *http.Request, cfg *Config) {
 		return
 	}
 
+	log.Printf("chameleon: POST %s from %s", r.URL.Path, r.RemoteAddr)
+
 	tokenHdr := r.Header.Get(headerToken)
 	sessionHdr := r.Header.Get(headerSession)
 
@@ -237,7 +239,7 @@ func handleRequest(w http.ResponseWriter, r *http.Request, cfg *Config) {
 	// Resolve the shared secret and user ID by trying all registered users.
 	secret, userID := resolveSecret(cfg, token, sessionID)
 	if secret == nil {
-		log.Debug("chameleon: auth failed from %s", r.RemoteAddr)
+		log.Printf("chameleon: auth failed from %s (token len=%d, session len=%d)", r.RemoteAddr, len(token), len(sessionHdr))
 		serveDecoy(w, r)
 		return
 	}
