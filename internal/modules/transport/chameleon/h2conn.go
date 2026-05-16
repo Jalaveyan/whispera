@@ -78,13 +78,63 @@ func (c *h2ServerConn) SetDeadline(t time.Time) error      { return nil }
 func (c *h2ServerConn) SetReadDeadline(t time.Time) error  { return nil }
 func (c *h2ServerConn) SetWriteDeadline(t time.Time) error { return nil }
 
+// bufferedPipeWriter wraps an io.PipeWriter with an async buffer so that
+// Write returns immediately even before the pipe reader goroutine starts.
+// On Android the HTTP/2 request-body goroutine can take 30-44s to schedule;
+// without buffering yamux blocks on the very first SYN frame.
+type bufferedPipeWriter struct {
+	pw   *io.PipeWriter
+	ch   chan []byte
+	done chan struct{}
+	once sync.Once
+}
+
+func newBufferedPipeWriter(pw *io.PipeWriter) *bufferedPipeWriter {
+	b := &bufferedPipeWriter{
+		pw:   pw,
+		ch:   make(chan []byte, 256),
+		done: make(chan struct{}),
+	}
+	go b.drain()
+	return b
+}
+
+func (b *bufferedPipeWriter) Write(p []byte) (int, error) {
+	cp := make([]byte, len(p))
+	copy(cp, p)
+	select {
+	case b.ch <- cp:
+		return len(p), nil
+	case <-b.done:
+		return 0, io.ErrClosedPipe
+	}
+}
+
+func (b *bufferedPipeWriter) Close() {
+	b.once.Do(func() { close(b.done) })
+}
+
+func (b *bufferedPipeWriter) drain() {
+	defer b.pw.Close()
+	for {
+		select {
+		case data := <-b.ch:
+			if _, err := b.pw.Write(data); err != nil {
+				return
+			}
+		case <-b.done:
+			return
+		}
+	}
+}
+
 // h2ClientConn adapts a bidirectional HTTP/2 stream into a net.Conn.
 //
 // Write → request body pipe (client → server)
 // Read  ← response body   (server → client)
 type h2ClientConn struct {
 	pr     *io.PipeReader
-	pw     *io.PipeWriter
+	pw     *bufferedPipeWriter
 	resp   io.ReadCloser
 	cancel func()
 	once   sync.Once
@@ -96,7 +146,7 @@ type h2ClientConn struct {
 func newH2ClientConn(pr *io.PipeReader, pw *io.PipeWriter, resp io.ReadCloser, cancel func(), local, remote net.Addr) *h2ClientConn {
 	return &h2ClientConn{
 		pr:         pr,
-		pw:         pw,
+		pw:         newBufferedPipeWriter(pw),
 		resp:       resp,
 		cancel:     cancel,
 		localAddr:  local,
@@ -106,12 +156,7 @@ func newH2ClientConn(pr *io.PipeReader, pw *io.PipeWriter, resp io.ReadCloser, c
 
 func (c *h2ClientConn) Read(b []byte) (int, error) { return c.resp.Read(b) }
 func (c *h2ClientConn) Write(b []byte) (int, error) {
-	t0 := time.Now()
-	n, err := c.pw.Write(b)
-	if d := time.Since(t0); d > 100*time.Millisecond {
-		log.Printf("chameleon: h2 pipe write %d bytes blocked %v", len(b), d)
-	}
-	return n, err
+	return c.pw.Write(b)
 }
 
 func (c *h2ClientConn) Close() error {
