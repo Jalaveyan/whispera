@@ -338,8 +338,28 @@ func ListenAndServe(ctx context.Context, cfg *Config) error {
 
 	go func() { <-ctx.Done(); srv.Close() }()
 
+	tcpLn, err := net.Listen("tcp", listenAddr)
+	if err != nil {
+		return fmt.Errorf("chameleon: listen: %w", err)
+	}
+	tlsLn := tls.NewListener(&noDelayListener{tcpLn.(*net.TCPListener)}, tlsCfg)
 	log.Printf("Chameleon listening on %s", listenAddr)
-	return srv.ListenAndServeTLS("", "")
+	return srv.Serve(tlsLn)
+}
+
+// noDelayListener sets TCP_NODELAY (and keepalive) on every accepted connection.
+// This ensures yamux WINDOW_UPDATE frames are sent immediately without Nagle batching.
+type noDelayListener struct{ *net.TCPListener }
+
+func (l *noDelayListener) Accept() (net.Conn, error) {
+	tc, err := l.TCPListener.AcceptTCP()
+	if err != nil {
+		return nil, err
+	}
+	tc.SetKeepAlive(true)
+	tc.SetKeepAlivePeriod(time.Duration(30+mrand.Intn(61)) * time.Second)
+	tc.SetNoDelay(true)
+	return tc, nil
 }
 
 func handleRequest(w http.ResponseWriter, r *http.Request, cfg *Config) {
