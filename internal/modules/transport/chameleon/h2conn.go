@@ -40,8 +40,18 @@ func (c *h2ServerConn) Read(b []byte) (int, error) {
 	return c.r.Read(b)
 }
 
-func (c *h2ServerConn) Write(b []byte) (int, error) {
-	n, err := c.w.Write(b)
+func (c *h2ServerConn) Write(b []byte) (n int, err error) {
+	select {
+	case <-c.done:
+		return 0, io.ErrClosedPipe
+	default:
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			n, err = 0, io.ErrClosedPipe
+		}
+	}()
+	n, err = c.w.Write(b)
 	if err == nil && n > 0 {
 		c.flush()
 	}
