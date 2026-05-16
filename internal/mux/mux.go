@@ -39,7 +39,7 @@ func DefaultConfig() *Config {
 		MaxReceiveBuffer:     268435456, // 256 MB глобальный потолок (без изменений)
 		MaxStreamBuffer:      16777216,  // 16 MB на stream
 		KeepAliveInterval:    5 * time.Second,
-		KeepAliveTimeout:     30 * time.Second,
+		KeepAliveTimeout:     90 * time.Second,
 		MaxConcurrentStreams: 64, // было 4096 — мультиплексирование без сюрпризов
 	}
 }

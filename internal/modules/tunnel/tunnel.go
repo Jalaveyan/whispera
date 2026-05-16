@@ -325,7 +325,7 @@ func DefaultConfig() *Config {
 		ReconnectInterval:    5 * time.Second,
 		ReconnectMaxDelay:    60 * time.Second,
 		MaxReconnectAttempts: 0,
-		ConnectionTimeout:    30 * time.Second,
+		ConnectionTimeout:    90 * time.Second,
 		EnableRotation:       true,
 		RotationInterval:     60 * time.Minute,
 		DrainingTimeout:      90 * time.Minute,
@@ -344,7 +344,7 @@ func (c *Config) Validate() error {
 		c.ReconnectMaxDelay = 60 * time.Second
 	}
 	if c.ConnectionTimeout <= 0 {
-		c.ConnectionTimeout = 30 * time.Second
+		c.ConnectionTimeout = 90 * time.Second
 	}
 	if c.RotationInterval < 1*time.Minute {
 		c.RotationInterval = 15 * time.Minute

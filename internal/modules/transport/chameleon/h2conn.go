@@ -94,8 +94,15 @@ func newH2ClientConn(pr *io.PipeReader, pw *io.PipeWriter, resp io.ReadCloser, c
 	}
 }
 
-func (c *h2ClientConn) Read(b []byte) (int, error)  { return c.resp.Read(b) }
-func (c *h2ClientConn) Write(b []byte) (int, error) { return c.pw.Write(b) }
+func (c *h2ClientConn) Read(b []byte) (int, error) { return c.resp.Read(b) }
+func (c *h2ClientConn) Write(b []byte) (int, error) {
+	t0 := time.Now()
+	n, err := c.pw.Write(b)
+	if d := time.Since(t0); d > 100*time.Millisecond {
+		log.Printf("chameleon: h2 pipe write %d bytes blocked %v", len(b), d)
+	}
+	return n, err
+}
 
 func (c *h2ClientConn) Close() error {
 	c.once.Do(func() {
