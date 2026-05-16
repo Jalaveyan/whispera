@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"math"
-	mrand "math/rand"
 	"net"
 	"sync"
 	"time"
@@ -166,26 +165,23 @@ func DeriveBehaviorParams(behaviorKey []byte, windowIndex int, sessionID []byte)
 // It tracks window switches via WindowScheduler and rotates the GRU when the
 // window changes, so the traffic fingerprint shifts at random intervals.
 //
-// Session-level burst/idle model:
-//   - Each "burst" is capped at a random 32–256 KB.
-//   - After the burst threshold is crossed, a longer inter-burst pause (50–500 ms)
-//     is injected, mimicking the browser finishing a page load and pausing for
-//     the next user action.
-//   - If no data has been written for >5 s (user was reading / idle), the next
-//     Write skips the inter-frame delay so resumption latency stays minimal.
+// Design notes:
+//   - Chunk size and inter-frame delay come from the GRU (session-unique weights).
+//   - Session-level burst/idle is handled by connection rotation in tunnel.go
+//     (each H2 POST lives 45-120s), not by artificial pauses here. Per-write
+//     burst pauses were removed: they triggered every 32-256 KB, causing
+//     7-60 stalls per HLS segment and making Twitch unwatchable.
+//   - Writes < 512 B (yamux SYN/ACK/SETTINGS/WINDOW_UPDATE) bypass all delays
+//     so yamux control frames never stall the send goroutine.
+//   - If no write for >5 s, the next write skips the inter-frame delay
+//     so resumption latency is minimal (user just started a new activity).
 type shapedConn struct {
 	net.Conn
 	sched     *WindowScheduler
 	gru       *trafficGRU
 	lastIndex int
 
-	burstBytes int
-	burstMax   int
-	lastWrite  time.Time
-}
-
-func newBurstMax() int {
-	return 32*1024 + mrand.Intn(224*1024)
+	lastWrite time.Time
 }
 
 func newShapedConn(inner net.Conn, sched *WindowScheduler) *shapedConn {
@@ -196,7 +192,6 @@ func newShapedConn(inner net.Conn, sched *WindowScheduler) *shapedConn {
 		sched:     sched,
 		gru:       gru,
 		lastIndex: idx,
-		burstMax:  newBurstMax(),
 	}
 }
 
@@ -212,7 +207,6 @@ func (s *shapedConn) Write(p []byte) (int, error) {
 	s.refreshGRU()
 
 	returningFromIdle := !s.lastWrite.IsZero() && time.Since(s.lastWrite) > 5*time.Second
-
 	_, delayMs := s.gru.Next()
 
 	written := 0
@@ -231,27 +225,11 @@ func (s *shapedConn) Write(p []byte) (int, error) {
 		p = p[chunkSize:]
 	}
 
-	s.burstBytes += written
 	s.lastWrite = time.Now()
 
-	// Skip all delays for small writes — these are yamux control frames (SYN=12B,
-	// SETTINGS=12B, WINDOW_UPDATE=16B). Delaying them stalls the yamux send goroutine
-	// and causes app-level connection timeouts (Telegram needs 2-3 retries).
-	// Only shape data writes that are large enough to matter for DPI classifiers.
-	if written < 512 {
-		return written, nil
-	}
-
-	if s.burstBytes >= s.burstMax {
-		// Burst complete — inject inter-burst pause (exponential, mean 40ms, cap 120ms).
-		pauseMs := -math.Log(1-math.Min(mrand.Float64(), 0.999)) * 40
-		if pauseMs > 120 {
-			pauseMs = 120
-		}
-		time.Sleep(time.Duration(pauseMs * float64(time.Millisecond)))
-		s.burstBytes = 0
-		s.burstMax = newBurstMax()
-	} else if !returningFromIdle && delayMs > 0.5 {
+	// Bypass delay for yamux control frames (SYN=12B, SETTINGS=12B, WINDOW_UPDATE=16B)
+	// and for idle resumption. Only data writes (≥512B) get an inter-frame delay.
+	if written >= 512 && !returningFromIdle && delayMs > 0.5 {
 		time.Sleep(time.Duration(delayMs * float64(time.Millisecond)))
 	}
 
