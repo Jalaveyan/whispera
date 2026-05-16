@@ -232,19 +232,23 @@ func (g *trafficGRU) Next() (chunkSize int, delayMs float64) {
 	var delay float64
 	switch {
 	case phaseSignal > 0.65:
-		delay = -math.Log(1-u) * 2.0
-		if delay > 15 {
-			delay = 15
+		// Burst phase: fast, pipelined — minimal inter-frame gap.
+		delay = -math.Log(1-u) * 1.5
+		if delay > 8 {
+			delay = 8
 		}
 	case phaseSignal < 0.30:
-		delay = -math.Log(1-u) * 60.0
-		if delay > 500 {
-			delay = 500
-		}
-	default:
-		delay = -math.Log(1-u) * 8.0
+		// Think-time phase: user paused — longer gap, but capped at 80ms so
+		// yamux keepalive and app-level timeouts are never triggered.
+		delay = -math.Log(1-u) * 15.0
 		if delay > 80 {
 			delay = 80
+		}
+	default:
+		// Normal streaming: moderate inter-frame gap.
+		delay = -math.Log(1-u) * 5.0
+		if delay > 25 {
+			delay = 25
 		}
 	}
 

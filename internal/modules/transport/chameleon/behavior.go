@@ -234,11 +234,19 @@ func (s *shapedConn) Write(p []byte) (int, error) {
 	s.burstBytes += written
 	s.lastWrite = time.Now()
 
+	// Skip all delays for small writes — these are yamux control frames (SYN=12B,
+	// SETTINGS=12B, WINDOW_UPDATE=16B). Delaying them stalls the yamux send goroutine
+	// and causes app-level connection timeouts (Telegram needs 2-3 retries).
+	// Only shape data writes that are large enough to matter for DPI classifiers.
+	if written < 512 {
+		return written, nil
+	}
+
 	if s.burstBytes >= s.burstMax {
-		// Burst complete — inject inter-burst pause (exponential, mean 150ms, cap 500ms).
-		pauseMs := -math.Log(1-math.Min(mrand.Float64(), 0.999)) * 150
-		if pauseMs > 500 {
-			pauseMs = 500
+		// Burst complete — inject inter-burst pause (exponential, mean 40ms, cap 120ms).
+		pauseMs := -math.Log(1-math.Min(mrand.Float64(), 0.999)) * 40
+		if pauseMs > 120 {
+			pauseMs = 120
 		}
 		time.Sleep(time.Duration(pauseMs * float64(time.Millisecond)))
 		s.burstBytes = 0
