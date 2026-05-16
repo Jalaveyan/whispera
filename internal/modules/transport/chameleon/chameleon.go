@@ -322,6 +322,17 @@ func ListenAndServe(ctx context.Context, cfg *Config) error {
 		TLSConfig: tlsCfg,
 	}
 
+	// Without explicit H2 configuration Go uses the spec-default upload window of
+	// 65535 bytes per stream.  At 20 ms RTT that caps the POST-body throughput at
+	// ~3 MB/s (~26 Mbps) regardless of link capacity.  Set large windows so the
+	// upload path is not the bottleneck for any realistic RTT.
+	if err := http2.ConfigureServer(srv, &http2.Server{
+		MaxUploadBufferPerConnection: 1 << 26, // 64 MB — connection-level receive window
+		MaxUploadBufferPerStream:     1 << 24, // 16 MB — per-stream receive window
+	}); err != nil {
+		return fmt.Errorf("chameleon: h2 server config: %w", err)
+	}
+
 	go func() { <-ctx.Done(); srv.Close() }()
 
 	log.Printf("Chameleon listening on %s", listenAddr)
