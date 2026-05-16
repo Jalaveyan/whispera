@@ -1061,10 +1061,14 @@ func (m *Manager) dialManagedConn(ctx context.Context, id string) (*managedConn,
 	var maxAge time.Duration
 	var maxUploadB int64
 	if m.config.EnableChameleon {
-		// Time-based rotation: each H2 POST lives 45-120s (looks like a finite browser request).
-		maxAge = time.Duration(45+mrand.Intn(76)) * time.Second
-		// Volume-based rotation: each POST body limited to 20MB-100MB upload.
-		maxUploadB = int64(20*1024*1024) + int64(mrand.Intn(80*1024*1024))
+		// Time-based rotation: each H2 POST lives 10-20 minutes.
+		// Real H2 connections are long-lived; 45-120s was causing reconnect
+		// gaps every minute which stalled new stream setup.
+		maxAge = time.Duration(10+mrand.Intn(11)) * time.Minute
+		// Volume-based rotation: disabled — time-based maxAge is sufficient for PFS.
+		// Previous 20-100 MB limit rotated every 0.3-1.6s at 500 Mbps, causing
+		// constant connection churn.
+		maxUploadB = 0
 	}
 
 	return &managedConn{

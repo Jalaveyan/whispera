@@ -168,6 +168,9 @@ func Client(ctx context.Context, cfg *Config) (net.Conn, error) {
 				tcpConn.SetKeepAlive(true)
 				// 30-90s keepalive — matches Chrome's OS-default range on Android.
 				tcpConn.SetKeepAlivePeriod(time.Duration(30+mrand.Intn(61)) * time.Second)
+				// Disable Nagle: yamux WINDOW_UPDATE and control frames are tiny;
+				// Nagle would hold them up to 200ms, stalling flow control.
+				tcpConn.SetNoDelay(true)
 			}
 			uConn := utls.UClient(rawConn, &utls.Config{
 				ServerName:         sni,
