@@ -1928,6 +1928,7 @@ func (m *Manager) Disconnect() {
 
 	for _, c := range m.activePool {
 		c.closeOnce.Do(func() { close(c.closing) })
+		c.session.Close()
 		c.Close()
 	}
 	m.activePool = nil
@@ -1935,6 +1936,7 @@ func (m *Manager) Disconnect() {
 
 	for _, c := range m.drainingConns {
 		c.closeOnce.Do(func() { close(c.closing) })
+		c.session.Close()
 		c.Close()
 	}
 	m.drainingConns = nil
@@ -2900,6 +2902,7 @@ closeNow:
 	m.connMu.Unlock()
 
 	mc.closeOnce.Do(func() { close(mc.closing) })
+	mc.session.Close() // closes yamux session → underlying H2 POST → RST_STREAM on server
 	mc.Close()
 	log.Info("Draining connection closed (%s)", reason)
 }
