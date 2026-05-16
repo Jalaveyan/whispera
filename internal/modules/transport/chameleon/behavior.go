@@ -166,22 +166,17 @@ func DeriveBehaviorParams(behaviorKey []byte, windowIndex int, sessionID []byte)
 // window changes, so the traffic fingerprint shifts at random intervals.
 //
 // Design notes:
-//   - Chunk size and inter-frame delay come from the GRU (session-unique weights).
-//   - Session-level burst/idle is handled by connection rotation in tunnel.go
-//     (each H2 POST lives 45-120s), not by artificial pauses here. Per-write
-//     burst pauses were removed: they triggered every 32-256 KB, causing
-//     7-60 stalls per HLS segment and making Twitch unwatchable.
-//   - Writes < 512 B (yamux SYN/ACK/SETTINGS/WINDOW_UPDATE) bypass all delays
-//     so yamux control frames never stall the send goroutine.
-//   - If no write for >5 s, the next write skips the inter-frame delay
-//     so resumption latency is minimal (user just started a new activity).
+//   - Chunk sizes come from the GRU (session-unique weights), splitting bulk
+//     writes into varied H2-sized frames for DPI evasion.
+//   - No inter-frame delays are applied: the delay was capping throughput to
+//     ~50 Mbps at realistic yamux frame rates. Size variation via PaddedConn
+//     buckets + GRU chunk sizes is sufficient for fingerprint evasion under TLS.
+//   - Writes ≤ 8 KB bypass chunking entirely (yamux control, interactive, gaming).
 type shapedConn struct {
 	net.Conn
 	sched     *WindowScheduler
 	gru       *trafficGRU
 	lastIndex int
-
-	lastWrite time.Time
 }
 
 func newShapedConn(inner net.Conn, sched *WindowScheduler) *shapedConn {
@@ -206,20 +201,12 @@ func (s *shapedConn) refreshGRU() {
 func (s *shapedConn) Write(p []byte) (int, error) {
 	s.refreshGRU()
 
-	// Interactive/game writes (≤8KB): pass through without chunking or delay.
-	// PaddedConn padding already obfuscates frame sizes for this range.
-	// Chunking these into many tiny FrameConn frames adds encryption and H2
-	// overhead with no meaningful DPI benefit.
+	// Interactive/control writes (≤8KB): pass through without chunking.
 	if len(p) <= 8192 {
-		s.lastWrite = time.Now()
 		return s.Conn.Write(p)
 	}
 
-	// Bulk/streaming writes (>8KB): GRU chunking + inter-frame delay to mimic
-	// HTTP/2 video streaming behaviour for DPI evasion.
-	returningFromIdle := !s.lastWrite.IsZero() && time.Since(s.lastWrite) > 5*time.Second
-	_, delayMs := s.gru.Next()
-
+	// Bulk writes (>8KB): GRU chunking for H2 frame size variation under TLS.
 	written := 0
 	for len(p) > 0 {
 		chunkSize, _ := s.gru.Next()
@@ -234,12 +221,6 @@ func (s *shapedConn) Write(p []byte) (int, error) {
 		}
 		written += chunkSize
 		p = p[chunkSize:]
-	}
-
-	s.lastWrite = time.Now()
-
-	if !returningFromIdle && delayMs > 0.5 {
-		time.Sleep(time.Duration(delayMs * float64(time.Millisecond)))
 	}
 
 	return written, nil
