@@ -370,6 +370,7 @@ func (s *Server) ServeTunnel(conn net.Conn, streamObf bool) {
 	s.log.Info("Tunnel session ready for %s", clientID)
 
 	firstStream := true
+	s.log.Info("waiting for first stream from %s", clientID)
 	for {
 		stream, err := session.AcceptStream()
 		if err != nil {
@@ -387,6 +388,7 @@ func (s *Server) ServeTunnel(conn net.Conn, streamObf bool) {
 		}
 		if firstStream {
 			firstStream = false
+			s.log.Info("control stream (1) accepted from %s", clientID)
 			if streamObf {
 				go io.Copy(io.Discard, transport.WrapStreamTLS(stream))
 			} else {
