@@ -13,12 +13,23 @@ import (
 	"net/http"
 	"time"
 
+	utls "github.com/refraction-networking/utls"
 	"golang.org/x/crypto/acme/autocert"
 	"golang.org/x/net/http2"
 	"whispera/internal/logger"
 )
 
 var log = logger.Module("chameleon")
+
+// chromeHelloPool — набор современных Chrome TLS-fingerprint-ов.
+// Выбирается случайно per-connection, чтобы JA3 hash варьировался.
+// Версии 120+ с post-quantum соответствуют реальным Chrome 120-133 на Android.
+var chromeHelloPool = []utls.ClientHelloID{
+	utls.HelloChrome_120_PQ,
+	utls.HelloChrome_131,
+	utls.HelloChrome_133,
+	utls.HelloChrome_Auto,
+}
 
 const (
 	headerSession = "X-Session-Id"
@@ -114,32 +125,43 @@ func Client(ctx context.Context, cfg *Config) (net.Conn, error) {
 	sni := pickSNI(cfg)
 	origin := "https://" + sni
 
-	transport := &http.Transport{
-		TLSClientConfig:   &tls.Config{ServerName: sni, NextProtos: []string{"h2"}, InsecureSkipVerify: true},
-		ForceAttemptHTTP2: true,
-		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+	// Random Chrome fingerprint per connection — JA3 hash varies across sessions.
+	helloID := chromeHelloPool[mrand.Intn(len(chromeHelloPool))]
+
+	// Use http2.Transport directly so DialTLSContext can return *utls.UConn.
+	// http.Transport's TLSNextProto mechanism casts to *tls.Conn which would panic;
+	// http2.Transport accepts any net.Conn that exposes ConnectionState().
+	h2Transport := &http2.Transport{
+		// 30-90s idle before PING — closer to real browser behaviour.
+		ReadIdleTimeout: time.Duration(30+mrand.Intn(61)) * time.Second,
+		PingTimeout:     time.Duration(10+mrand.Intn(11)) * time.Second,
+		// Chrome's SETTINGS frame values (from Wireshark captures of Chrome 120-133):
+		//   SETTINGS_HEADER_TABLE_SIZE      = 65536  (Go default: 4096)
+		//   SETTINGS_MAX_HEADER_LIST_SIZE   = 262144 (Go default: 10MB)
+		// SETTINGS_INITIAL_WINDOW_SIZE (6291456) is not settable via public API.
+		MaxDecoderHeaderTableSize: 65536,
+		MaxHeaderListSize:         262144,
+		DialTLSContext: func(ctx context.Context, network, addr string, _ *tls.Config) (net.Conn, error) {
 			d := &net.Dialer{Timeout: 10 * time.Second}
-			tc, err := d.DialContext(ctx, network, addr)
+			rawConn, err := d.DialContext(ctx, network, addr)
 			if err != nil {
 				return nil, err
 			}
-			if tcpConn, ok := tc.(*net.TCPConn); ok {
+			if tcpConn, ok := rawConn.(*net.TCPConn); ok {
 				tcpConn.SetKeepAlive(true)
 				// 30-90s keepalive — matches Chrome's OS-default range on Android.
-				// 4s was too aggressive and created a distinct TCP fingerprint.
 				tcpConn.SetKeepAlivePeriod(time.Duration(30+mrand.Intn(61)) * time.Second)
 			}
-			return tc, nil
+			uConn := utls.UClient(rawConn, &utls.Config{
+				ServerName:         sni,
+				InsecureSkipVerify: true,
+			}, helloID)
+			if err := uConn.HandshakeContext(ctx); err != nil {
+				rawConn.Close()
+				return nil, fmt.Errorf("chameleon: utls handshake: %w", err)
+			}
+			return uConn, nil
 		},
-	}
-	// HTTP/2 application-level PINGs keep NAT mappings alive on mobile networks.
-	// ReadIdleTimeout triggers a PING after this much silence; if no PONG arrives
-	// within PingTimeout the transport considers the connection dead and closes it.
-	if h2t, err := http2.ConfigureTransports(transport); err == nil {
-		// 30-90s idle before PING — closer to real browser behaviour.
-		// 5s was too aggressive and created a distinctive H2 PING pattern.
-		h2t.ReadIdleTimeout = time.Duration(30+mrand.Intn(61)) * time.Second
-		h2t.PingTimeout = time.Duration(10+mrand.Intn(11)) * time.Second
 	}
 
 	pr, pw := io.Pipe()
@@ -158,13 +180,14 @@ func Client(ctx context.Context, cfg *Config) (net.Conn, error) {
 		pr.Close(); pw.Close()
 		return nil, fmt.Errorf("chameleon: build request: %w", err)
 	}
-	req.Header.Set("Host", sni)
+	// req.Host sets HTTP/2 :authority pseudo-header; req.Header["Host"] is ignored by Go's h2 stack.
+	req.Host = sni
 	req.Header.Set("Content-Type", contentType)
 	req.Header.Set(headerToken, "Bearer "+token)
 	req.Header.Set(headerSession, encodeSession(sessionID, anchor))
 	applyBrowserHeaders(req, origin)
 
-	client := &http.Client{Transport: transport}
+	client := &http.Client{Transport: h2Transport}
 	resp, err := client.Do(req)
 	if err != nil {
 		tunnelCancel()
@@ -311,6 +334,23 @@ func handleRequest(w http.ResponseWriter, r *http.Request, cfg *Config) {
 		log.Printf("chameleon: frame conn: %v", err)
 		return
 	}
+
+	// Download-padding goroutine: sends encrypted frameTypePad frames that the client
+	// discards silently. Inflates server→client bytes so the upload/download ratio
+	// shifts from ~50/50 toward browser-like ~20/80, defeating NetFlow ML classifiers.
+	go func() {
+		for {
+			delay := time.Duration(100+mrand.Intn(300)) * time.Millisecond
+			select {
+			case <-done:
+				return
+			case <-time.After(delay):
+			}
+			if err := fc.WritePadding(1024 + mrand.Intn(7168)); err != nil {
+				return
+			}
+		}
+	}()
 
 	shaped := newShapedConn(fc, sched)
 
