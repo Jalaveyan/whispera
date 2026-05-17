@@ -47,40 +47,6 @@ const (
 	contentType   = "application/octet-stream"
 )
 
-const maxConnsPerUser = 4
-
-type userConnEntry struct {
-	close func()
-}
-
-type connRegistry struct {
-	mu    sync.Mutex
-	conns map[string][]*userConnEntry
-}
-
-func (r *connRegistry) tryAdd(userID string) (*userConnEntry, bool) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if len(r.conns[userID]) >= maxConnsPerUser {
-		return nil, false
-	}
-	e := &userConnEntry{}
-	r.conns[userID] = append(r.conns[userID], e)
-	return e, true
-}
-
-func (r *connRegistry) remove(userID string, e *userConnEntry) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	list := r.conns[userID]
-	for i, v := range list {
-		if v == e {
-			r.conns[userID] = append(list[:i], list[i+1:]...)
-			return
-		}
-	}
-}
-
 type UserEntry struct {
 	UserID string
 	PSK    []byte
@@ -108,8 +74,7 @@ type Config struct {
 
 	OnConn func(conn net.Conn, userID string)
 
-	proxy    *decoyProxy
-	registry *connRegistry
+	proxy *decoyProxy
 }
 
 func encodeSession(sessionID []byte, anchor time.Time) string {
@@ -384,15 +349,6 @@ func handleRequest(w http.ResponseWriter, r *http.Request, cfg *Config) {
 
 	shaped := newShapedConn(fc, sched)
 
-	if cfg.registry != nil {
-		entry, ok := cfg.registry.tryAdd(userID)
-		if !ok {
-			h2s.Close()
-			return
-		}
-		defer cfg.registry.remove(userID, entry)
-	}
-
 	if cfg.OnConn != nil {
 		cfg.OnConn(shaped, userID)
 	}
@@ -481,30 +437,7 @@ func serveDecoy(w http.ResponseWriter, r *http.Request, cfg *Config) {
 	}
 }
 
-func contentTypeForPath(path string) string {
-	switch {
-	case strings.HasSuffix(path, ".js"):
-		return "application/javascript; charset=utf-8"
-	case strings.HasSuffix(path, ".css"):
-		return "text/css; charset=utf-8"
-	case strings.HasSuffix(path, ".woff2"):
-		return "font/woff2"
-	case strings.HasSuffix(path, ".json"):
-		return "application/json; charset=utf-8"
-	case strings.HasSuffix(path, ".bin"):
-		return "application/octet-stream"
-	default:
-		return "text/html; charset=utf-8"
-	}
-}
-
 func runDecoy(ctx context.Context, client *http.Client, serverAddr, sni, origin string, bp BehaviorParams) {
-	select {
-	case <-ctx.Done():
-		return
-	case <-time.After(time.Duration(200+mrand.Intn(300)) * time.Millisecond):
-	}
-
 	get := func(path string) {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet,
 			fmt.Sprintf("https://%s%s", serverAddr, path), nil)
