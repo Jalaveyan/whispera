@@ -5,7 +5,6 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
-	"math"
 	"net"
 	"sync"
 	"time"
@@ -13,39 +12,28 @@ import (
 	"golang.org/x/crypto/hkdf"
 )
 
-// BehaviorParams controls traffic shaping for one window interval.
-// Derived deterministically from shared key + window index + session ID.
+// BehaviorParams holds per-window traffic shaping parameters.
 type BehaviorParams struct {
-	SizeMu    float64
-	SizeSigma float64
-
-	InterPacketMean time.Duration
-
-	BurstMin, BurstMax int
-	BurstPause         time.Duration
-
-	PaddingMin, PaddingMax int
-
-	PathSeed uint64
+	PathSeed     uint64
+	BurstSize    int           // parallel decoy GETs per page-load burst (2–4)
+	ParseDelayMs int           // simulated browser parse/execute time ms (50–150)
+	IdleSec      int           // idle between page loads s (5–30)
 }
 
-// WindowScheduler derives a random sequence of window durations from the shared key.
-// Both client and server compute the same sequence independently — no negotiation.
-//
-// Window durations are drawn from [minWindowSec, maxWindowSec] via HKDF, so the
-// switching interval is unpredictable to an observer without the key.
 const (
 	minWindowSec = 15
 	maxWindowSec = 90
 )
 
+// WindowScheduler derives a deterministic sequence of window durations from the
+// shared key. Both sides compute the same sequence independently.
 type WindowScheduler struct {
 	behaviorKey []byte
 	sessionID   []byte
-	anchor      time.Time // connection start — embedded in session header
+	anchor      time.Time
 
 	mu         sync.Mutex
-	boundaries []time.Time // pre-computed window boundary times
+	boundaries []time.Time
 }
 
 func NewWindowScheduler(behaviorKey, sessionID []byte, anchor time.Time) *WindowScheduler {
@@ -54,13 +42,11 @@ func NewWindowScheduler(behaviorKey, sessionID []byte, anchor time.Time) *Window
 		sessionID:   sessionID,
 		anchor:      anchor,
 	}
-	// pre-compute first few boundaries
 	ws.boundaries = []time.Time{anchor}
 	ws.extendTo(4)
 	return ws
 }
 
-// windowDuration returns the duration of window i, derived deterministically.
 func (ws *WindowScheduler) windowDuration(i int) time.Duration {
 	info := fmt.Sprintf("chameleon-window-dur-v1-%d", i)
 	r := hkdf.New(sha256.New, ws.behaviorKey, ws.sessionID, []byte(info))
@@ -72,7 +58,6 @@ func (ws *WindowScheduler) windowDuration(i int) time.Duration {
 	return time.Duration(secs) * time.Second
 }
 
-// extendTo ensures boundaries slice has at least n+1 entries (covers window n).
 func (ws *WindowScheduler) extendTo(n int) {
 	for len(ws.boundaries) <= n {
 		prev := ws.boundaries[len(ws.boundaries)-1]
@@ -81,33 +66,12 @@ func (ws *WindowScheduler) extendTo(n int) {
 	}
 }
 
-// CurrentIndex returns the window index for now.
 func (ws *WindowScheduler) CurrentIndex() int {
 	ws.mu.Lock()
 	defer ws.mu.Unlock()
-
-	now := time.Now()
-	for {
-		last := len(ws.boundaries) - 1
-		if now.Before(ws.boundaries[last]) {
-			// find index by binary search
-			lo, hi := 0, last-1
-			for lo < hi {
-				mid := (lo + hi + 1) / 2
-				if ws.boundaries[mid].After(now) {
-					hi = mid - 1
-				} else {
-					lo = mid
-				}
-			}
-			return lo
-		}
-		// extend and retry
-		ws.extendTo(last + 2)
-	}
+	return ws.currentIndexLocked(time.Now())
 }
 
-// NextBoundary returns when the current window ends.
 func (ws *WindowScheduler) NextBoundary() time.Time {
 	ws.mu.Lock()
 	defer ws.mu.Unlock()
@@ -135,7 +99,7 @@ func (ws *WindowScheduler) currentIndexLocked(now time.Time) int {
 	}
 }
 
-// DeriveBehaviorParams produces unique params per (key, windowIndex, sessionID) triple.
+// DeriveBehaviorParams produces unique params per (key, windowIndex, sessionID).
 func DeriveBehaviorParams(behaviorKey []byte, windowIndex int, sessionID []byte) BehaviorParams {
 	info := fmt.Sprintf("chameleon-behavior-v1-%d", windowIndex)
 	r := hkdf.New(sha256.New, behaviorKey, sessionID, []byte(info))
@@ -144,61 +108,23 @@ func DeriveBehaviorParams(behaviorKey []byte, windowIndex int, sessionID []byte)
 		panic("chameleon behavior derive: " + err.Error())
 	}
 
-	f32 := func(off int) float64 {
-		return float64(binary.BigEndian.Uint32(seed[off:])) / math.MaxUint32
-	}
+	u32 := func(off int) uint32 { return binary.BigEndian.Uint32(seed[off:]) }
 
 	return BehaviorParams{
-		SizeMu:          512 + f32(0)*3584,
-		SizeSigma:       64 + f32(4)*256,
-		InterPacketMean: time.Duration((1+f32(8)*19)*float64(time.Millisecond)),
-		BurstMin:        1 + int(f32(12)*4),
-		BurstMax:        3 + int(f32(16)*8),
-		BurstPause:      time.Duration((10+f32(20)*90)*float64(time.Millisecond)),
-		PaddingMin:      int(f32(24) * 32),
-		PaddingMax:      32 + int(f32(28)*96),
-		PathSeed:        binary.BigEndian.Uint64(seed[32:]),
+		PathSeed:     binary.BigEndian.Uint64(seed[32:]),
+		BurstSize:    2 + int(u32(0)%3),        // 2–4
+		ParseDelayMs: 50 + int(u32(4)%101),     // 50–150 ms
+		IdleSec:      5 + int(u32(8)%26),       // 5–30 s
 	}
 }
 
-// shapedConn wraps net.Conn with GRU-based traffic shaping.
-// It tracks window switches via WindowScheduler and rotates the GRU when the
-// window changes, so the traffic fingerprint shifts at random intervals.
-//
-// Design notes:
-//   - Chunk sizes come from the GRU (session-unique weights), splitting bulk
-//     writes into varied H2-sized frames for DPI evasion.
-//   - No inter-frame delays are applied: the delay was capping throughput to
-//     ~50 Mbps at realistic yamux frame rates. Size variation via PaddedConn
-//     buckets + GRU chunk sizes is sufficient for fingerprint evasion under TLS.
-//   - Writes ≤ 8 KB bypass chunking entirely (yamux control, interactive, gaming).
+// shapedConn wraps net.Conn and carries the WindowScheduler for per-window
+// BehaviorParams (path generation, decoy timing). Write is a transparent passthrough.
 type shapedConn struct {
 	net.Conn
-	sched     *WindowScheduler
-	gru       *trafficGRU
-	lastIndex int
+	sched *WindowScheduler
 }
 
 func newShapedConn(inner net.Conn, sched *WindowScheduler) *shapedConn {
-	idx := sched.CurrentIndex()
-	gru := newTrafficGRU(sched.behaviorKey, int64(idx), sched.sessionID)
-	return &shapedConn{
-		Conn:      inner,
-		sched:     sched,
-		gru:       gru,
-		lastIndex: idx,
-	}
-}
-
-func (s *shapedConn) refreshGRU() {
-	idx := s.sched.CurrentIndex()
-	if idx != s.lastIndex {
-		s.gru = newTrafficGRU(s.sched.behaviorKey, int64(idx), s.sched.sessionID)
-		s.lastIndex = idx
-	}
-}
-
-func (s *shapedConn) Write(p []byte) (int, error) {
-	s.refreshGRU()
-	return s.Conn.Write(p)
+	return &shapedConn{Conn: inner, sched: sched}
 }

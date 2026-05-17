@@ -469,6 +469,8 @@ type Manager struct {
 	// connection quality metrics
 	qualityRTTEWMA int64 // atomic, nanoseconds; EWMA of ping→pong RTT
 	missedKAs      int32 // atomic; consecutive keepalives with no pong response
+
+	chameleonSessionCache any
 }
 
 func (m *Manager) getMuxConfig() *mux.Config {
@@ -510,15 +512,16 @@ func New(cfg *Config) (*Manager, error) {
 	}
 
 	m := &Manager{
-		Module:           base.NewModule(ModuleName, ModuleVersion, []string{"handshake.handler"}),
-		config:           cfg,
-		state:            StateDisconnected,
-		streamConns:      make(map[uint16]*managedConn),
-		readCh:           make(chan []byte, 4096),
-		streamChs:        make(map[uint16]chan []byte),
-		goroutineLimiter: base.NewGoroutineLimiter(1024),
-		reconnectDone:    make(chan struct{}),
-		forceObfuscation: forceObfs,
+		Module:                base.NewModule(ModuleName, ModuleVersion, []string{"handshake.handler"}),
+		config:                cfg,
+		state:                 StateDisconnected,
+		streamConns:           make(map[uint16]*managedConn),
+		readCh:                make(chan []byte, 4096),
+		streamChs:             make(map[uint16]chan []byte),
+		goroutineLimiter:      base.NewGoroutineLimiter(1024),
+		reconnectDone:         make(chan struct{}),
+		forceObfuscation:      forceObfs,
+		chameleonSessionCache: chameleon.NewSessionCache(16),
 	}
 	close(m.reconnectDone)
 
@@ -1105,6 +1108,7 @@ func (m *Manager) dial(ctx context.Context) (net.Conn, error) {
 			ServerAddr:   addr,
 			ServerName:   sni,
 			SharedSecret: m.config.ChameleonSecret,
+			SessionCache: m.chameleonSessionCache,
 		})
 		if err == nil {
 			return conn, nil

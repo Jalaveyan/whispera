@@ -92,7 +92,7 @@ type bufferedPipeWriter struct {
 func newBufferedPipeWriter(pw *io.PipeWriter) *bufferedPipeWriter {
 	b := &bufferedPipeWriter{
 		pw:   pw,
-		ch:   make(chan []byte, 256),
+		ch:   make(chan []byte, 1024),
 		done: make(chan struct{}),
 	}
 	go b.drain()
@@ -116,12 +116,24 @@ func (b *bufferedPipeWriter) Close() {
 
 func (b *bufferedPipeWriter) drain() {
 	defer b.pw.Close()
+	var coalesce []byte
 	for {
 		select {
 		case data := <-b.ch:
-			if _, err := b.pw.Write(data); err != nil {
+			coalesce = append(coalesce, data...)
+		drain:
+			for {
+				select {
+				case more := <-b.ch:
+					coalesce = append(coalesce, more...)
+				default:
+					break drain
+				}
+			}
+			if _, err := b.pw.Write(coalesce); err != nil {
 				return
 			}
+			coalesce = coalesce[:0]
 		case <-b.done:
 			return
 		}

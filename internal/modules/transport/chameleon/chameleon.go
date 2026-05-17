@@ -8,11 +8,11 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
-	"math"
 	mrand "math/rand"
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	utls "github.com/refraction-networking/utls"
@@ -23,22 +23,25 @@ import (
 
 var log = logger.Module("chameleon")
 
+// NewSessionCache returns a session cache suitable for Config.SessionCache.
+// Capacity is the maximum number of TLS sessions stored.
+func NewSessionCache(capacity int) any {
+	return utls.NewLRUClientSessionCache(capacity)
+}
+
 // chromeHelloPool — набор современных Chrome TLS-fingerprint-ов.
 // Выбирается случайно per-connection, чтобы JA3 hash варьировался.
 // Версии 120+ с post-quantum соответствуют реальным Chrome 120-133 на Android.
-// decoyPaths — browser-like static resource URLs used by the client's background
-// GET goroutine to simulate concurrent resource fetching on the same H2 connection.
-var decoyPaths = []string{
-	"/favicon.ico",
-	"/robots.txt",
-	"/manifest.json",
-	"/static/app.js",
-	"/static/vendor.js",
-	"/assets/main.css",
-	"/static/icons/192.png",
-	"/api/v1/health",
-	"/api/v1/config",
-	"/cdn/fonts/roboto.woff2",
+// decoyGraph mirrors a realistic browser page-load dependency graph.
+// Phase 0 — navigation (1 request): main document / entry API.
+// Phase 1 — critical subresources (parallel): JS bundles + CSS.
+// Phase 2 — deferred resources (parallel): images, fonts, icons.
+// Phase 3 — post-load API calls (sequential): telemetry, config refresh.
+var decoyGraph = [4][]string{
+	{"/api/v1/config", "/cdn/app/index.js", "/assets/main.css"},
+	{"/static/vendor.js", "/static/app.js", "/assets/theme.css", "/cdn/fonts/roboto.woff2"},
+	{"/static/icons/192.png", "/favicon.ico", "/manifest.json", "/robots.txt"},
+	{"/api/v1/health", "/api/v1/status"},
 }
 
 var chromeHelloPool = []utls.ClientHelloID{
@@ -91,8 +94,19 @@ type Config struct {
 	// Derived by caller as HKDF(psk, "chameleon-v1").
 	SharedSecret []byte
 
+	// SessionCache enables TLS session resumption across reconnects.
+	// Create with NewSessionCache(); shared across all connections to the same server.
+	SessionCache any // holds *utls.LRUClientSessionCache
+
+	// DecoyOrigin — if set, probe requests are reverse-proxied from this URL
+	// (e.g. "https://en.wikipedia.org") so active probers see real content.
+	DecoyOrigin string
+
 	// OnConn is called server-side for each authenticated tunnel connection.
 	OnConn func(conn net.Conn, userID string)
+
+	// internal — initialised by ListenAndServe when DecoyOrigin is set.
+	proxy *decoyProxy
 }
 
 // sessionHeader encodes sessionID (16B) + anchor unix-seconds (8B) as base64.
@@ -172,10 +186,14 @@ func Client(ctx context.Context, cfg *Config) (net.Conn, error) {
 				// Nagle would hold them up to 200ms, stalling flow control.
 				tcpConn.SetNoDelay(true)
 			}
-			uConn := utls.UClient(rawConn, &utls.Config{
+			uCfg := &utls.Config{
 				ServerName:         sni,
 				InsecureSkipVerify: true,
-			}, helloID)
+			}
+			if sc, ok := cfg.SessionCache.(utls.ClientSessionCache); ok {
+				uCfg.ClientSessionCache = sc
+			}
+			uConn := utls.UClient(rawConn, uCfg, helloID)
 			if err := uConn.HandshakeContext(ctx); err != nil {
 				rawConn.Close()
 				return nil, fmt.Errorf("chameleon: utls handshake: %w", err)
@@ -231,35 +249,7 @@ func Client(ctx context.Context, cfg *Config) (net.Conn, error) {
 		return nil, fmt.Errorf("chameleon: frame conn: %w", err)
 	}
 
-	go func() {
-		for {
-			u := mrand.Float64()
-			if u < 1e-9 {
-				u = 1e-9
-			}
-			delay := time.Duration(-math.Log(u) * 25 * float64(time.Second))
-			if delay > 120*time.Second {
-				delay = 120 * time.Second
-			}
-			select {
-			case <-tunnelCtx.Done():
-				return
-			case <-time.After(delay):
-			}
-			p := decoyPaths[mrand.Intn(len(decoyPaths))]
-			dReq, err := http.NewRequestWithContext(tunnelCtx, http.MethodGet,
-				fmt.Sprintf("https://%s%s", cfg.ServerAddr, p), nil)
-			if err != nil {
-				continue
-			}
-			dReq.Host = sni
-			applyBrowserHeaders(dReq, origin)
-			if r, err := client.Do(dReq); err == nil {
-				io.Copy(io.Discard, r.Body)
-				r.Body.Close()
-			}
-		}
-	}()
+	go runDecoy(tunnelCtx, client, cfg.ServerAddr, sni, origin, bp)
 
 	return newShapedConn(fc, sched), nil
 }
@@ -331,6 +321,10 @@ func ListenAndServe(ctx context.Context, cfg *Config) error {
 		return fmt.Errorf("chameleon: h2 server config: %w", err)
 	}
 
+	if cfg.DecoyOrigin != "" {
+		cfg.proxy = newDecoyProxy(cfg.DecoyOrigin)
+	}
+
 	go func() { <-ctx.Done(); srv.Close() }()
 
 	rawLn, err := (&net.ListenConfig{}).Listen(ctx, "tcp", listenAddr)
@@ -359,7 +353,7 @@ func (l *noDelayListener) Accept() (net.Conn, error) {
 
 func handleRequest(w http.ResponseWriter, r *http.Request, cfg *Config) {
 	if r.Method != http.MethodPost {
-		serveDecoy(w, r)
+		serveDecoy(w, r, cfg)
 		return
 	}
 
@@ -369,14 +363,14 @@ func handleRequest(w http.ResponseWriter, r *http.Request, cfg *Config) {
 	sessionHdr := r.Header.Get(headerSession)
 
 	if len(tokenHdr) < 8 || tokenHdr[:7] != "Bearer " {
-		serveDecoy(w, r)
+		serveDecoy(w, r, cfg)
 		return
 	}
 	token := tokenHdr[7:]
 
 	sessionID, anchor, err := decodeSession(sessionHdr)
 	if err != nil {
-		serveDecoy(w, r)
+		serveDecoy(w, r, cfg)
 		return
 	}
 
@@ -384,7 +378,7 @@ func handleRequest(w http.ResponseWriter, r *http.Request, cfg *Config) {
 	secret, userID := resolveSecret(cfg, token, sessionID)
 	if secret == nil {
 		log.Printf("chameleon: auth failed from %s (token len=%d, session len=%d)", r.RemoteAddr, len(token), len(sessionHdr))
-		serveDecoy(w, r)
+		serveDecoy(w, r, cfg)
 		return
 	}
 
@@ -453,7 +447,11 @@ func resolveSecret(cfg *Config, token string, sessionID []byte) ([]byte, string)
 	return nil, ""
 }
 
-func serveDecoy(w http.ResponseWriter, r *http.Request) {
+func serveDecoy(w http.ResponseWriter, r *http.Request, cfg *Config) {
+	if cfg != nil && cfg.proxy != nil {
+		cfg.proxy.serve(w, r)
+		return
+	}
 	w.Header().Set("Server", "nginx/1.24.0")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 
@@ -506,4 +504,186 @@ func serveDecoy(w http.ResponseWriter, r *http.Request) {
 	if body != "" {
 		io.WriteString(w, body)
 	}
+}
+
+// runDecoy simulates a browser page-load cycle on the H2 connection:
+//
+//	Phase 0 — navigation (1 random entry point)
+//	Phase 1 — critical subresources in parallel (JS + CSS)
+//	Phase 2 — deferred resources in parallel (images, fonts)
+//	Phase 3 — post-load API calls (sequential)
+//	Idle     — randomised think-time before next cycle
+//
+// Timing is driven by BehaviorParams so each session has a distinct fingerprint.
+func runDecoy(ctx context.Context, client *http.Client, serverAddr, sni, origin string, bp BehaviorParams) {
+	get := func(path string) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet,
+			fmt.Sprintf("https://%s%s", serverAddr, path), nil)
+		if err != nil {
+			return
+		}
+		req.Host = sni
+		applyBrowserHeaders(req, origin)
+		if resp, err := client.Do(req); err == nil {
+			io.Copy(io.Discard, resp.Body)
+			resp.Body.Close()
+		}
+	}
+
+	sleep := func(ms int) bool {
+		jitter := time.Duration(mrand.Intn(ms/4+1)) * time.Millisecond
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(time.Duration(ms)*time.Millisecond + jitter):
+			return true
+		}
+	}
+
+	parallel := func(paths []string, n int) {
+		if n > len(paths) {
+			n = len(paths)
+		}
+		chosen := mrand.Perm(len(paths))[:n]
+		var wg sync.WaitGroup
+		for _, i := range chosen {
+			wg.Add(1)
+			p := paths[i]
+			go func() { defer wg.Done(); get(p) }()
+			// stagger requests by 0–20 ms to mimic browser connection scheduler
+			time.Sleep(time.Duration(mrand.Intn(20)) * time.Millisecond)
+		}
+		wg.Wait()
+	}
+
+	// Cover ticker: small API probe every 3–8 s to prevent POST-body silence
+	// during the page-load idle phase.
+	go func() {
+		api := decoyGraph[3]
+		for {
+			ms := 3000 + mrand.Intn(5001)
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(time.Duration(ms) * time.Millisecond):
+			}
+			get(api[mrand.Intn(len(api))])
+		}
+	}()
+
+	for {
+		// Phase 0 — navigation
+		nav := decoyGraph[0]
+		get(nav[mrand.Intn(len(nav))])
+		if !sleep(bp.ParseDelayMs) {
+			return
+		}
+
+		// Phase 1 — critical subresources
+		parallel(decoyGraph[1], bp.BurstSize)
+		if !sleep(20) {
+			return
+		}
+
+		// Phase 2 — deferred resources
+		parallel(decoyGraph[2], 1+mrand.Intn(2))
+		if !sleep(bp.ParseDelayMs/2) {
+			return
+		}
+
+		// Phase 3 — post-load API call
+		api := decoyGraph[3]
+		get(api[mrand.Intn(len(api))])
+
+		// Idle: think-time before next page load
+		if !sleep(bp.IdleSec * 1000) {
+			return
+		}
+	}
+}
+
+// decoyProxy reverse-proxies GET requests to a real upstream so active probers
+// receive genuine content. Responses are cached for 1 hour.
+type decoyProxy struct {
+	origin string
+	client *http.Client
+	mu     sync.RWMutex
+	cache  map[string]*proxyCacheEntry
+}
+
+type proxyCacheEntry struct {
+	status  int
+	ct      string
+	body    []byte
+	expires time.Time
+}
+
+func newDecoyProxy(origin string) *decoyProxy {
+	return &decoyProxy{
+		origin: strings.TrimRight(origin, "/"),
+		client: &http.Client{Timeout: 8 * time.Second},
+		cache:  make(map[string]*proxyCacheEntry),
+	}
+}
+
+func (p *decoyProxy) serve(w http.ResponseWriter, r *http.Request) {
+	key := r.URL.Path
+
+	p.mu.RLock()
+	entry, ok := p.cache[key]
+	p.mu.RUnlock()
+	if ok && time.Now().Before(entry.expires) {
+		p.writeEntry(w, entry)
+		return
+	}
+
+	req, err := http.NewRequest(http.MethodGet, p.origin+key, nil)
+	if err != nil {
+		p.writeStatic(w, r)
+		return
+	}
+	if ua := r.Header.Get("User-Agent"); ua != "" {
+		req.Header.Set("User-Agent", ua)
+	}
+	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+
+	resp, err := p.client.Do(req)
+	if err != nil {
+		p.writeStatic(w, r)
+		return
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 512*1024))
+	if err != nil {
+		p.writeStatic(w, r)
+		return
+	}
+
+	ct := resp.Header.Get("Content-Type")
+	if ct == "" {
+		ct = "text/html; charset=utf-8"
+	}
+	entry = &proxyCacheEntry{
+		status:  resp.StatusCode,
+		ct:      ct,
+		body:    body,
+		expires: time.Now().Add(time.Hour),
+	}
+	p.mu.Lock()
+	p.cache[key] = entry
+	p.mu.Unlock()
+
+	p.writeEntry(w, entry)
+}
+
+func (p *decoyProxy) writeEntry(w http.ResponseWriter, e *proxyCacheEntry) {
+	w.Header().Set("Server", "nginx/1.24.0")
+	w.Header().Set("Content-Type", e.ct)
+	w.WriteHeader(e.status)
+	w.Write(e.body)
+}
+
+func (p *decoyProxy) writeStatic(w http.ResponseWriter, r *http.Request) {
+	serveDecoy(w, r, nil)
 }
