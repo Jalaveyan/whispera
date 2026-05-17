@@ -163,11 +163,8 @@ func Client(ctx context.Context, cfg *Config) (net.Conn, error) {
 	// http.Transport's TLSNextProto mechanism casts to *tls.Conn which would panic;
 	// http2.Transport accepts any net.Conn that exposes ConnectionState().
 	h2Transport := &http2.Transport{
-		// 2 min idle before H2-level PING — tunnel keepalive (30s) keeps the
-		// connection alive in normal use so this never fires. Randomised 30-90s
-		// was racing with the 30s keepalive and causing spurious reconnects.
-		ReadIdleTimeout: 2 * time.Minute,
-		PingTimeout:     20 * time.Second,
+		// H2-level PING disabled — tunnel keepalive + net.Pipe EOF handle detection.
+		ReadIdleTimeout: 0,
 		// Chrome's SETTINGS frame values (from Wireshark captures of Chrome 120-133):
 		//   SETTINGS_HEADER_TABLE_SIZE      = 65536  (Go default: 4096)
 		//   SETTINGS_MAX_HEADER_LIST_SIZE   = 262144 (Go default: 10MB)
