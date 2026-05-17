@@ -185,57 +185,52 @@ func Client(ctx context.Context, cfg *Config) (net.Conn, error) {
 	}
 
 	pr, pw := io.Pipe()
+	bpw := newBufferedPipeWriter(pw)
 	url := fmt.Sprintf("https://%s%s", cfg.ServerAddr, path)
 
-	// tunnelCtx controls the HTTP/2 POST lifetime (= tunnel lifetime).
-	// Must NOT be tied to ctx: ctx carries a short ConnectionTimeout deadline
-	// that only covers the dial phase. The TCP dial is already capped by
-	// Dialer.Timeout=10s; once client.Do returns we have the connection and
-	// tunnelCtx is canceled only when the caller closes the returned conn.
 	tunnelCtx, tunnelCancel := context.WithCancel(context.Background())
 
 	req, err := http.NewRequestWithContext(tunnelCtx, http.MethodPost, url, pr)
 	if err != nil {
 		tunnelCancel()
-		pr.Close(); pw.Close()
+		pr.Close(); bpw.Close()
 		return nil, fmt.Errorf("chameleon: build request: %w", err)
 	}
-	// req.Host sets HTTP/2 :authority pseudo-header; req.Header["Host"] is ignored by Go's h2 stack.
 	req.Host = sni
 	req.Header.Set("Content-Type", contentType)
 	req.Header.Set(headerToken, "Bearer "+token)
 	req.Header.Set(headerSession, encodeSession(sessionID, anchor))
 	applyBrowserHeaders(req, origin)
 
-	client := &http.Client{Transport: h2Transport}
-	resp, err := client.Do(req)
-	if err != nil {
-		tunnelCancel()
-		pr.Close(); pw.Close()
-		return nil, fmt.Errorf("chameleon: connect: %w", err)
-	}
-	if resp.StatusCode != http.StatusOK {
-		tunnelCancel()
-		pr.Close(); pw.Close(); resp.Body.Close()
-		return nil, fmt.Errorf("chameleon: server rejected: %s", resp.Status)
-	}
-
 	local := staticAddr{"tcp", cfg.ServerAddr}
 	remote := staticAddr{"tcp", cfg.ServerAddr}
 
-	h2c := newH2ClientConn(pr, pw, resp.Body, tunnelCancel, local, remote)
+	pc := newPipelinedConn(pr, bpw, tunnelCancel, local, remote)
 
-	fc, err := NewFrameConn(h2c, keys.DataSend, keys.DataRecv)
+	client := &http.Client{Transport: h2Transport}
+
+	// Fire the POST in the background so yamux SETTINGS can be written to the
+	// request body before the server's 200 OK arrives, saving one RTT on start.
+	go func() {
+		resp, err := client.Do(req)
+		if err != nil || resp.StatusCode != http.StatusOK {
+			if resp != nil {
+				resp.Body.Close()
+			}
+			pc.deliver(nil)
+			return
+		}
+		if !pc.deliver(resp.Body) {
+			resp.Body.Close()
+		}
+	}()
+
+	fc, err := NewFrameConn(pc, keys.DataSend, keys.DataRecv)
 	if err != nil {
-		h2c.Close()
+		pc.Close()
 		return nil, fmt.Errorf("chameleon: frame conn: %w", err)
 	}
 
-	// Decoy GET goroutine: periodically opens short-lived H2 streams on the same
-	// TCP connection for static resource fetches (favicon, JS, CSS, etc.).
-	// DPI sees a mix of one long POST stream + occasional short GET streams —
-	// matching browser behavior (background API pings, resource pre-fetches).
-	// Exponential inter-arrival (mean 25s) mimics a Poisson request process.
 	go func() {
 		for {
 			u := mrand.Float64()

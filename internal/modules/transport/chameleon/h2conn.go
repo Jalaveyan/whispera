@@ -128,54 +128,80 @@ func (b *bufferedPipeWriter) drain() {
 	}
 }
 
-// h2ClientConn adapts a bidirectional HTTP/2 stream into a net.Conn.
-//
-// Write → request body pipe (client → server)
-// Read  ← response body   (server → client)
-type h2ClientConn struct {
+// pipelinedConn is the client-side H2 tunnel conn.
+// Write path (bpw → POST body) is live immediately; Read path blocks until
+// deliver() is called with the HTTP response body — allowing yamux SETTINGS
+// to be sent before the server's 200 OK arrives, saving one RTT.
+type pipelinedConn struct {
+	bpw    *bufferedPipeWriter
 	pr     *io.PipeReader
-	pw     *bufferedPipeWriter
-	resp   io.ReadCloser
 	cancel func()
 	once   sync.Once
+	sig    sync.Once
+
+	bodyCh chan io.ReadCloser
+	body   io.ReadCloser
+	buf    []byte
 
 	localAddr  net.Addr
 	remoteAddr net.Addr
 }
 
-func newH2ClientConn(pr *io.PipeReader, pw *io.PipeWriter, resp io.ReadCloser, cancel func(), local, remote net.Addr) *h2ClientConn {
-	return &h2ClientConn{
+func newPipelinedConn(pr *io.PipeReader, bpw *bufferedPipeWriter, cancel func(), local, remote net.Addr) *pipelinedConn {
+	return &pipelinedConn{
 		pr:         pr,
-		pw:         newBufferedPipeWriter(pw),
-		resp:       resp,
+		bpw:        bpw,
 		cancel:     cancel,
+		bodyCh:     make(chan io.ReadCloser, 1),
 		localAddr:  local,
 		remoteAddr: remote,
 	}
 }
 
-func (c *h2ClientConn) Read(b []byte) (int, error) { return c.resp.Read(b) }
-func (c *h2ClientConn) Write(b []byte) (int, error) {
-	return c.pw.Write(b)
+// deliver hands resp.Body to the Read path. Returns false if Close already ran first.
+func (c *pipelinedConn) deliver(body io.ReadCloser) bool {
+	ran := false
+	c.sig.Do(func() { c.bodyCh <- body; ran = true })
+	return ran
 }
 
-func (c *h2ClientConn) Close() error {
-	c.once.Do(func() {
-		c.pw.Close()
-		c.resp.Close()
-		if c.cancel != nil {
-			c.cancel()
+func (c *pipelinedConn) Write(b []byte) (int, error) { return c.bpw.Write(b) }
+
+func (c *pipelinedConn) Read(b []byte) (int, error) {
+	if len(c.buf) > 0 {
+		n := copy(b, c.buf)
+		c.buf = c.buf[n:]
+		return n, nil
+	}
+	if c.body == nil {
+		body := <-c.bodyCh
+		if body == nil {
+			return 0, io.ErrClosedPipe
 		}
+		c.body = body
+	}
+	return c.body.Read(b)
+}
+
+func (c *pipelinedConn) Close() error {
+	c.once.Do(func() {
+		c.bpw.Close()
+		c.pr.Close()
+		c.sig.Do(func() { c.bodyCh <- nil })
+		if c.body != nil {
+			c.body.Close()
+		}
+		c.cancel()
 	})
 	return nil
 }
 
-func (c *h2ClientConn) LocalAddr() net.Addr  { return c.localAddr }
-func (c *h2ClientConn) RemoteAddr() net.Addr { return c.remoteAddr }
+func (c *pipelinedConn) LocalAddr() net.Addr  { return c.localAddr }
+func (c *pipelinedConn) RemoteAddr() net.Addr { return c.remoteAddr }
 
-func (c *h2ClientConn) SetDeadline(t time.Time) error      { return nil }
-func (c *h2ClientConn) SetReadDeadline(t time.Time) error  { return nil }
-func (c *h2ClientConn) SetWriteDeadline(t time.Time) error { return nil }
+func (c *pipelinedConn) SetDeadline(t time.Time) error      { return nil }
+func (c *pipelinedConn) SetReadDeadline(t time.Time) error  { return nil }
+func (c *pipelinedConn) SetWriteDeadline(t time.Time) error { return nil }
 
 // staticAddr is a minimal net.Addr for wrapping host:port strings.
 type staticAddr struct{ network, addr string }
