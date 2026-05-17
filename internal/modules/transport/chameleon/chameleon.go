@@ -47,6 +47,43 @@ const (
 	contentType   = "application/octet-stream"
 )
 
+const maxConnsPerUser = 4
+
+type userConnEntry struct {
+	close func()
+}
+
+type connRegistry struct {
+	mu    sync.Mutex
+	conns map[string][]*userConnEntry
+}
+
+func (r *connRegistry) add(userID string, close func()) *userConnEntry {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	e := &userConnEntry{close: close}
+	r.conns[userID] = append(r.conns[userID], e)
+	list := r.conns[userID]
+	for len(list) > maxConnsPerUser {
+		list[0].close()
+		list = list[1:]
+	}
+	r.conns[userID] = list
+	return e
+}
+
+func (r *connRegistry) remove(userID string, e *userConnEntry) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	list := r.conns[userID]
+	for i, v := range list {
+		if v == e {
+			r.conns[userID] = append(list[:i], list[i+1:]...)
+			return
+		}
+	}
+}
+
 type UserEntry struct {
 	UserID string
 	PSK    []byte
@@ -74,7 +111,8 @@ type Config struct {
 
 	OnConn func(conn net.Conn, userID string)
 
-	proxy *decoyProxy
+	proxy    *decoyProxy
+	registry *connRegistry
 }
 
 func encodeSession(sessionID []byte, anchor time.Time) string {
@@ -264,6 +302,7 @@ func ListenAndServe(ctx context.Context, cfg *Config) error {
 	if cfg.DecoyOrigin != "" {
 		cfg.proxy = newDecoyProxy(cfg.DecoyOrigin)
 	}
+	cfg.registry = &connRegistry{conns: make(map[string][]*userConnEntry)}
 
 	go func() { <-ctx.Done(); srv.Close() }()
 
@@ -348,6 +387,11 @@ func handleRequest(w http.ResponseWriter, r *http.Request, cfg *Config) {
 	}
 
 	shaped := newShapedConn(fc, sched)
+
+	if cfg.registry != nil {
+		entry := cfg.registry.add(userID, func() { h2s.Close() })
+		defer cfg.registry.remove(userID, entry)
+	}
 
 	if cfg.OnConn != nil {
 		cfg.OnConn(shaped, userID)
