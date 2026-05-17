@@ -299,7 +299,6 @@ func ListenAndServe(ctx context.Context, cfg *Config) error {
 	if cfg.DecoyOrigin != "" {
 		cfg.proxy = newDecoyProxy(cfg.DecoyOrigin)
 	}
-	cfg.registry = &connRegistry{conns: make(map[string][]*userConnEntry)}
 
 	go func() { <-ctx.Done(); srv.Close() }()
 
