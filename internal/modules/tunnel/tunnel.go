@@ -2935,7 +2935,6 @@ func (m *Manager) stopConnAgent() {
 }
 
 func (m *Manager) connAgentTick() {
-
 	if !m.IsConnected() {
 		return
 	}
