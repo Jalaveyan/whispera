@@ -58,18 +58,15 @@ type connRegistry struct {
 	conns map[string][]*userConnEntry
 }
 
-func (r *connRegistry) add(userID string, close func()) *userConnEntry {
+func (r *connRegistry) tryAdd(userID string) (*userConnEntry, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	e := &userConnEntry{close: close}
-	r.conns[userID] = append(r.conns[userID], e)
-	list := r.conns[userID]
-	for len(list) > maxConnsPerUser {
-		list[0].close()
-		list = list[1:]
+	if len(r.conns[userID]) >= maxConnsPerUser {
+		return nil, false
 	}
-	r.conns[userID] = list
-	return e
+	e := &userConnEntry{}
+	r.conns[userID] = append(r.conns[userID], e)
+	return e, true
 }
 
 func (r *connRegistry) remove(userID string, e *userConnEntry) {
@@ -389,7 +386,11 @@ func handleRequest(w http.ResponseWriter, r *http.Request, cfg *Config) {
 	shaped := newShapedConn(fc, sched)
 
 	if cfg.registry != nil {
-		entry := cfg.registry.add(userID, func() { h2s.Close() })
+		entry, ok := cfg.registry.tryAdd(userID)
+		if !ok {
+			h2s.Close()
+			return
+		}
 		defer cfg.registry.remove(userID, entry)
 	}
 
