@@ -1278,9 +1278,8 @@ do_update() {
     sleep 1
     
     log_info "Installing binary..."
-    cp whispera-server "$BIN_PATH/whispera.new"
-    chmod +x "$BIN_PATH/whispera.new"
-    mv -f "$BIN_PATH/whispera.new" "$BIN_PATH/whispera"
+    cp whispera-server "$BIN_PATH/whispera"
+    chmod +x "$BIN_PATH/whispera"
     
     if [[ -d "web" ]]; then
         log_info "Updating Web UI..."
