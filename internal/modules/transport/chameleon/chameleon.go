@@ -357,7 +357,7 @@ func handleRequest(w http.ResponseWriter, r *http.Request, cfg *Config) {
 	keys := DeriveKeys(secret, false)
 	log.Printf("chameleon: authenticated user=%s from %s", userID, r.RemoteAddr)
 
-	w.Header().Set("Content-Type", contentTypeForPath(r.URL.Path))
+	w.Header().Set("Content-Type", contentType)
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.WriteHeader(http.StatusOK)
