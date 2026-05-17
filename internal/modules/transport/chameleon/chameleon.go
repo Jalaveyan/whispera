@@ -322,7 +322,7 @@ func handleRequest(w http.ResponseWriter, r *http.Request, cfg *Config) {
 	keys := DeriveKeys(secret, false)
 	log.Printf("chameleon: authenticated user=%s from %s", userID, r.RemoteAddr)
 
-	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Content-Type", contentTypeForPath(r.URL.Path))
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.WriteHeader(http.StatusOK)
@@ -437,7 +437,30 @@ func serveDecoy(w http.ResponseWriter, r *http.Request, cfg *Config) {
 	}
 }
 
+func contentTypeForPath(path string) string {
+	switch {
+	case strings.HasSuffix(path, ".js"):
+		return "application/javascript; charset=utf-8"
+	case strings.HasSuffix(path, ".css"):
+		return "text/css; charset=utf-8"
+	case strings.HasSuffix(path, ".woff2"):
+		return "font/woff2"
+	case strings.HasSuffix(path, ".json"):
+		return "application/json; charset=utf-8"
+	case strings.HasSuffix(path, ".bin"):
+		return "application/octet-stream"
+	default:
+		return "text/html; charset=utf-8"
+	}
+}
+
 func runDecoy(ctx context.Context, client *http.Client, serverAddr, sni, origin string, bp BehaviorParams) {
+	select {
+	case <-ctx.Done():
+		return
+	case <-time.After(time.Duration(200+mrand.Intn(300)) * time.Millisecond):
+	}
+
 	get := func(path string) {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet,
 			fmt.Sprintf("https://%s%s", serverAddr, path), nil)

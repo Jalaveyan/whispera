@@ -133,7 +133,21 @@ func newShapedConn(inner net.Conn, sched *WindowScheduler) *shapedConn {
 		done:  make(chan struct{}),
 	}
 	go sc.flusher()
+	go sc.windowWatcher()
 	return sc
+}
+
+func (sc *shapedConn) windowWatcher() {
+	for {
+		next := sc.sched.NextBoundary()
+		select {
+		case <-sc.done:
+			return
+		case <-time.After(time.Until(next)):
+			sc.Close()
+			return
+		}
+	}
 }
 
 func (sc *shapedConn) flusher() {
