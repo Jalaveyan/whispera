@@ -117,83 +117,8 @@ func DeriveBehaviorParams(behaviorKey []byte, windowIndex int, sessionID []byte)
 type shapedConn struct {
 	net.Conn
 	sched *WindowScheduler
-
-	ch   chan []byte
-	done chan struct{}
-	once sync.Once
-	mu   sync.Mutex
-	wErr error
 }
 
 func newShapedConn(inner net.Conn, sched *WindowScheduler) *shapedConn {
-	sc := &shapedConn{
-		Conn:  inner,
-		sched: sched,
-		ch:    make(chan []byte, 512),
-		done:  make(chan struct{}),
-	}
-	go sc.flusher()
-	return sc
-}
-
-func (sc *shapedConn) flusher() {
-	ticker := time.NewTicker(2 * time.Millisecond)
-	defer ticker.Stop()
-	var coalesce []byte
-	flush := func() {
-		if len(coalesce) == 0 {
-			return
-		}
-		if _, err := sc.Conn.Write(coalesce); err != nil {
-			sc.mu.Lock()
-			sc.wErr = err
-			sc.mu.Unlock()
-		}
-		coalesce = coalesce[:0]
-	}
-	for {
-		select {
-		case data := <-sc.ch:
-			coalesce = append(coalesce, data...)
-		drain:
-			for {
-				select {
-				case more := <-sc.ch:
-					coalesce = append(coalesce, more...)
-					if len(coalesce) >= 8192 {
-						flush()
-					}
-				default:
-					break drain
-				}
-			}
-		case <-ticker.C:
-			flush()
-		case <-sc.done:
-			flush()
-			return
-		}
-	}
-}
-
-func (sc *shapedConn) Write(b []byte) (int, error) {
-	sc.mu.Lock()
-	err := sc.wErr
-	sc.mu.Unlock()
-	if err != nil {
-		return 0, err
-	}
-	cp := make([]byte, len(b))
-	copy(cp, b)
-	select {
-	case sc.ch <- cp:
-		return len(b), nil
-	case <-sc.done:
-		return 0, io.ErrClosedPipe
-	}
-}
-
-func (sc *shapedConn) Close() error {
-	sc.once.Do(func() { close(sc.done) })
-	return sc.Conn.Close()
+	return &shapedConn{Conn: inner, sched: sched}
 }
