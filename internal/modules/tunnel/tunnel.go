@@ -2990,6 +2990,13 @@ func (m *Manager) connAgentTick() {
 		return
 	}
 
+	// Chameleon: одно постоянное соединение, пул не трогаем.
+	// connAgent не должен открывать/закрывать соединения — любое изменение
+	// пула даёт микропаузу, критичную для игр.
+	if m.config.EnableChameleon {
+		return
+	}
+
 	const preWarmBefore = 90 * time.Second
 
 	m.connMu.RLock()
