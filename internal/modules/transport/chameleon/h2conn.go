@@ -12,8 +12,14 @@ import (
 //
 // Read  ← request body  (client → server)
 // Write → response body (server → client), flushed after every write
+//
+// A copy goroutine pumps the request body into a net.Pipe so that
+// SetReadDeadline works — without this the readLoop in tunnel.go would block
+// forever on a silent connection and keepalive-based reconnect wouldn't fire.
 type h2ServerConn struct {
-	r       io.ReadCloser
+	readConn net.Conn // deadline-capable end (tunnel reads here)
+	readPeer net.Conn // copy goroutine writes here
+
 	w       io.Writer
 	flush   func()
 	done    chan struct{}
@@ -25,8 +31,10 @@ type h2ServerConn struct {
 }
 
 func newH2ServerConn(body io.ReadCloser, w io.Writer, flush func(), local, remote net.Addr, onClose func()) *h2ServerConn {
-	return &h2ServerConn{
-		r:          body,
+	readConn, readPeer := net.Pipe()
+	c := &h2ServerConn{
+		readConn:   readConn,
+		readPeer:   readPeer,
 		w:          w,
 		flush:      flush,
 		done:       make(chan struct{}),
@@ -34,11 +42,15 @@ func newH2ServerConn(body io.ReadCloser, w io.Writer, flush func(), local, remot
 		localAddr:  local,
 		remoteAddr: remote,
 	}
+	go func() {
+		defer readPeer.Close()
+		defer body.Close()
+		io.Copy(readPeer, body)
+	}()
+	return c
 }
 
-func (c *h2ServerConn) Read(b []byte) (int, error) {
-	return c.r.Read(b)
-}
+func (c *h2ServerConn) Read(b []byte) (int, error) { return c.readConn.Read(b) }
 
 func (c *h2ServerConn) Write(b []byte) (n int, err error) {
 	select {
@@ -60,7 +72,8 @@ func (c *h2ServerConn) Write(b []byte) (n int, err error) {
 
 func (c *h2ServerConn) Close() error {
 	c.once.Do(func() {
-		c.r.Close()
+		c.readConn.Close()
+		c.readPeer.Close()
 		close(c.done)
 		if c.onClose != nil {
 			c.onClose()
@@ -74,8 +87,8 @@ func (c *h2ServerConn) Done() <-chan struct{} { return c.done }
 func (c *h2ServerConn) LocalAddr() net.Addr  { return c.localAddr }
 func (c *h2ServerConn) RemoteAddr() net.Addr { return c.remoteAddr }
 
-func (c *h2ServerConn) SetDeadline(t time.Time) error      { return nil }
-func (c *h2ServerConn) SetReadDeadline(t time.Time) error  { return nil }
+func (c *h2ServerConn) SetDeadline(t time.Time) error      { return c.readConn.SetReadDeadline(t) }
+func (c *h2ServerConn) SetReadDeadline(t time.Time) error  { return c.readConn.SetReadDeadline(t) }
 func (c *h2ServerConn) SetWriteDeadline(t time.Time) error { return nil }
 
 // bufferedPipeWriter wraps an io.PipeWriter with an async buffer so that
@@ -144,6 +157,9 @@ func (b *bufferedPipeWriter) drain() {
 // Write path (bpw → POST body) is live immediately; Read path blocks until
 // deliver() is called with the HTTP response body — allowing yamux SETTINGS
 // to be sent before the server's 200 OK arrives, saving one RTT.
+//
+// A copy goroutine pumps the response body into a net.Pipe so that
+// SetReadDeadline works — same reason as h2ServerConn above.
 type pipelinedConn struct {
 	bpw    *bufferedPipeWriter
 	pr     *io.PipeReader
@@ -151,20 +167,21 @@ type pipelinedConn struct {
 	once   sync.Once
 	sig    sync.Once
 
-	bodyCh chan io.ReadCloser
-	body   io.ReadCloser
-	buf    []byte
+	readConn net.Conn // deadline-capable end (tunnel reads here)
+	readPeer net.Conn // copy goroutine writes here
 
 	localAddr  net.Addr
 	remoteAddr net.Addr
 }
 
 func newPipelinedConn(pr *io.PipeReader, bpw *bufferedPipeWriter, cancel func(), local, remote net.Addr) *pipelinedConn {
+	readConn, readPeer := net.Pipe()
 	return &pipelinedConn{
 		pr:         pr,
 		bpw:        bpw,
 		cancel:     cancel,
-		bodyCh:     make(chan io.ReadCloser, 1),
+		readConn:   readConn,
+		readPeer:   readPeer,
 		localAddr:  local,
 		remoteAddr: remote,
 	}
@@ -173,36 +190,30 @@ func newPipelinedConn(pr *io.PipeReader, bpw *bufferedPipeWriter, cancel func(),
 // deliver hands resp.Body to the Read path. Returns false if Close already ran first.
 func (c *pipelinedConn) deliver(body io.ReadCloser) bool {
 	ran := false
-	c.sig.Do(func() { c.bodyCh <- body; ran = true })
+	c.sig.Do(func() {
+		ran = true
+		if body == nil {
+			c.readPeer.Close()
+			return
+		}
+		go func() {
+			defer c.readPeer.Close()
+			defer body.Close()
+			io.Copy(c.readPeer, body)
+		}()
+	})
 	return ran
 }
 
 func (c *pipelinedConn) Write(b []byte) (int, error) { return c.bpw.Write(b) }
-
-func (c *pipelinedConn) Read(b []byte) (int, error) {
-	if len(c.buf) > 0 {
-		n := copy(b, c.buf)
-		c.buf = c.buf[n:]
-		return n, nil
-	}
-	if c.body == nil {
-		body := <-c.bodyCh
-		if body == nil {
-			return 0, io.ErrClosedPipe
-		}
-		c.body = body
-	}
-	return c.body.Read(b)
-}
+func (c *pipelinedConn) Read(b []byte) (int, error)  { return c.readConn.Read(b) }
 
 func (c *pipelinedConn) Close() error {
 	c.once.Do(func() {
 		c.bpw.Close()
 		c.pr.Close()
-		c.sig.Do(func() { c.bodyCh <- nil })
-		if c.body != nil {
-			c.body.Close()
-		}
+		c.readConn.Close()
+		c.readPeer.Close()
 		c.cancel()
 	})
 	return nil
@@ -211,8 +222,8 @@ func (c *pipelinedConn) Close() error {
 func (c *pipelinedConn) LocalAddr() net.Addr  { return c.localAddr }
 func (c *pipelinedConn) RemoteAddr() net.Addr { return c.remoteAddr }
 
-func (c *pipelinedConn) SetDeadline(t time.Time) error      { return nil }
-func (c *pipelinedConn) SetReadDeadline(t time.Time) error  { return nil }
+func (c *pipelinedConn) SetDeadline(t time.Time) error      { return c.readConn.SetReadDeadline(t) }
+func (c *pipelinedConn) SetReadDeadline(t time.Time) error  { return c.readConn.SetReadDeadline(t) }
 func (c *pipelinedConn) SetWriteDeadline(t time.Time) error { return nil }
 
 // staticAddr is a minimal net.Addr for wrapping host:port strings.
