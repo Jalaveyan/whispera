@@ -105,7 +105,7 @@ type Config struct {
 	// OnConn is called server-side for each authenticated tunnel connection.
 	OnConn func(conn net.Conn, userID string)
 
-	// internal — initialised by ListenAndServe when DecoyOrigin is set.
+	// internal — initialized by ListenAndServe when DecoyOrigin is set.
 	proxy *decoyProxy
 }
 
@@ -512,7 +512,7 @@ func serveDecoy(w http.ResponseWriter, r *http.Request, cfg *Config) {
 //	Phase 1 — critical subresources in parallel (JS + CSS)
 //	Phase 2 — deferred resources in parallel (images, fonts)
 //	Phase 3 — post-load API calls (sequential)
-//	Idle     — randomised think-time before next cycle
+//	Idle     — randomized think-time before next cycle
 //
 // Timing is driven by BehaviorParams so each session has a distinct fingerprint.
 func runDecoy(ctx context.Context, client *http.Client, serverAddr, sni, origin string, bp BehaviorParams) {
@@ -637,7 +637,7 @@ func (p *decoyProxy) serve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	req, err := http.NewRequest(http.MethodGet, p.origin+key, nil)
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, p.origin+key, nil)
 	if err != nil {
 		p.writeStatic(w, r)
 		return
