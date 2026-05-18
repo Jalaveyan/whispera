@@ -23,7 +23,7 @@ refresh_config() {
     local cfg="${1:-$CONF_PATH/config.yaml}"
     if [[ ! -f "$cfg" ]]; then return; fi
     if command -v whispera &>/dev/null; then
-        whispera update-checksum "$cfg" 2>/dev/null && log_info "Config checksum updated"
+        whispera update-checksum "$cfg" 2>/dev/null && log_info "Config checksum updated" || true
     fi
 }
 
@@ -1512,12 +1512,12 @@ ENVEOF
             log_success "relay: blocks merged"
         fi
 
-        "$BIN_PATH/whispera" update-checksum "$CONF_PATH/config.yaml" && log_info "Config checksum updated"
+        "$BIN_PATH/whispera" update-checksum "$CONF_PATH/config.yaml" && log_info "Config checksum updated" || log_warn "Config checksum update failed (non-fatal)"
     fi
 
     setup_nginx_proxy
     log_info "Starting service..."
-    systemctl start whispera
+    systemctl start whispera || true
 
     sleep 3
     if ! systemctl is-active --quiet whispera; then
