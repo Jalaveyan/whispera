@@ -4,7 +4,9 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	mrand "math/rand"
@@ -73,6 +75,18 @@ var restDecoyDeletePaths = []string{
 
 func restDownloadPath(seed uint64) string {
 	return restDownloadPaths[int(seed>>32)%len(restDownloadPaths)]
+}
+
+var restIDChars = []byte("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
+
+// restRandomID returns a random 8-char alphanumeric string that looks like
+// a short message/event ID used by real SPA backends (Firebase, Ably, etc.).
+func restRandomID() string {
+	b := make([]byte, 8)
+	for i := range b {
+		b[i] = restIDChars[mrand.Intn(len(restIDChars))]
+	}
+	return string(b)
 }
 
 func restUploadPath(method string) string {
@@ -146,8 +160,9 @@ func (c *restServerConn) Read(b []byte) (int, error) {
 	}
 }
 
-// Write wraps b in SSE format ("data: <hex>\n\n") so the response body looks
-// like a real text/event-stream to DPI rather than raw binary.
+// Write wraps b in an SSE event with a JSON payload so the stream looks like
+// a real-time web app (Firebase-style) rather than raw binary to DPI.
+// Format: data: {"d":"<base64>","id":"<random>","ts":<unix>}\n\n
 func (c *restServerConn) Write(b []byte) (n int, err error) {
 	select {
 	case <-c.done:
@@ -159,7 +174,8 @@ func (c *restServerConn) Write(b []byte) (n int, err error) {
 			n, err = 0, io.ErrClosedPipe
 		}
 	}()
-	line := "data: " + hex.EncodeToString(b) + "\n\n"
+	line := fmt.Sprintf("data: {\"d\":\"%s\",\"id\":\"%s\",\"ts\":%d}\n\n",
+		base64.RawStdEncoding.EncodeToString(b), restRandomID(), time.Now().Unix())
 	if _, werr := io.WriteString(c.w, line); werr != nil {
 		c.Close()
 		return 0, werr
@@ -251,18 +267,27 @@ func (c *restClientConn) SetWriteDeadline(t time.Time) error { return nil }
 
 // ── SSE helpers ──────────────────────────────────────────────────────────────
 
-// readSSEStream parses an SSE response body ("data: <hex>\n\n" lines) and
-// writes the decoded binary frames to peer. Returns when the body closes.
+// restEvent matches the JSON envelope written by restServerConn.Write.
+type restEvent struct {
+	D string `json:"d"`
+}
+
+// readSSEStream parses SSE events with JSON payloads and writes the decoded
+// binary frames to peer. Returns when the body closes.
 func readSSEStream(body io.Reader, peer net.Conn) {
 	scanner := bufio.NewScanner(body)
-	// Each line may be up to 64 KB of hex (32 KB frame × 2); use 256 KB buffer.
+	// base64 of a 32 KB frame ≈ 43 KB; 256 KB gives ample headroom.
 	scanner.Buffer(make([]byte, 256*1024), 256*1024)
 	for scanner.Scan() {
 		line := scanner.Text()
 		if !strings.HasPrefix(line, "data: ") {
 			continue
 		}
-		b, err := hex.DecodeString(line[6:])
+		var evt restEvent
+		if err := json.Unmarshal([]byte(line[6:]), &evt); err != nil || evt.D == "" {
+			continue
+		}
+		b, err := base64.RawStdEncoding.DecodeString(evt.D)
 		if err != nil || len(b) == 0 {
 			continue
 		}
@@ -310,15 +335,22 @@ func runRESTUpload(ctx context.Context, client *http.Client, serverAddr, sni, or
 		path := restUploadPath(method)
 		url := fmt.Sprintf("https://%s%s", serverAddr, path)
 
-		chunk := make([]byte, len(buf))
-		copy(chunk, buf)
+		// Wrap in a JSON envelope so the POST body looks like a real SPA API call.
+		envJSON, err := json.Marshal(map[string]interface{}{
+			"d":  base64.RawStdEncoding.EncodeToString(buf),
+			"id": restRandomID(),
+			"ts": time.Now().Unix(),
+		})
+		if err != nil {
+			continue
+		}
 
-		req, err := http.NewRequestWithContext(ctx, method, url, bytes.NewReader(chunk))
+		req, err := http.NewRequestWithContext(ctx, method, url, bytes.NewReader(envJSON))
 		if err != nil {
 			continue
 		}
 		req.Host = sni
-		req.Header.Set("Content-Type", "application/octet-stream")
+		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set(headerToken, "Bearer "+token)
 		req.Header.Set(headerSession, sessionHdr)
 		req.Header.Set("X-Transport", "rest")
@@ -652,8 +684,15 @@ func handleRESTUpload(w http.ResponseWriter, r *http.Request, cfg *Config) {
 		return
 	}
 
-	body, err := io.ReadAll(io.LimitReader(r.Body, 512*1024))
+	var env restEvent
+	if err := json.NewDecoder(io.LimitReader(r.Body, 700*1024)).Decode(&env); err != nil {
+		r.Body.Close()
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
 	r.Body.Close()
+
+	body, err := base64.RawStdEncoding.DecodeString(env.D)
 	if err != nil {
 		w.WriteHeader(http.StatusBadRequest)
 		return
