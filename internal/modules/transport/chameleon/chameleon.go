@@ -76,7 +76,8 @@ type Config struct {
 
 	OnConn func(conn net.Conn, userID string)
 
-	proxy *decoyProxy
+	proxy    *decoyProxy
+	sessions sync.Map // server-side: hex(sessionID) → *restSession
 }
 
 func encodeSession(sessionID []byte, anchor time.Time) string {
@@ -306,7 +307,36 @@ func (l *noDelayListener) Accept() (net.Conn, error) {
 }
 
 func handleRequest(w http.ResponseWriter, r *http.Request, cfg *Config) {
-	if r.Method != http.MethodPost {
+	isREST := r.Header.Get("X-Transport") == "rest"
+
+	switch r.Method {
+	case http.MethodOptions:
+		handleRESTOptions(w, r)
+		return
+	case http.MethodDelete:
+		handleRESTDelete(w, r)
+		return
+	case http.MethodGet:
+		if isREST {
+			handleRESTDownload(w, r, cfg)
+			return
+		}
+		serveDecoy(w, r, cfg)
+		return
+	case http.MethodPut, http.MethodPatch:
+		if isREST {
+			handleRESTUpload(w, r, cfg)
+			return
+		}
+		serveDecoy(w, r, cfg)
+		return
+	case http.MethodPost:
+		if isREST {
+			handleRESTUpload(w, r, cfg)
+			return
+		}
+		// Legacy POST tunnel (old clients without X-Transport: rest).
+	default:
 		serveDecoy(w, r, cfg)
 		return
 	}

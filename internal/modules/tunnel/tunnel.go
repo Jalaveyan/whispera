@@ -1071,7 +1071,7 @@ func (m *Manager) dial(ctx context.Context) (net.Conn, error) {
 			}
 			sni = host
 		}
-		conn, err := chameleon.Client(ctx, &chameleon.Config{
+		conn, err := chameleon.RESTClient(ctx, &chameleon.Config{
 			ServerAddr:   addr,
 			ServerName:   sni,
 			SharedSecret: m.config.ChameleonSecret,
