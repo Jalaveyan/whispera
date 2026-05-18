@@ -58,14 +58,26 @@ _enable_chameleon_in_config() {
     local cfg="${CONF_PATH}/config.yaml"
     [[ -f "$cfg" ]] || return
 
-    # Detect existing TLS cert from nginx config (used in both branches)
+    # Detect existing TLS cert from nginx config (used in both branches).
+    # Skip commented-out lines (otherwise awk picks the directive name as $2
+    # and we end up writing tls_cert: "ssl_certificate" into config.yaml).
     local cert="" key=""
-    cert=$(grep -h "ssl_certificate " /etc/nginx/sites-available/* 2>/dev/null | grep -v "ssl_certificate_key" | awk '{print $2}' | tr -d ';' | head -1)
-    key=$(grep -h "ssl_certificate_key " /etc/nginx/sites-available/* 2>/dev/null | awk '{print $2}' | tr -d ';' | head -1)
+    cert=$(grep -hE '^[[:space:]]*ssl_certificate[[:space:]]' /etc/nginx/sites-available/* 2>/dev/null | grep -v "ssl_certificate_key" | awk '{print $2}' | tr -d ';' | head -1)
+    key=$(grep -hE '^[[:space:]]*ssl_certificate_key[[:space:]]' /etc/nginx/sites-available/* 2>/dev/null | awk '{print $2}' | tr -d ';' | head -1)
 
     if grep -q "^chameleon:" "$cfg"; then
         # Already present — ensure enabled: true
         sed -i '/^chameleon:/,/^[^ ]/{s/enabled: false/enabled: true/}' "$cfg"
+        # Skip cert injection entirely if the chameleon block already has a
+        # non-empty `domain:` — that means autocert (Let's Encrypt) is in use
+        # and we must NOT overwrite tls_cert with an nginx path.
+        local cur_domain
+        cur_domain=$(awk '/^chameleon:/{f=1} f && /^[[:space:]]+domain:/{print $2; exit}' "$cfg" | tr -d '"')
+        if [[ -n "$cur_domain" ]]; then
+            refresh_config "$cfg"
+            log_success "Chameleon enabled in config.yaml (autocert domain=$cur_domain, tls_cert untouched)"
+            return
+        fi
         # If tls_cert is empty ("" or absent) and we have an nginx cert, fill it in
         local cur_cert
         cur_cert=$(awk '/^chameleon:/{f=1} f && /tls_cert:/{print $2; exit}' "$cfg" | tr -d '"')
