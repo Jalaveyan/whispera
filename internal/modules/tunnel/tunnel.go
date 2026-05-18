@@ -2213,7 +2213,7 @@ func (m *Manager) readLoop(mc *managedConn) {
 	defer mc.Close()
 
 	var inputReader io.Reader = mc
-	if m.obfuscator != nil && atomic.LoadInt32(&m.transportSecureOverride) == 0 {
+	if m.obfuscator != nil && !m.isTransportSecure && atomic.LoadInt32(&m.transportSecureOverride) == 0 {
 		inputReader = &deobfuscatingReader{r: mc, obf: m.obfuscator}
 	}
 	reader := bufio.NewReaderSize(inputReader, 262144)
@@ -2653,7 +2653,7 @@ func (m *Manager) Send(data []byte) error {
 		frameType = data[2]
 	}
 
-	if m.obfuscator != nil && atomic.LoadInt32(&m.transportSecureOverride) == 0 && frameType != FrameTypeData {
+	if m.obfuscator != nil && !m.isTransportSecure && atomic.LoadInt32(&m.transportSecureOverride) == 0 && frameType != FrameTypeData {
 		obfuscated, delay, err := m.obfuscator.Process(data, interfaces.DirectionOutbound)
 		if err != nil {
 			return fmt.Errorf("outbound obfuscation failed: %w", err)
