@@ -455,7 +455,7 @@ type Manager struct {
 }
 
 func (m *Manager) getMuxConfig() *mux.Config {
-	base := 30 + mrand.Intn(61)
+	base := 8 + mrand.Intn(7) // 8-14s interval — fast dead-connection detection
 
 	frameSize := 65535
 	if m.chunkAgent != nil {
@@ -474,7 +474,7 @@ func (m *Manager) getMuxConfig() *mux.Config {
 		MaxReceiveBuffer:     512 * 1024 * 1024,
 		MaxStreamBuffer:      2 * 1024 * 1024,
 		KeepAliveInterval:    time.Duration(base) * time.Second,
-		KeepAliveTimeout:     90 * time.Second,
+		KeepAliveTimeout:     20 * time.Second,
 		MaxConcurrentStreams: 256,
 	}
 }
@@ -2623,11 +2623,13 @@ func (m *Manager) OpenStream(ctx context.Context, proto byte, addr string, port 
 		return nil, fmt.Errorf("write connect header: %w", err)
 	}
 
+	proxyStream.SetDeadline(time.Now().Add(10 * time.Second))
 	resp := make([]byte, 1)
 	if _, err := io.ReadFull(proxyStream, resp); err != nil {
 		stream.Close()
 		return nil, fmt.Errorf("read connect response: %w", err)
 	}
+	proxyStream.SetDeadline(time.Time{})
 	if resp[0] != 0x00 {
 		stream.Close()
 		return nil, fmt.Errorf("relay refused connection")
