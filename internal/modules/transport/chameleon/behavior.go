@@ -96,6 +96,22 @@ func (ws *WindowScheduler) currentIndexLocked(now time.Time) int {
 	}
 }
 
+// DeriveSegmentSize returns the byte budget for HLS segment with index segIdx.
+// Derived deterministically from behaviorKey so client and server agree without
+// communicating the size explicitly. Range covers 1–6 Mbps video at 2–4s segments.
+func DeriveSegmentSize(behaviorKey []byte, segIdx uint64) int {
+	r := hkdf.New(sha256.New, behaviorKey, nil,
+		[]byte(fmt.Sprintf("chameleon-seg-size-v1-%d", segIdx)))
+	var b [4]byte
+	if _, err := io.ReadFull(r, b[:]); err != nil {
+		panic("chameleon seg size: " + err.Error())
+	}
+	v := binary.LittleEndian.Uint32(b[:])
+	const minSeg = 256 * 1024  // ~1 Mbps × 2 s
+	const spanSeg = 1280 * 1024 // range up to ~1.5 MB
+	return minSeg + int(v)%spanSeg
+}
+
 func DeriveBehaviorParams(behaviorKey []byte, windowIndex int, sessionID []byte) BehaviorParams {
 	info := fmt.Sprintf("chameleon-behavior-v1-%d", windowIndex)
 	r := hkdf.New(sha256.New, behaviorKey, sessionID, []byte(info))

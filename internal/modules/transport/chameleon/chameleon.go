@@ -313,7 +313,9 @@ func (l *noDelayListener) Accept() (net.Conn, error) {
 }
 
 func handleRequest(w http.ResponseWriter, r *http.Request, cfg *Config) {
-	isREST := r.Header.Get("X-Transport") == "rest"
+	transport := r.Header.Get("X-Transport")
+	isREST := transport == "rest"
+	isHLS := transport == "hls"
 
 	switch r.Method {
 	case http.MethodOptions:
@@ -323,6 +325,15 @@ func handleRequest(w http.ResponseWriter, r *http.Request, cfg *Config) {
 		handleRESTDelete(w, r)
 		return
 	case http.MethodGet:
+		if isHLS {
+			path := r.URL.Path
+			if strings.HasSuffix(path, ".m3u8") {
+				handleHLSPlaylist(w, r, cfg)
+			} else {
+				handleHLSSegment(w, r, cfg)
+			}
+			return
+		}
 		if isREST {
 			handleRESTDownload(w, r, cfg)
 			return
@@ -330,14 +341,14 @@ func handleRequest(w http.ResponseWriter, r *http.Request, cfg *Config) {
 		serveDecoy(w, r, cfg)
 		return
 	case http.MethodPut, http.MethodPatch:
-		if isREST {
+		if isREST || isHLS {
 			handleRESTUpload(w, r, cfg)
 			return
 		}
 		serveDecoy(w, r, cfg)
 		return
 	case http.MethodPost:
-		if isREST {
+		if isREST || isHLS {
 			handleRESTUpload(w, r, cfg)
 			return
 		}

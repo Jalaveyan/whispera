@@ -9,6 +9,8 @@ import (
 	mrand "math/rand"
 	"net"
 	"net/http"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -29,6 +31,116 @@ var mp4FtypAtom = [24]byte{
 	0x00, 0x00, 0x02, 0x00,
 	0x69, 0x73, 0x6F, 0x6D,
 	0x6D, 0x70, 0x34, 0x32,
+}
+
+// ── HLS path helpers ─────────────────────────────────────────────────────────
+
+func hlsSessionKey(sessionID []byte) string { return hex.EncodeToString(sessionID) }
+
+func hlsPlaylistPath(sessionID []byte) string {
+	return "/video/" + hlsSessionKey(sessionID) + "/index.m3u8"
+}
+
+func hlsSegmentPath(sessionID []byte, n uint64) string {
+	return fmt.Sprintf("/video/%s/seg%04d.ts", hlsSessionKey(sessionID), n)
+}
+
+// hlsKeyFromPath extracts the 32-hex session key from an HLS URL path.
+func hlsKeyFromPath(path string) string {
+	parts := strings.SplitN(path, "/", 4) // ["","video","{key}","seg*.ts"]
+	if len(parts) < 4 || parts[1] != "video" || len(parts[2]) != 32 {
+		return ""
+	}
+	return parts[2]
+}
+
+// hlsM3U8 returns a minimal live-HLS playlist; segment names are relative.
+func hlsM3U8(startSeg uint64) string {
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:4\n")
+	fmt.Fprintf(&sb, "#EXT-X-MEDIA-SEQUENCE:%d\n", startSeg)
+	for i := uint64(0); i < 3; i++ {
+		fmt.Fprintf(&sb, "#EXTINF:3.840,\nseg%04d.ts\n", startSeg+i)
+	}
+	return sb.String()
+}
+
+// ── HLS segment routing ──────────────────────────────────────────────────────
+
+// segSlot carries one HTTP response writer to the segmentRouter.
+// The segment handler blocks until done is closed by the router.
+type segSlot struct {
+	w     io.Writer
+	flush func()
+	done  chan struct{}
+}
+
+// segmentRouter implements io.Writer, routing FrameConn frames across sequential
+// HTTP segment responses. Each call to Write() is one complete encrypted frame.
+// A segment ends (at a frame boundary) once its byte budget is exhausted.
+type segmentRouter struct {
+	sess        *restSession
+	behaviorKey []byte
+	connDone    chan struct{}
+
+	mu         sync.Mutex
+	curSlot    *segSlot
+	bytesInSeg int
+	segSize    int
+	segIdx     uint64
+}
+
+func newSegmentRouter(sess *restSession, behaviorKey []byte, connDone chan struct{}) *segmentRouter {
+	return &segmentRouter{sess: sess, behaviorKey: behaviorKey, connDone: connDone}
+}
+
+func (r *segmentRouter) acquireSlot() (*segSlot, error) {
+	r.mu.Lock()
+	s := r.curSlot
+	r.mu.Unlock()
+	if s != nil {
+		return s, nil
+	}
+	select {
+	case s, ok := <-r.sess.segCh:
+		if !ok {
+			return nil, io.ErrClosedPipe
+		}
+		r.mu.Lock()
+		r.curSlot = &s
+		r.bytesInSeg = 0
+		r.segSize = DeriveSegmentSize(r.behaviorKey, r.segIdx)
+		r.mu.Unlock()
+		return &s, nil
+	case <-r.connDone:
+		return nil, io.ErrClosedPipe
+	}
+}
+
+// Write routes one encrypted frame to the current segment, rotating to the
+// next segment after the budget is reached.
+func (r *segmentRouter) Write(b []byte) (int, error) {
+	s, err := r.acquireSlot()
+	if err != nil {
+		return 0, err
+	}
+
+	n, err := s.w.Write(b)
+	s.flush()
+
+	r.mu.Lock()
+	r.bytesInSeg += n
+	full := r.bytesInSeg >= r.segSize
+	if full {
+		r.curSlot = nil
+		r.segIdx++
+	}
+	r.mu.Unlock()
+
+	if full {
+		close(s.done)
+	}
+	return n, err
 }
 
 // ── REST path tables ────────────────────────────────────────────────────────
@@ -110,10 +222,10 @@ type GANDecideFunc func(iatMean, sizeMean, upRatio float64) GANAction
 
 // ── Server-side session ──────────────────────────────────────────────────────
 
-// restSession is created by the GET handler and written to by POST/PUT/PATCH handlers.
-// secret is cached so upload handlers don't need to call resolveSecret on every request.
+// restSession is created by the download handler and written to by upload handlers.
 type restSession struct {
 	uploadCh chan []byte
+	segCh    chan segSlot // HLS: sequential segment writers arrive here (buffered 1)
 	closed   chan struct{}
 	secret   []byte
 }
@@ -142,7 +254,7 @@ type restServerConn struct {
 	writeCount float64
 }
 
-func newRestServerConn(sess *restSession, w http.ResponseWriter, local, remote net.Addr, onClose func(), ganDecide GANDecideFunc) *restServerConn {
+func newRestServerConn(sess *restSession, w io.Writer, local, remote net.Addr, onClose func(), ganDecide GANDecideFunc) *restServerConn {
 	flusher, _ := w.(http.Flusher)
 	return &restServerConn{
 		sess:      sess,
@@ -436,10 +548,6 @@ func RESTClient(ctx context.Context, cfg *Config) (net.Conn, error) {
 	anchor := time.Now().UTC().Truncate(time.Second)
 
 	keys := DeriveKeys(cfg.SharedSecret, true)
-	sched := NewWindowScheduler(keys.Behavior, sessionID, anchor)
-
-	windowIdx := sched.CurrentIndex()
-	bp := DeriveBehaviorParams(keys.Behavior, windowIdx, sessionID)
 	token := AuthToken(keys.Auth, anchor.Unix()/30, sessionID)
 	sessionHdr := encodeSession(sessionID, anchor)
 
@@ -487,63 +595,96 @@ func RESTClient(ctx context.Context, cfg *Config) (net.Conn, error) {
 	conn := newRestClientConn(tunnelCtx, tunnelCancel, local, remote)
 	client := &http.Client{Transport: h2t}
 
-	// Start GET goroutine first; signal when server returns 200 (session ready).
-	getReady := make(chan error, 1)
-	go func() {
-		path := restDownloadPath(bp.PathSeed)
-		url := fmt.Sprintf("https://%s%s", cfg.ServerAddr, path)
-
-		req, err := http.NewRequestWithContext(tunnelCtx, http.MethodGet, url, nil)
+	// hlsGet issues one authenticated GET and returns the response.
+	hlsGet := func(path string) (*http.Response, error) {
+		u := fmt.Sprintf("https://%s%s", cfg.ServerAddr, path)
+		req, err := http.NewRequestWithContext(tunnelCtx, http.MethodGet, u, nil)
 		if err != nil {
-			conn.readPeer.Close()
-			getReady <- err
-			return
+			return nil, err
 		}
 		req.Host = sni
-		req.Header.Set("Accept", contentTypeDownload)
-		req.Header.Set("Cache-Control", "no-store")
 		req.Header.Set(headerToken, "Bearer "+token)
 		req.Header.Set(headerSession, sessionHdr)
-		req.Header.Set("X-Transport", "rest")
+		req.Header.Set("X-Transport", "hls")
 		applyBrowserHeaders(req, origin)
+		return client.Do(req)
+	}
 
-		resp, err := client.Do(req)
+	// 1. GET playlist — establishes the session on the server.
+	playlistReady := make(chan error, 1)
+	go func() {
+		resp, err := hlsGet(hlsPlaylistPath(sessionID))
 		if err != nil {
-			conn.readPeer.Close()
-			getReady <- err
+			playlistReady <- fmt.Errorf("chameleon: HLS playlist: %w", err)
 			return
 		}
 		if resp.StatusCode != http.StatusOK {
 			resp.Body.Close()
-			conn.readPeer.Close()
-			getReady <- fmt.Errorf("chameleon: GET %d", resp.StatusCode)
+			playlistReady <- fmt.Errorf("chameleon: HLS playlist %d", resp.StatusCode)
 			return
 		}
-
-		// GET established — signal success, skip MP4 header, then pipe.
-		getReady <- nil
-		defer resp.Body.Close()
-		io.ReadFull(resp.Body, make([]byte, len(mp4FtypAtom)))
-		io.Copy(conn.readPeer, resp.Body)
-		conn.readPeer.Close()
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+		playlistReady <- nil
 	}()
 
-	// Wait for the GET stream to establish before accepting the conn.
 	select {
-	case err := <-getReady:
+	case err := <-playlistReady:
 		if err != nil {
 			conn.Close()
-			return nil, fmt.Errorf("chameleon: REST GET: %w", err)
+			return nil, err
 		}
 	case <-time.After(10 * time.Second):
 		conn.Close()
-		return nil, fmt.Errorf("chameleon: REST GET timeout")
+		return nil, fmt.Errorf("chameleon: HLS playlist timeout")
 	case <-ctx.Done():
 		conn.Close()
 		return nil, ctx.Err()
 	}
 
-	// Upload and decoy goroutines start only after GET is live.
+	// 2. Sequential segment GETs with 1-slot pre-fetch.
+	// Pre-fetching starts immediately when a segment response arrives (before
+	// reading its body), giving the full segment read time as pre-fetch window.
+	type segResult struct {
+		resp *http.Response
+		err  error
+	}
+	fetchSeg := func(n uint64) <-chan segResult {
+		ch := make(chan segResult, 1)
+		go func() {
+			resp, err := hlsGet(hlsSegmentPath(sessionID, n))
+			if err != nil {
+				ch <- segResult{nil, err}
+				return
+			}
+			if resp.StatusCode != http.StatusOK {
+				resp.Body.Close()
+				ch <- segResult{nil, fmt.Errorf("chameleon: HLS seg%d %d", n, resp.StatusCode)}
+				return
+			}
+			ch <- segResult{resp, nil}
+		}()
+		return ch
+	}
+
+	go func() {
+		defer conn.readPeer.Close()
+		nextCh := fetchSeg(0)
+		for segIdx := uint64(0); ; segIdx++ {
+			res := <-nextCh
+			if res.err != nil {
+				return
+			}
+			// Pre-fetch next segment while reading current one.
+			nextCh = fetchSeg(segIdx + 1)
+			if _, err := io.Copy(conn.readPeer, res.resp.Body); err != nil {
+				res.resp.Body.Close()
+				return
+			}
+			res.resp.Body.Close()
+		}
+	}()
+
 	go runRESTUpload(tunnelCtx, client, cfg.ServerAddr, sni, origin, sessionHdr, token, conn.uploadCh)
 	go runRESTDecoy(tunnelCtx, client, cfg.ServerAddr, sni, origin)
 
@@ -659,6 +800,163 @@ func handleRESTDownload(w http.ResponseWriter, r *http.Request, cfg *Config) {
 	}
 
 	<-done
+}
+
+// ── HLS server handlers ──────────────────────────────────────────────────────
+
+// handleHLSPlaylist handles GET /video/{sid}/index.m3u8 — authenticates the
+// client, creates the session, sends an HLS playlist, then blocks while
+// sequential segment handlers fill the FrameConn download stream.
+func handleHLSPlaylist(w http.ResponseWriter, r *http.Request, cfg *Config) {
+	tokenHdr := r.Header.Get(headerToken)
+	sessionHdr := r.Header.Get(headerSession)
+
+	if len(tokenHdr) < 8 || tokenHdr[:7] != "Bearer " {
+		serveDecoy(w, r, cfg)
+		return
+	}
+	token := tokenHdr[7:]
+
+	sessionID, _, err := decodeSession(sessionHdr)
+	if err != nil {
+		serveDecoy(w, r, cfg)
+		return
+	}
+
+	secret, userID := resolveSecret(cfg, token, sessionID)
+	if secret == nil {
+		log.Printf("chameleon: HLS auth failed from %s", r.RemoteAddr)
+		serveDecoy(w, r, cfg)
+		return
+	}
+
+	keys := DeriveKeys(secret, false)
+	log.Printf("chameleon: HLS authenticated user=%s from %s", userID, r.RemoteAddr)
+
+	sess := &restSession{
+		uploadCh: make(chan []byte, 128),
+		segCh:    make(chan segSlot, 1), // buffered 1 for pre-fetch overlap
+		closed:   make(chan struct{}),
+		secret:   secret,
+	}
+	sessionKey := hlsSessionKey(sessionID)
+	cfg.sessions.Store(sessionKey, sess)
+	defer func() {
+		close(sess.closed)
+		cfg.sessions.Delete(sessionKey)
+	}()
+
+	// Send the HLS playlist immediately so the client can start requesting segments.
+	playlist := hlsM3U8(0)
+	w.Header().Set("Content-Type", "application/x-mpegURL")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Content-Length", strconv.Itoa(len(playlist)))
+	w.WriteHeader(http.StatusOK)
+	io.WriteString(w, playlist)
+	if f, ok := w.(http.Flusher); ok {
+		f.Flush()
+	}
+
+	local := staticAddr{"tcp", r.Host}
+	remote := staticAddr{"tcp", r.RemoteAddr}
+
+	done := make(chan struct{})
+	segRouter := newSegmentRouter(sess, keys.Behavior, done)
+
+	// restServerConn handles the Read (upload) side; writes go through segRouter.
+	conn := newRestServerConn(sess, segRouter, local, remote, func() { close(done) }, cfg.GANDecide)
+
+	go func() {
+		select {
+		case <-r.Context().Done():
+			conn.Close()
+		case <-done:
+		}
+	}()
+
+	fc, err := NewFrameConn(conn, keys.DataSend, keys.DataRecv)
+	if err != nil {
+		log.Printf("chameleon: HLS frame conn: %v", err)
+		return
+	}
+
+	if cfg.GANDecide != nil {
+		go func() {
+			t := time.NewTicker(200 * time.Millisecond)
+			defer t.Stop()
+			for {
+				select {
+				case <-done:
+					return
+				case <-t.C:
+					action := cfg.GANDecide(0, 0, 0)
+					if action.PaddingN > 0 {
+						fc.WritePad(action.PaddingN) //nolint:errcheck
+					}
+				}
+			}
+		}()
+	}
+
+	if cfg.OnConn != nil {
+		cfg.OnConn(fc, userID)
+	}
+	<-done
+}
+
+// handleHLSSegment handles GET /video/{sid}/seg{n}.ts — delivers exactly one
+// HLS segment worth of FrameConn data and returns when the budget is exhausted.
+func handleHLSSegment(w http.ResponseWriter, r *http.Request, cfg *Config) {
+	sessionKey := hlsKeyFromPath(r.URL.Path)
+	if sessionKey == "" {
+		serveDecoy(w, r, cfg)
+		return
+	}
+
+	val, ok := cfg.sessions.Load(sessionKey)
+	if !ok {
+		// Session not ready yet — wait up to 3s (race between playlist and first segment).
+		deadline := time.Now().Add(3 * time.Second)
+		for time.Now().Before(deadline) {
+			time.Sleep(20 * time.Millisecond)
+			if val, ok = cfg.sessions.Load(sessionKey); ok {
+				break
+			}
+		}
+		if !ok {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+	}
+	sess := val.(*restSession)
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "video/MP2T")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("X-Accel-Buffering", "no")
+	w.WriteHeader(http.StatusOK)
+
+	slotDone := make(chan struct{})
+	slot := segSlot{w: w, flush: flusher.Flush, done: slotDone}
+
+	select {
+	case sess.segCh <- slot:
+	case <-sess.closed:
+		return
+	case <-r.Context().Done():
+		return
+	}
+
+	select {
+	case <-slotDone:
+	case <-sess.closed:
+	case <-r.Context().Done():
+	}
 }
 
 // handleRESTUpload handles POST/PUT/PATCH requests that feed the upload channel.
