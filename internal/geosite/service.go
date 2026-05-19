@@ -63,8 +63,13 @@ func (s *Service) IsDomainInCountry(domain, countryCode string) bool {
 	return s.db.IsDomainInCountry(domain, countryCode)
 }
 
+const DefaultGeoSiteURL = "https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat"
+
 func (s *Service) DownloadDatabase() error {
-	url := "https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat"
+	return s.DownloadDatabaseFrom(DefaultGeoSiteURL)
+}
+
+func (s *Service) DownloadDatabaseFrom(url string) error {
 	dir := filepath.Dir(s.dbPath)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return fmt.Errorf("failed to create directory: %w", err)

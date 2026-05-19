@@ -2122,6 +2122,7 @@ func registerBridgeWithMainServer() {
 func getPublicIP() string {
 	client := &http.Client{Timeout: 5 * time.Second}
 	services := []string{
+		"https://2ip.ru/api/self",
 		"https://ifconfig.me",
 		"https://icanhazip.com",
 		"https://api.ipify.org",

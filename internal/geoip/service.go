@@ -92,8 +92,13 @@ func (s *Service) GetCountryCIDRs(countryCode string) []string {
 	return s.db.GetCountryCIDRs(countryCode)
 }
 
+const DefaultGeoIPURL = "https://github.com/v2fly/geoip/releases/latest/download/geoip.dat"
+
 func (s *Service) DownloadDatabase() error {
-	url := "https://github.com/v2fly/geoip/releases/latest/download/geoip.dat"
+	return s.DownloadDatabaseFrom(DefaultGeoIPURL)
+}
+
+func (s *Service) DownloadDatabaseFrom(url string) error {
 	dir := filepath.Dir(s.dbPath)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return fmt.Errorf("failed to create directory: %w", err)
