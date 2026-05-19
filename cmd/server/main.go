@@ -1609,7 +1609,31 @@ func createModules(manager *lifecycle.Manager, ctx context.Context) error {
 	}
 
 	if serverConfig.Chameleon.Enabled && (serverConfig.Chameleon.TLSCert != "" || serverConfig.Chameleon.Domain != "") {
+		// Start GAN traffic-fingerprint learner on the external interface.
+		ganIface := serverConfig.Chameleon.GANIface
+		if ganIface == "" {
+			ganIface = "eth0"
+		}
+		ganRunner := mlpkg.NewGANRunner(ganIface, 443)
+		if err := ganRunner.Start(); err != nil {
+			log.Printf("[GAN] pcap collector unavailable: %v (continuing without)", err)
+		} else {
+			log.Printf("[GAN] pcap collector started on %s:443", ganIface)
+		}
+
 		cCfg := &chameleon.Config{
+			GANDecide: func(iatMean, sizeMean, upRatio float64) chameleon.GANAction {
+				a := ganRunner.GAN().Decide(mlpkg.FlowFeatures{
+					IATMean:  iatMean,
+					SizeMean: sizeMean,
+					UpRatio:  upRatio,
+				})
+				// PaddingFrac ∈ [0, 0.5] → PaddingN ∈ [0, 2048] bytes
+				return chameleon.GANAction{
+					SleepMs:  a.SleepMs,
+					PaddingN: int(a.PaddingFrac * 4096),
+				}
+			},
 			ListenAddr:  serverConfig.Chameleon.ListenAddr,
 			TLSCert:     serverConfig.Chameleon.TLSCert,
 			TLSKey:      serverConfig.Chameleon.TLSKey,
@@ -1629,11 +1653,14 @@ func createModules(manager *lifecycle.Manager, ctx context.Context) error {
 				return entries
 			},
 			OnConn: func(conn net.Conn, userID string) {
+				mlpkg.FlowRegistry.Register(conn.RemoteAddr().String(), mlpkg.FlowTunnel)
 				if globalRelay != nil {
-					// Chameleon provides its own encryption (ChaCha20-AEAD) and
-					// obfuscation (shapedConn); WrapStreamTLS is not needed here.
-					go globalRelay.ServeTunnel(conn, false)
+					go func() {
+						globalRelay.ServeTunnel(conn, false)
+						mlpkg.FlowRegistry.Delete(conn.RemoteAddr().String())
+					}()
 				} else {
+					mlpkg.FlowRegistry.Delete(conn.RemoteAddr().String())
 					conn.Close()
 				}
 			},

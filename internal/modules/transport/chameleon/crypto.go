@@ -2,6 +2,7 @@ package chameleon
 
 import (
 	"crypto/cipher"
+	crand "crypto/rand"
 	"crypto/sha256"
 	"encoding/binary"
 	"fmt"
@@ -13,7 +14,11 @@ import (
 	"golang.org/x/crypto/hkdf"
 )
 
-const maxFrameSize = 4 * 1024 * 1024
+const (
+	maxFrameSize    = 4 * 1024 * 1024
+	frameTypeData   = byte(0x01)
+	framePadding    = byte(0x00)
+)
 
 type Keys struct {
 	Auth     []byte
@@ -78,57 +83,93 @@ func counterNonce(seq uint64) [12]byte {
 	return n
 }
 
+// writeFrame encrypts and sends [typ][payload] as one frame.
+func (fc *FrameConn) writeFrame(typ byte, p []byte) error {
+	plain := make([]byte, 1+len(p))
+	plain[0] = typ
+	copy(plain[1:], p)
+	overhead := fc.sendAEAD.Overhead()
+	frame := make([]byte, 4+len(plain)+overhead)
+	binary.BigEndian.PutUint32(frame, uint32(len(plain)+overhead))
+	nonce := counterNonce(fc.sendSeq)
+	fc.sendAEAD.Seal(frame[4:4], nonce[:], plain, nil)
+	fc.sendSeq++
+	_, err := fc.Conn.Write(frame)
+	return err
+}
+
+// Write sends p as a data frame (type=0x01).
 func (fc *FrameConn) Write(p []byte) (int, error) {
 	fc.sendMu.Lock()
 	defer fc.sendMu.Unlock()
-	overhead := fc.sendAEAD.Overhead()
-	frame := make([]byte, 4+len(p)+overhead)
-	binary.BigEndian.PutUint32(frame, uint32(len(p)+overhead))
-	nonce := counterNonce(fc.sendSeq)
-	fc.sendAEAD.Seal(frame[4:4], nonce[:], p, nil)
-	fc.sendSeq++
-	if _, err := fc.Conn.Write(frame); err != nil {
+	if err := fc.writeFrame(frameTypeData, p); err != nil {
 		return 0, err
 	}
 	return len(p), nil
 }
 
+// WritePad sends n random bytes as a padding frame (type=0x00).
+// The receiver discards padding frames silently.
+func (fc *FrameConn) WritePad(n int) error {
+	if n <= 0 {
+		return nil
+	}
+	pad := make([]byte, n)
+	crand.Read(pad)
+	fc.sendMu.Lock()
+	defer fc.sendMu.Unlock()
+	return fc.writeFrame(framePadding, pad)
+}
+
+// Read decrypts the next data frame, silently skipping padding frames.
 func (fc *FrameConn) Read(b []byte) (int, error) {
-	if len(fc.buf) > 0 {
-		n := copy(b, fc.buf)
-		fc.buf = fc.buf[n:]
+	for {
+		if len(fc.buf) > 0 {
+			n := copy(b, fc.buf)
+			fc.buf = fc.buf[n:]
+			return n, nil
+		}
+
+		var hdr [4]byte
+		if _, err := io.ReadFull(fc.Conn, hdr[:]); err != nil {
+			return 0, err
+		}
+		ctLen := binary.BigEndian.Uint32(hdr[:])
+		if ctLen == 0 || ctLen > uint32(maxFrameSize+fc.recvAEAD.Overhead()) {
+			return 0, fmt.Errorf("chameleon: bad frame len %d", ctLen)
+		}
+
+		ct := make([]byte, ctLen)
+		if _, err := io.ReadFull(fc.Conn, ct); err != nil {
+			return 0, err
+		}
+
+		recvNonce := counterNonce(fc.recvSeq)
+		pt, err := fc.recvAEAD.Open(nil, recvNonce[:], ct, nil)
+		if err != nil {
+			return 0, fmt.Errorf("chameleon: decrypt: %w", err)
+		}
+		fc.recvSeq++
+
+		if len(pt) == 0 {
+			return 0, fmt.Errorf("chameleon: empty frame")
+		}
+
+		// Skip padding frames; loop to read the next one.
+		if pt[0] == framePadding {
+			continue
+		}
+
+		// Strip type byte and return payload.
+		pt = pt[1:]
+		if len(pt) == 0 {
+			continue
+		}
+		n := copy(b, pt)
+		if n < len(pt) {
+			fc.buf = make([]byte, len(pt)-n)
+			copy(fc.buf, pt[n:])
+		}
 		return n, nil
 	}
-
-	var hdr [4]byte
-	if _, err := io.ReadFull(fc.Conn, hdr[:]); err != nil {
-		return 0, err
-	}
-	ctLen := binary.BigEndian.Uint32(hdr[:])
-	if ctLen == 0 || ctLen > uint32(maxFrameSize+fc.recvAEAD.Overhead()) {
-		return 0, fmt.Errorf("chameleon: bad frame len %d", ctLen)
-	}
-
-	ct := make([]byte, ctLen)
-	if _, err := io.ReadFull(fc.Conn, ct); err != nil {
-		return 0, err
-	}
-
-	recvNonce := counterNonce(fc.recvSeq)
-	pt, err := fc.recvAEAD.Open(nil, recvNonce[:], ct, nil)
-	if err != nil {
-		return 0, fmt.Errorf("chameleon: decrypt: %w", err)
-	}
-	fc.recvSeq++
-
-	if len(pt) == 0 {
-		return 0, fmt.Errorf("chameleon: empty frame")
-	}
-
-	n := copy(b, pt)
-	if n < len(pt) {
-		fc.buf = make([]byte, len(pt)-n)
-		copy(fc.buf, pt[n:])
-	}
-	return n, nil
 }

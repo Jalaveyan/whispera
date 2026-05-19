@@ -78,6 +78,9 @@ type Config struct {
 
 	OnConn func(conn net.Conn, userID string)
 
+	// GANDecide optionally shapes download writes to match target traffic profile.
+	GANDecide GANDecideFunc
+
 	proxy    *decoyProxy
 	sessions sync.Map // server-side: hex(sessionID) → *restSession
 }

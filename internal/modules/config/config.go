@@ -387,6 +387,8 @@ type ChameleonConfig struct {
 	// DecoyOrigin: upstream that serves non-VPN traffic on the same port (e.g. http://127.0.0.1:80
 	// pointing at nginx loopback). Non-POST or unauthenticated requests are reverse-proxied here.
 	DecoyOrigin string `yaml:"decoy_origin" json:"decoy_origin"`
+	// GANIface: network interface for pcap-based GAN training (default "eth0").
+	GANIface string `yaml:"gan_iface" json:"gan_iface"`
 }
 
 type ServerSettings struct {

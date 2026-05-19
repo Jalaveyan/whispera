@@ -19,6 +19,18 @@ import (
 	"golang.org/x/net/http2"
 )
 
+// mp4FtypAtom is a minimal valid MP4 ftyp box prepended to every download
+// response so the first bytes match the MP4 signature that DPI sniffers check.
+// size=24 "ftyp" major="isom" ver=0x200 compat="isom","mp42"
+var mp4FtypAtom = [24]byte{
+	0x00, 0x00, 0x00, 0x18,
+	0x66, 0x74, 0x79, 0x70,
+	0x69, 0x73, 0x6F, 0x6D,
+	0x00, 0x00, 0x02, 0x00,
+	0x69, 0x73, 0x6F, 0x6D,
+	0x6D, 0x70, 0x34, 0x32,
+}
+
 // ── REST path tables ────────────────────────────────────────────────────────
 
 var restDownloadPaths = []string{
@@ -82,6 +94,20 @@ func restUploadPath(method string) string {
 	return paths[mrand.Intn(len(paths))]
 }
 
+// ── GAN shaping interface ────────────────────────────────────────────────────
+
+// GANAction is returned by GANDecideFunc to shape individual writes.
+type GANAction struct {
+	SleepMs  float64 // sleep before the write to match target IAT distribution
+	PaddingN int     // bytes of padding to inject between data writes (0 = none)
+}
+
+// GANDecideFunc is called on every write with live flow stats.
+// iatMean — mean inter-write interval (seconds) so far in this session.
+// sizeMean — mean write size (bytes) so far.
+// upRatio — fraction of bytes that were uploads (for server-side always 0).
+type GANDecideFunc func(iatMean, sizeMean, upRatio float64) GANAction
+
 // ── Server-side session ──────────────────────────────────────────────────────
 
 // restSession is created by the GET handler and written to by POST/PUT/PATCH handlers.
@@ -107,14 +133,22 @@ type restServerConn struct {
 
 	localAddr  net.Addr
 	remoteAddr net.Addr
+
+	// live flow stats for GAN shaping
+	ganDecide  GANDecideFunc
+	lastWrite  time.Time
+	iatSum     float64
+	sizeSum    float64
+	writeCount float64
 }
 
-func newRestServerConn(sess *restSession, w http.ResponseWriter, local, remote net.Addr, onClose func()) *restServerConn {
+func newRestServerConn(sess *restSession, w http.ResponseWriter, local, remote net.Addr, onClose func(), ganDecide GANDecideFunc) *restServerConn {
 	flusher, _ := w.(http.Flusher)
 	return &restServerConn{
-		sess:       sess,
-		w:          w,
-		flusher:    flusher,
+		sess:      sess,
+		w:         w,
+		flusher:   flusher,
+		ganDecide: ganDecide,
 		done:       make(chan struct{}),
 		onClose:    onClose,
 		localAddr:  local,
@@ -156,6 +190,27 @@ func (c *restServerConn) Write(b []byte) (n int, err error) {
 			n, err = 0, io.ErrClosedPipe
 		}
 	}()
+
+	// GAN-driven timing shaping.
+	if c.ganDecide != nil {
+		now := time.Now()
+		if !c.lastWrite.IsZero() {
+			iat := now.Sub(c.lastWrite).Seconds()
+			c.iatSum += iat
+		}
+		c.sizeSum += float64(len(b))
+		c.writeCount++
+		iatMean := 0.0
+		if c.writeCount > 1 {
+			iatMean = c.iatSum / (c.writeCount - 1)
+		}
+		action := c.ganDecide(iatMean, c.sizeSum/c.writeCount, 0)
+		if action.SleepMs > 0.5 {
+			time.Sleep(time.Duration(action.SleepMs * float64(time.Millisecond)))
+		}
+		c.lastWrite = time.Now()
+	}
+
 	n, err = c.w.Write(b)
 	if err != nil {
 		c.Close()
@@ -465,9 +520,10 @@ func RESTClient(ctx context.Context, cfg *Config) (net.Conn, error) {
 			return
 		}
 
-		// GET established — signal success, then pipe the binary body.
+		// GET established — signal success, skip MP4 header, then pipe.
 		getReady <- nil
 		defer resp.Body.Close()
+		io.ReadFull(resp.Body, make([]byte, len(mp4FtypAtom)))
 		io.Copy(conn.readPeer, resp.Body)
 		conn.readPeer.Close()
 	}()
@@ -554,13 +610,14 @@ func handleRESTDownload(w http.ResponseWriter, r *http.Request, cfg *Config) {
 	w.Header().Set("X-Accel-Buffering", "no")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.WriteHeader(http.StatusOK)
+	w.Write(mp4FtypAtom[:])
 	flusher.Flush()
 
 	local := staticAddr{"tcp", r.Host}
 	remote := staticAddr{"tcp", r.RemoteAddr}
 
 	done := make(chan struct{})
-	conn := newRestServerConn(sess, w, local, remote, func() { close(done) })
+	conn := newRestServerConn(sess, w, local, remote, func() { close(done) }, cfg.GANDecide)
 
 	// Close conn if the HTTP request context dies (client disconnect).
 	go func() {
@@ -575,6 +632,26 @@ func handleRESTDownload(w http.ResponseWriter, r *http.Request, cfg *Config) {
 	if err != nil {
 		log.Printf("chameleon: REST frame conn: %v", err)
 		return
+	}
+
+	// Padding goroutine: inject encrypted random-byte frames on a fixed cadence
+	// to break per-packet size fingerprinting while the tunnel is active.
+	if cfg.GANDecide != nil {
+		go func() {
+			t := time.NewTicker(200 * time.Millisecond)
+			defer t.Stop()
+			for {
+				select {
+				case <-done:
+					return
+				case <-t.C:
+					action := cfg.GANDecide(0, 0, 0)
+					if action.PaddingN > 0 {
+						fc.WritePad(action.PaddingN) //nolint:errcheck
+					}
+				}
+			}
+		}()
 	}
 
 	if cfg.OnConn != nil {
