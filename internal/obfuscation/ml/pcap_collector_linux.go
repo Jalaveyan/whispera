@@ -23,8 +23,8 @@ const (
 	FlowDecoy             // real browser via decoy_origin — positive example
 )
 
-// flowKey is the canonical 5-tuple key (sorted so client→server == server→client).
-func flowKey(srcIP, dstIP string, srcPort, dstPort int) string {
+// pcapFlowKey is the canonical 5-tuple key (sorted so client→server == server→client).
+func pcapFlowKey(srcIP, dstIP string, srcPort, dstPort int) string {
 	a := fmt.Sprintf("%s:%d", srcIP, srcPort)
 	b := fmt.Sprintf("%s:%d", dstIP, dstPort)
 	if a < b {
@@ -48,7 +48,7 @@ func (r *flowRegistry) Register(remoteAddr string, label FlowLabel) {
 	}
 	port, _ := strconv.Atoi(portStr)
 	// server listens on :443; remote is the client side
-	key := flowKey(host, "0.0.0.0", port, 443)
+	key := pcapFlowKey(host, "0.0.0.0", port, 443)
 	r.mu.Lock()
 	r.m[key] = label
 	r.mu.Unlock()
@@ -66,7 +66,7 @@ func (r *flowRegistry) Delete(remoteAddr string) {
 		return
 	}
 	port, _ := strconv.Atoi(portStr)
-	key := flowKey(host, "0.0.0.0", port, 443)
+	key := pcapFlowKey(host, "0.0.0.0", port, 443)
 	r.mu.Lock()
 	delete(r.m, key)
 	r.mu.Unlock()
@@ -235,7 +235,7 @@ func (c *PCAPCollector) parse(sc *bufio.Scanner) {
 			continue
 		}
 
-		key := flowKey(pkt.srcIP, pkt.dstIP, pkt.srcPort, pkt.dstPort)
+		key := pcapFlowKey(pkt.srcIP, pkt.dstIP, pkt.srcPort, pkt.dstPort)
 		fa, exists := flows[key]
 		if !exists {
 			label := FlowRegistry.Get(key)
@@ -304,7 +304,7 @@ func parseTcpdumpLine(line string) (rawPacket, bool) {
 	if len(parts) >= 7 {
 		size, _ = strconv.Atoi(parts[len(parts)-1])
 	}
-	return rawPacket{ts: ts, srcIP: src[0], srcPort: src[1].(int), dstIP: dst[0], dstPort: dst[1].(int), size: size}, true
+	return rawPacket{ts: ts, srcIP: src[0].(string), srcPort: src[1].(int), dstIP: dst[0].(string), dstPort: dst[1].(int), size: size}, true
 }
 
 // parseAddr splits "1.2.3.4.54321" → ("1.2.3.4", 54321).
