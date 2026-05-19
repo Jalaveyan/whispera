@@ -87,7 +87,8 @@ type APIHandler struct {
 	registry          *Registry
 	trustManager      *TrustManager
 	registrationToken string
-	serverCertFP string
+	serverCertFP      string
+	tokenPath         string
 }
 
 func (h *APIHandler) SetCertFingerprint(fp string) {
@@ -164,9 +165,42 @@ func NewAPIHandler(registry *Registry) *APIHandler {
 	}
 }
 
+func NewAPIHandlerWithTokenPath(registry *Registry, tokenPath string) *APIHandler {
+	h := &APIHandler{
+		registry:     registry,
+		trustManager: NewTrustManager(registry),
+		tokenPath:    tokenPath,
+	}
+	h.loadToken()
+	return h
+}
+
+func (h *APIHandler) loadToken() {
+	if h.tokenPath == "" {
+		return
+	}
+	data, err := os.ReadFile(h.tokenPath)
+	if err != nil {
+		return
+	}
+	tok := strings.TrimSpace(string(data))
+	if tok != "" {
+		h.registrationToken = tok
+	}
+}
+
+func (h *APIHandler) saveToken() {
+	if h.tokenPath == "" {
+		return
+	}
+	_ = os.WriteFile(h.tokenPath, []byte(h.registrationToken), 0600)
+}
+
 func (h *APIHandler) SetRegistrationToken(token string) {
 	h.registrationToken = token
+	h.saveToken()
 }
+
 func GenerateRegistrationToken() string {
 	b := make([]byte, 32)
 	rand.Read(b)
@@ -462,6 +496,7 @@ func (h *APIHandler) HandleGetRegistrationToken(w http.ResponseWriter, r *http.R
 
 func (h *APIHandler) HandleRegenerateToken(w http.ResponseWriter, r *http.Request) {
 	h.registrationToken = GenerateRegistrationToken()
+	h.saveToken()
 	log.Printf("[BridgePool] Registration token regenerated")
 
 	w.Header().Set("Content-Type", "application/json")
@@ -659,11 +694,19 @@ func (h *APIHandler) HandleBridgeHeartbeat(w http.ResponseWriter, r *http.Reques
 		}
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	resp := map[string]interface{}{
 		"success":         true,
 		"authorized_keys": authorizedKeys,
-	})
+	}
+
+	if upd := h.registry.PopPendingUpdate(req.ID); upd != nil {
+		resp["update_url"] = upd.BinaryURL
+		resp["update_version"] = upd.Version
+		resp["update_checksum"] = upd.Checksum
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
 }
 
 func (h *APIHandler) HandleSetAdminSSHKey(w http.ResponseWriter, r *http.Request) {

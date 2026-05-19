@@ -30,9 +30,13 @@ refresh_config() {
 }
 
 get_public_ip() {
-    local IP=$(curl -s https://api.ipify.org -m 5 2>/dev/null)
+    local IP
+    IP=$(curl -s https://2ip.ru/api/self -m 5 2>/dev/null | grep -oE '"ip":"[^"]*"' | cut -d'"' -f4)
     if [[ -z "$IP" ]]; then
-        IP=$(curl -s https://ifconfig.me -m 5 2>/dev/null)
+        IP=$(curl -s https://2ip.io -m 5 2>/dev/null | tr -d '[:space:]')
+    fi
+    if [[ -z "$IP" ]]; then
+        IP=$(curl -s https://api.ipify.org -m 5 2>/dev/null)
     fi
     if [[ -z "$IP" ]]; then
         IP=$(ip addr show | grep 'inet ' | grep -v '127.0.0.1' | awk '{print $2}' | cut -d/ -f1 | head -n1)
@@ -152,7 +156,7 @@ install_go() {
     local GO_V=$(curl -s https://go.dev/dl/?mode=json 2>/dev/null | grep -o 'go[0-9.]*' | head -n1)
     
     if [[ -z "$GO_V" ]]; then
-        GO_V="go1.23.4"
+        GO_V="go1.24.3"
     fi
     
     wget -q "https://go.dev/dl/${GO_V}.linux-amd64.tar.gz" -O /tmp/go.tar.gz
@@ -187,14 +191,16 @@ setup_bbr() {
         return
     fi
     
-    cat >> /etc/sysctl.conf <<EOF
+    if ! grep -q "tcp_congestion_control" /etc/sysctl.conf /etc/sysctl.d/*.conf 2>/dev/null; then
+        cat >> /etc/sysctl.conf <<EOF
 
 net.core.default_qdisc = fq
 net.ipv4.tcp_congestion_control = bbr
 EOF
-    
+    fi
+
     sysctl -p >/dev/null 2>&1
-    
+
     if sysctl net.ipv4.tcp_congestion_control 2>/dev/null | grep -q bbr; then
         log_success "BBR enabled"
     else
@@ -581,57 +587,71 @@ setup_swap() {
     fi
     
     sysctl vm.swappiness=10 >/dev/null 2>&1
-    echo "vm.swappiness=10" >> /etc/sysctl.conf
-    
+    grep -q "vm.swappiness" /etc/sysctl.conf || echo "vm.swappiness=10" >> /etc/sysctl.conf
+
     log_success "Swap $SWAP_SIZE created"
 }
 
 setup_sysctl() {
     log_info "Optimizing system settings..."
-    
-    cat >> /etc/sysctl.conf <<EOF
 
+    cat > /etc/sysctl.d/99-whispera.conf <<'EOF'
 net.core.rmem_max = 16777216
 net.core.wmem_max = 16777216
 net.ipv4.tcp_rmem = 4096 87380 16777216
 net.ipv4.tcp_wmem = 4096 65536 16777216
-
 net.netfilter.nf_conntrack_max = 1000000
 net.netfilter.nf_conntrack_tcp_timeout_established = 7200
-
 fs.file-max = 1000000
-
 net.ipv4.tcp_fastopen = 3
 net.ipv4.tcp_slow_start_after_idle = 0
 net.ipv4.tcp_mtu_probing = 1
 EOF
-    
-    sysctl -p >/dev/null 2>&1
-    
-    cat >> /etc/security/limits.conf <<EOF
+
+    sysctl --system >/dev/null 2>&1
+
+    if ! grep -q "nofile 1000000" /etc/security/limits.conf 2>/dev/null; then
+        cat >> /etc/security/limits.conf <<'EOF'
 * soft nofile 1000000
 * hard nofile 1000000
 EOF
-    
+    fi
+
     log_success "System optimized"
 }
 
 setup_autoupdate() {
     log_info "Setting up auto-update..."
-    
-    cat > /etc/cron.daily/whispera-update <<EOF
-cd $WORK_DIR
-git pull origin main --quiet
-export PATH=\$PATH:/usr/local/go/bin
-go build -trimpath -ldflags "-w -s" -o whispera-server ./cmd/server 2>/dev/null
-if [[ -f whispera-server ]]; then
-    cp whispera-server $BIN_PATH/whispera
-    systemctl restart whispera
+
+    cat > /etc/cron.daily/whispera-update <<'CRONEOF'
+#!/bin/bash
+LOG="/var/log/whispera-update.log"
+exec >> "$LOG" 2>&1
+echo "=== $(date) ==="
+
+ARCH="amd64"
+[[ $(uname -m) == "aarch64" ]] && ARCH="arm64"
+DIRECT_URL="https://github.com/Jalaveyan/Whispera/releases/latest/download/whispera-server-linux-${ARCH}.tar.gz"
+TMP_DIR=$(mktemp -d)
+trap 'rm -rf "$TMP_DIR"' EXIT
+
+if curl -fL --retry 3 --retry-delay 2 -o "$TMP_DIR/whispera.tar.gz" "$DIRECT_URL" 2>/dev/null; then
+    if tar -xzf "$TMP_DIR/whispera.tar.gz" -C "$TMP_DIR" 2>/dev/null && [[ -f "$TMP_DIR/whispera-server" ]]; then
+        systemctl stop whispera 2>/dev/null || true
+        cp "$TMP_DIR/whispera-server" /usr/local/bin/whispera
+        chmod +x /usr/local/bin/whispera
+        systemctl start whispera
+        echo "Updated successfully"
+    else
+        echo "Extraction failed — keeping current binary"
+    fi
+else
+    echo "Download failed — keeping current binary"
 fi
-EOF
+CRONEOF
     chmod +x /etc/cron.daily/whispera-update
-    
-    log_success "Auto-update enabled (daily)"
+
+    log_success "Auto-update enabled (daily, downloads from GitHub Releases)"
 }
 
 setup_telegram() {
@@ -1171,7 +1191,7 @@ ENVEOF
         log_warn "Panel source directory not found! Cloning..."
         cd /tmp
         rm -rf "$WORK_DIR"
-        git clone -b test https://github.com/Jalaveyan/Whispera.git "$WORK_DIR"
+        git clone -b main https://github.com/Jalaveyan/Whispera.git "$WORK_DIR"
     fi
     
     if [[ ! -d "$PANEL_SRC" ]]; then
@@ -1810,7 +1830,7 @@ case $1 in
     log|logs) journalctl -u whispera -u whispera-panel -f ;;
     config) ${EDITOR:-nano} /etc/whispera/config.yaml ;;
     key)
-        SERVER_IP=$(curl -s https://api.ipify.org -m 5 2>/dev/null || echo "YOUR_IP")
+        SERVER_IP=$(curl -s https://2ip.ru/api/self -m 5 2>/dev/null | grep -oE '"ip":"[^"]*"' | cut -d'"' -f4 || curl -s https://api.ipify.org -m 5 2>/dev/null || echo "YOUR_IP")
         ADMIN_PASS=$(cat /etc/whispera/admin.pass 2>/dev/null)
         echo "Web Panel:    https://${SERVER_IP}/"
         echo "Admin User:   admin"

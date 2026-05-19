@@ -30,8 +30,8 @@ refresh_config() {
 _enable_tcp8443_in_config() {
     local cfg="${CONF_PATH}/config.yaml"
     [[ -f "$cfg" ]] || return
-    # Already on :8443 — nothing to do
-    if grep -q 'listen_addr: ":8443"' "$cfg" && grep -qP '^\s+enabled: true' "$cfg"; then
+    # Already on :8443 and tcp block is enabled — nothing to do
+    if awk '/^  tcp:/{f=1} f && /listen_addr:.*:8443/{a=1} f && /enabled: true/{b=1} /^  [a-z]/ && !/^  tcp:/{f=0} END{exit !(a&&b)}' "$cfg" 2>/dev/null; then
         return
     fi
     local changed=0
@@ -136,7 +136,14 @@ _enable_ml_in_config() {
 }
 
 get_public_ip() {
-    local IP=$(curl -s https://api.ipify.org -m 5 2>/dev/null)
+    local IP
+    IP=$(curl -s https://2ip.ru/api/self -m 5 2>/dev/null | grep -oE '"ip":"[^"]*"' | cut -d'"' -f4)
+    if [[ -z "$IP" ]]; then
+        IP=$(curl -s https://2ip.io -m 5 2>/dev/null | tr -d '[:space:]')
+    fi
+    if [[ -z "$IP" ]]; then
+        IP=$(curl -s https://api.ipify.org -m 5 2>/dev/null)
+    fi
     if [[ -z "$IP" ]]; then
         IP=$(ip addr show | grep 'inet ' | grep -v '127.0.0.1' | awk '{print $2}' | cut -d/ -f1 | head -n1)
     fi
@@ -205,14 +212,16 @@ setup_bbr() {
         return
     fi
     
-    cat >> /etc/sysctl.conf <<EOF
+    if ! grep -q "tcp_congestion_control" /etc/sysctl.conf /etc/sysctl.d/*.conf 2>/dev/null; then
+        cat >> /etc/sysctl.conf <<EOF
 
 net.core.default_qdisc = fq
 net.ipv4.tcp_congestion_control = bbr
 EOF
-    
+    fi
+
     sysctl -p >/dev/null 2>&1
-    
+
     if sysctl net.ipv4.tcp_congestion_control 2>/dev/null | grep -q bbr; then
         log_success "BBR enabled"
     else
@@ -508,15 +517,14 @@ setup_swap() {
     fi
     
     sysctl vm.swappiness=10 >/dev/null 2>&1
-    echo "vm.swappiness=10" >> /etc/sysctl.conf
+    grep -q "vm.swappiness" /etc/sysctl.conf || echo "vm.swappiness=10" >> /etc/sysctl.conf
     log_success "Swap 2GB created"
 }
 
 setup_sysctl() {
     log_info "Optimizing system..."
-    
-    cat >> /etc/sysctl.conf <<EOF
 
+    cat > /etc/sysctl.d/99-whispera.conf <<'EOF'
 net.core.rmem_max = 16777216
 net.core.wmem_max = 16777216
 net.ipv4.tcp_rmem = 4096 87380 16777216
@@ -524,8 +532,8 @@ net.ipv4.tcp_wmem = 4096 65536 16777216
 net.ipv4.tcp_fastopen = 3
 fs.file-max = 1000000
 EOF
-    
-    sysctl -p >/dev/null 2>&1
+
+    sysctl --system >/dev/null 2>&1
     log_success "System optimized"
 }
 
@@ -1234,7 +1242,11 @@ do_update() {
 
     local ARCH="amd64"
     [[ $(uname -m) == "aarch64" ]] && ARCH="arm64"
-    
+
+    log_info "Fetching latest release info..."
+    local RELEASE_JSON
+    RELEASE_JSON=$(curl -s https://api.github.com/repos/Jalaveyan/Whispera/releases/latest)
+
     log_info "Downloading latest release from GitHub..."
     local DIRECT_URL="https://github.com/Jalaveyan/Whispera/releases/latest/download/whispera-server-linux-${ARCH}.tar.gz"
 
@@ -1252,8 +1264,6 @@ do_update() {
 
     if [[ "$BIN_FOUND" != "true" ]]; then
         log_warn "Direct download failed, trying GitHub API..."
-        local RELEASE_JSON
-        RELEASE_JSON=$(curl -s https://api.github.com/repos/Jalaveyan/Whispera/releases/latest)
         local DOWNLOAD_URL
         DOWNLOAD_URL=$(echo "$RELEASE_JSON" | grep "browser_download_url" | grep "whispera-server-linux-$ARCH.tar.gz" | head -n 1 | cut -d '"' -f 4)
         if [[ -n "$DOWNLOAD_URL" ]]; then

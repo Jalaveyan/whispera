@@ -64,20 +64,28 @@ type AccessKey struct {
 	ChallengeHMAC  string    `json:"challenge_hmac,omitempty"`
 }
 
+type PendingUpdate struct {
+	Version   string `json:"version"`
+	BinaryURL string `json:"binary_url"`
+	Checksum  string `json:"checksum"`
+}
+
 type Registry struct {
-	bridges       map[string]*BridgeInfo
-	accessKeys    map[string]*AccessKey
-	adminSSHKey   string
-	mu            sync.RWMutex
-	persistPath   string
-	healthMonitor *HealthMonitor
+	bridges        map[string]*BridgeInfo
+	accessKeys     map[string]*AccessKey
+	pendingUpdates map[string]*PendingUpdate
+	adminSSHKey    string
+	mu             sync.RWMutex
+	persistPath    string
+	healthMonitor  *HealthMonitor
 }
 
 func NewRegistry(persistPath string) *Registry {
 	r := &Registry{
-		bridges:     make(map[string]*BridgeInfo),
-		accessKeys:  make(map[string]*AccessKey),
-		persistPath: persistPath,
+		bridges:        make(map[string]*BridgeInfo),
+		accessKeys:     make(map[string]*AccessKey),
+		pendingUpdates: make(map[string]*PendingUpdate),
+		persistPath:    persistPath,
 	}
 	r.healthMonitor = NewHealthMonitor(r, 30*time.Second)
 	_ = r.load()
@@ -762,10 +770,29 @@ func (ud *UpdateDelivery) DeliverUpdate(version string, binaryURL string, checks
 	return results
 }
 
+func (r *Registry) SetPendingUpdate(bridgeID string, upd *PendingUpdate) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.pendingUpdates[bridgeID] = upd
+}
+
+func (r *Registry) PopPendingUpdate(bridgeID string) *PendingUpdate {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	upd, ok := r.pendingUpdates[bridgeID]
+	if !ok {
+		return nil
+	}
+	delete(r.pendingUpdates, bridgeID)
+	return upd
+}
+
 func (ud *UpdateDelivery) deliverToBridge(bridge *BridgeInfo, version, binaryURL, checksum string) UpdateResult {
-	_ = version
-	_ = binaryURL
-	_ = checksum
+	ud.registry.SetPendingUpdate(bridge.ID, &PendingUpdate{
+		Version:   version,
+		BinaryURL: binaryURL,
+		Checksum:  checksum,
+	})
 	return UpdateResult{
 		BridgeID: bridge.ID,
 		Success:  true,

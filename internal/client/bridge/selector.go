@@ -6,11 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -27,21 +28,26 @@ const (
 	ModeManual
 )
 
+var dohResolvers = []string{
+	"https://dns.google/resolve",
+	"https://cloudflare-dns.com/dns-query",
+	"https://dns.yandex.ru/resolve",
+	"https://doh.opendns.com/dns-query",
+}
+
 type Config struct {
 	Mode BridgeMode `yaml:"mode" json:"mode"`
 
-	DiscoveryURL string `yaml:"discovery_url" json:"discovery_url"`
+	DiscoveryURL         string       `yaml:"discovery_url" json:"discovery_url"`
+	FallbackDiscoveryURLs []string    `yaml:"fallback_discovery_urls" json:"fallback_discovery_urls"`
+	DNSDiscoveryDomain   string       `yaml:"dns_discovery_domain" json:"dns_discovery_domain"`
+	BootstrapBridges     []*BridgeInfo `yaml:"bootstrap_bridges" json:"bootstrap_bridges"`
 
 	ManualBridge string `yaml:"manual_bridge" json:"manual_bridge"`
 
-	EnableFailover bool `yaml:"enable_failover" json:"enable_failover"`
-
-	TestTimeout time.Duration `yaml:"test_timeout" json:"test_timeout"`
-
-	MaxRetries int `yaml:"max_retries" json:"max_retries"`
-
-	// RefreshInterval controls how often the bridge list is re-fetched from the server.
-	// 0 means no periodic refresh (fetch only on first Connect).
+	EnableFailover  bool          `yaml:"enable_failover" json:"enable_failover"`
+	TestTimeout     time.Duration `yaml:"test_timeout" json:"test_timeout"`
+	MaxRetries      int           `yaml:"max_retries" json:"max_retries"`
 	RefreshInterval time.Duration `yaml:"refresh_interval" json:"refresh_interval"`
 }
 
@@ -145,37 +151,137 @@ func (s *Selector) GetAvailableBridges() []*BridgeInfo {
 }
 
 func (s *Selector) FetchBridges(ctx context.Context) error {
-	fetchTimeout := 10 * time.Second
-	ctx, cancel := context.WithTimeout(ctx, fetchTimeout)
+	ctx, cancel := context.WithTimeout(ctx, 12*time.Second)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, "GET", s.config.DiscoveryURL, nil)
-	if err != nil {
-		return fmt.Errorf("failed to create request: %w", err)
+	type result struct {
+		bridges []*BridgeInfo
+		source  string
+	}
+	ch := make(chan result, 8)
+
+	launch := func(src string, fn func() ([]*BridgeInfo, error)) {
+		go func() {
+			if b, err := fn(); err == nil && len(b) > 0 {
+				ch <- result{b, src}
+			}
+		}()
 	}
 
+	if s.config.DiscoveryURL != "" {
+		u := s.config.DiscoveryURL
+		launch("primary", func() ([]*BridgeInfo, error) { return s.fetchFromURL(ctx, u) })
+	}
+	for _, u := range s.config.FallbackDiscoveryURLs {
+		u := u
+		launch("fallback:"+u, func() ([]*BridgeInfo, error) { return s.fetchFromURL(ctx, u) })
+	}
+	if s.config.DNSDiscoveryDomain != "" {
+		d := s.config.DNSDiscoveryDomain
+		launch("dns", func() ([]*BridgeInfo, error) { return s.fetchFromDNS(ctx, d) })
+	}
+
+	select {
+	case r := <-ch:
+		s.mu.Lock()
+		s.bridges = r.bridges
+		s.mu.Unlock()
+		log.Printf("[BridgeSelector] Fetched %d bridges via %s", len(r.bridges), r.source)
+		return nil
+	case <-ctx.Done():
+	}
+
+	if len(s.config.BootstrapBridges) > 0 {
+		s.mu.Lock()
+		s.bridges = s.config.BootstrapBridges
+		s.mu.Unlock()
+		log.Printf("[BridgeSelector] All discovery failed — using %d bootstrap bridges", len(s.config.BootstrapBridges))
+		return nil
+	}
+
+	return errors.New("bridge discovery failed: all methods timed out and no bootstrap bridges configured")
+}
+
+func (s *Selector) fetchFromURL(ctx context.Context, rawURL string) ([]*BridgeInfo, error) {
+	req, err := http.NewRequestWithContext(ctx, "GET", rawURL, nil)
+	if err != nil {
+		return nil, err
+	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("failed to fetch bridges: %w", err)
+		return nil, err
 	}
 	defer resp.Body.Close()
-
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("server returned %d: %s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("status %d", resp.StatusCode)
 	}
-
 	var bridges []*BridgeInfo
 	if err := json.NewDecoder(resp.Body).Decode(&bridges); err != nil {
-		return fmt.Errorf("failed to decode response: %w", err)
+		return nil, err
+	}
+	return bridges, nil
+}
+
+func (s *Selector) fetchFromDNS(ctx context.Context, domain string) ([]*BridgeInfo, error) {
+	type dohAnswer struct {
+		Data string `json:"data"`
+	}
+	type dohResp struct {
+		Answer []dohAnswer `json:"Answer"`
 	}
 
-	s.mu.Lock()
-	s.bridges = bridges
-	s.mu.Unlock()
+	httpClient := &http.Client{Timeout: 8 * time.Second}
+	ch := make(chan []*BridgeInfo, len(dohResolvers))
 
-	log.Printf("[BridgeSelector] Fetched %d bridges", len(bridges))
-	return nil
+	for _, resolver := range dohResolvers {
+		resolver := resolver
+		go func() {
+			u, _ := url.Parse(resolver)
+			q := u.Query()
+			q.Set("name", domain)
+			q.Set("type", "TXT")
+			u.RawQuery = q.Encode()
+
+			req, err := http.NewRequestWithContext(ctx, "GET", u.String(), nil)
+			if err != nil {
+				return
+			}
+			req.Header.Set("Accept", "application/dns-json")
+			resp, err := httpClient.Do(req)
+			if err != nil {
+				return
+			}
+			defer resp.Body.Close()
+
+			var dr dohResp
+			if err := json.NewDecoder(resp.Body).Decode(&dr); err != nil {
+				return
+			}
+			for _, ans := range dr.Answer {
+				data := strings.Trim(ans.Data, `"`)
+				if !strings.HasPrefix(data, "v=whispera-bridges") {
+					continue
+				}
+				idx := strings.Index(data, " ")
+				if idx < 0 {
+					continue
+				}
+				jsonPart := data[idx+1:]
+				var bridges []*BridgeInfo
+				if err := json.Unmarshal([]byte(jsonPart), &bridges); err == nil && len(bridges) > 0 {
+					ch <- bridges
+					return
+				}
+			}
+		}()
+	}
+
+	select {
+	case b := <-ch:
+		return b, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }
 
 func (s *Selector) TestLatency(ctx context.Context, b *BridgeInfo) (time.Duration, error) {

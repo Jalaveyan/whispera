@@ -1,6 +1,6 @@
 module whispera
 
-go 1.25.6
+go 1.26
 
 require (
 	github.com/go-telegram-bot-api/telegram-bot-api/v5 v5.5.1
@@ -8,17 +8,17 @@ require (
 	github.com/hashicorp/yamux v0.1.2
 	github.com/jackc/pgx/v5 v5.8.0
 	github.com/nats-io/nats.go v1.49.0
-	github.com/pion/interceptor v0.1.25
-	github.com/pion/rtp v1.8.3
+	github.com/pion/interceptor v0.1.43
+	github.com/pion/rtp v1.10.1
 	github.com/pion/stun v0.6.1
 	github.com/pion/webrtc/v3 v3.2.24
 	github.com/quic-go/quic-go v0.59.0
 	github.com/redis/go-redis/v9 v9.17.3
-	github.com/refraction-networking/utls v1.8.1
+	github.com/refraction-networking/utls v1.8.3-0.20260301010127-aa6edf4b11af
 	go.uber.org/automaxprocs v1.6.0
-	golang.org/x/crypto v0.47.0
-	golang.org/x/net v0.43.0
-	google.golang.org/grpc v1.75.1
+	golang.org/x/crypto v0.49.0
+	golang.org/x/net v0.52.0
+	google.golang.org/grpc v1.73.0
 	gopkg.in/yaml.v3 v3.0.1
 	gorgonia.org/gorgonia v0.9.18
 	gorgonia.org/tensor v0.9.24
@@ -42,22 +42,29 @@ require (
 	github.com/leesper/go_rng v0.0.0-20190531154944-a612b043e353 // indirect
 	github.com/nats-io/nkeys v0.4.12 // indirect
 	github.com/nats-io/nuid v1.0.1 // indirect
-	github.com/pion/datachannel v1.5.5 // indirect
+	github.com/pion/datachannel v1.6.0 // indirect
 	github.com/pion/ice/v2 v2.3.11 // indirect
 	github.com/pion/mdns v0.0.8 // indirect
 	github.com/pion/randutil v0.1.0 // indirect
-	github.com/pion/rtcp v1.2.12 // indirect
-	github.com/pion/sctp v1.8.8 // indirect
-	github.com/pion/sdp/v3 v3.0.6 // indirect
+	github.com/pion/rtcp v1.2.16 // indirect
+	github.com/pion/sctp v1.9.2 // indirect
+	github.com/pion/sdp/v3 v3.0.17 // indirect
 	github.com/pion/srtp/v2 v2.0.18 // indirect
+	github.com/pion/transport/v4 v4.0.1 // indirect
 	github.com/pion/turn/v2 v2.1.3 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/quic-go/qpack v0.6.0 // indirect
+	github.com/sagernet/quic-go v0.59.0-sing-box-mod.2 // indirect
+	github.com/sagernet/sing v0.8.0-beta.10 // indirect
+	github.com/sagernet/sing-quic v0.6.1 // indirect
 	github.com/stretchr/testify v1.11.1 // indirect
 	github.com/xtgo/set v1.0.0 // indirect
+	github.com/xtls/xray-core v1.250608.0 // indirect
+	gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/lyrebird v0.0.0-20260312101154-fc105a03c0e0 // indirect
+	gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/snowflake/v2 v2.13.1 // indirect
 	go4.org/unsafe/assume-no-moving-gc v0.0.0-20231121144256-b99613f794b6 // indirect
-	golang.org/x/sync v0.17.0 // indirect
+	golang.org/x/sync v0.20.0 // indirect
 	golang.org/x/xerrors v0.0.0-20200804184101-5ec99f83aff1 // indirect
 	gonum.org/v1/gonum v0.16.0 // indirect
 	gorgonia.org/cu v0.9.4 // indirect
@@ -75,15 +82,15 @@ replace (
 )
 
 require (
-	github.com/andybalholm/brotli v1.0.6 // indirect
+	github.com/andybalholm/brotli v1.1.1 // indirect
 	github.com/klauspost/compress v1.18.2 // indirect
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
 	github.com/klauspost/reedsolomon v1.13.0
 	github.com/pion/dtls/v2 v2.2.7 // indirect
-	github.com/pion/logging v0.2.2 // indirect
+	github.com/pion/logging v0.2.4 // indirect
 	github.com/pion/transport/v2 v2.2.3 // indirect
-	golang.org/x/sys v0.39.0 // indirect
-	golang.org/x/text v0.31.0 // indirect
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20250818200422-3122310a409c // indirect
-	google.golang.org/protobuf v1.36.8 // indirect
+	golang.org/x/sys v0.42.0 // indirect
+	golang.org/x/text v0.35.0 // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20251202230838-ff82c1b0f217 // indirect
+	google.golang.org/protobuf v1.36.11 // indirect
 )
