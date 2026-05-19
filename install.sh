@@ -1315,11 +1315,12 @@ generate_config() {
     log_info "Bridge token generated: $BRIDGE_TOKEN"
     
     local PG_PASS=""
+    local PG_URL=""
     if [[ -f "$CONF_PATH/postgres.env" ]]; then
         PG_PASS=$(grep POSTGRES_PASSWORD "$CONF_PATH/postgres.env" | cut -d= -f2)
-    fi
-    if [[ -z "$PG_PASS" ]]; then
-         PG_PASS="whispera" 
+        if [[ -n "$PG_PASS" ]]; then
+            PG_URL="postgresql://whispera:${PG_PASS}@localhost/whispera"
+        fi
     fi
     
     local ADMIN_PASS=$(gen_password 30)
@@ -1433,7 +1434,7 @@ notifications:
   chat_id: ""
 
 database:
-  postgres_url: "postgresql://whispera:$PG_PASS@localhost/whispera"
+  postgres_url: "$PG_URL"
   max_conns: 25
   min_conns: 5
 

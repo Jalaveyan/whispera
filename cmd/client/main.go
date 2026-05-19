@@ -1143,6 +1143,18 @@ func main() {
 					go func() {
 						defer atomic.StoreInt32(&primaryReconnecting, 0)
 						time.Sleep(2 * time.Second)
+
+						if globalAgent != nil {
+							if recTr, _ := globalAgent.SelectTransport(); recTr != "" {
+								primaryEntry.mu.Lock()
+								if primaryEntry.Transport != recTr {
+									stdlog.Printf("ProxyAgent: %s → %s for reconnect", primaryEntry.Transport, recTr)
+									primaryEntry.Transport = recTr
+								}
+								primaryEntry.mu.Unlock()
+							}
+						}
+
 						stdlog.Printf("Transport watchdog: reconnecting primary %s...", transports[0])
 
 						targetCfg := buildBaseCfg(primaryEntry)
