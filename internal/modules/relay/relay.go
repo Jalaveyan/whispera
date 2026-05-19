@@ -40,21 +40,23 @@ type ResponseWriter interface {
 	RemoteAddr() net.Addr
 }
 type Config struct {
-	MaxStreams    int
-	EnableTCP     bool
-	EnableUDP     bool
-	Debug         bool
-	SafeMode      bool
-	UpstreamProxy string
+	MaxStreams           int
+	EnableTCP            bool
+	EnableUDP            bool
+	Debug                bool
+	SafeMode             bool
+	UpstreamProxy        string
+	MaxConcurrentStreams int
 }
 
 func DefaultConfig() *Config {
 	return &Config{
-		MaxStreams: 10000,
-		EnableTCP:  true,
-		EnableUDP:  true,
-		Debug:      false,
-		SafeMode:   true,
+		MaxStreams:           10000,
+		EnableTCP:            true,
+		EnableUDP:            true,
+		Debug:                false,
+		SafeMode:             true,
+		MaxConcurrentStreams: 1024,
 	}
 }
 
@@ -357,7 +359,7 @@ func (s *Server) ServeTunnel(conn net.Conn, streamObf bool) {
 		MaxStreamBuffer:      2 * 1024 * 1024,
 		KeepAliveInterval:    time.Duration(kaBase) * time.Second,
 		KeepAliveTimeout:     120 * time.Second,
-		MaxConcurrentStreams: 1024,
+		MaxConcurrentStreams: s.config.MaxConcurrentStreams,
 	}
 
 	paddedConn := mux.NewPaddedConn(conn, 128)
