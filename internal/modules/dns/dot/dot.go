@@ -61,6 +61,7 @@ func DefaultConfig() *Config {
 			"1.1.1.1:853",
 			"8.8.8.8:853",
 			"9.9.9.9:853",
+			"77.88.8.8:853",
 		},
 		DialTimeout:   5 * time.Second,
 		ReadTimeout:   5 * time.Second,

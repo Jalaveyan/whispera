@@ -433,7 +433,7 @@ func main() {
 	phantomEnabled := false
 	phantomSNI := "cloudflare.com"
 	phantomShortId := ""
-	phantomServerPubKey := "jDwJpsAOm/dizeRNOMyUkoiHzslRkEmSQ/SKvigNtQw="
+	phantomServerPubKey := ""
 	var phantomPSK []byte
 	var chameleonSecret []byte
 	chatFSMEnabled := false

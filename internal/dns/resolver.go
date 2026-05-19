@@ -42,7 +42,7 @@ type Config struct {
 func DefaultConfig() *Config {
 	return &Config{
 		Type:      ResolverTypeDoH,
-		Servers:   []string{"https://cloudflare-dns.com/dns-query", "https://dns.google/dns-query"},
+		Servers:   []string{"https://cloudflare-dns.com/dns-query", "https://dns.google/dns-query", "https://dns.yandex.ru/dns-query"},
 		Timeout:   5 * time.Second,
 		CacheSize: 10000,
 		CacheTTL:  5 * time.Minute,

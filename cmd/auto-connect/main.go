@@ -366,7 +366,7 @@ func checkExternalIP() {
 		},
 	}
 
-	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://api.ipify.org?format=json", nil)
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://2ip.ru/api/self", nil)
 	resp, err := client.Do(req)
 	if err != nil {
 		log.Printf("IP check failed: %v", err)
