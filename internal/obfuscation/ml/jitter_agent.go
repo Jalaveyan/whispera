@@ -47,9 +47,10 @@ type JitterView struct {
 type RLJitterAgent struct {
 	mu sync.RWMutex
 
-	qNet   *gnet.GorgoniaNet
-	target *gnet.GorgoniaNet
-	adam   *AdamState
+	modelDir string
+	qNet     *gnet.GorgoniaNet
+	target   *gnet.GorgoniaNet
+	adam     *AdamState
 
 	prb        *PrioritizedReplayBuffer
 	thompson   *ThompsonSampler
@@ -66,8 +67,9 @@ type RLJitterAgent struct {
 	pendingAction int
 }
 
-func NewRLJitterAgent() *RLJitterAgent {
+func NewRLJitterAgent(modelDir string) *RLJitterAgent {
 	a := &RLJitterAgent{
+		modelDir:      modelDir,
 		prb:           NewPrioritizedBuffer(jBufferSize),
 		thompson:      NewThompsonSampler(jNumActions),
 		sticky:        StickyExplorer{K: 1},
@@ -80,6 +82,13 @@ func NewRLJitterAgent() *RLJitterAgent {
 	a.qNet = gnet.New([]int{jStateSize, jHidden1, jHidden2, jNumActions})
 	a.target = gnet.Clone(a.qNet)
 	a.adam = NewAdamState(a.qNet)
+	if layers, eps, steps, ok := loadRLMiniPolicy(modelDir, "rl_jitter.json"); ok {
+		loaded := &gnet.GorgoniaNet{Layers: layers}
+		a.qNet = loaded
+		a.target = gnet.Clone(loaded)
+		a.epsilon = eps
+		atomic.StoreInt64(&a.stepCount, steps)
+	}
 	return a
 }
 
@@ -184,6 +193,9 @@ func (a *RLJitterAgent) trainStep() {
 	cnt := atomic.AddInt64(&a.trainCount, 1)
 	temp := a.temperature
 	eps := a.epsilon
+	if cnt%100 == 0 {
+		saveRLMiniPolicy(a.modelDir, "rl_jitter.json", a.qNet.Layers, a.epsilon, atomic.LoadInt64(&a.stepCount))
+	}
 	a.mu.Unlock()
 	if cnt%10 == 0 {
 		jLog.Debug("train#%d eps=%.3f temp=%.3f steps=%d", cnt, eps, temp, atomic.LoadInt64(&a.stepCount))

@@ -54,9 +54,10 @@ type BackoffView struct {
 type RLBackoffAgent struct {
 	mu sync.RWMutex
 
-	qNet   *gnet.GorgoniaNet
-	target *gnet.GorgoniaNet
-	adam   *AdamState
+	modelDir string
+	qNet     *gnet.GorgoniaNet
+	target   *gnet.GorgoniaNet
+	adam     *AdamState
 
 	prb        *PrioritizedReplayBuffer
 	thompson   *ThompsonSampler
@@ -73,8 +74,9 @@ type RLBackoffAgent struct {
 	pendingAction int
 }
 
-func NewRLBackoffAgent() *RLBackoffAgent {
+func NewRLBackoffAgent(modelDir string) *RLBackoffAgent {
 	a := &RLBackoffAgent{
+		modelDir:      modelDir,
 		prb:           NewPrioritizedBuffer(boBufferSize),
 		thompson:      NewThompsonSampler(boNumActions),
 		sticky:        StickyExplorer{K: 2},
@@ -87,6 +89,13 @@ func NewRLBackoffAgent() *RLBackoffAgent {
 	a.qNet = gnet.New([]int{boStateSize, boHidden1, boHidden2, boNumActions})
 	a.target = gnet.Clone(a.qNet)
 	a.adam = NewAdamState(a.qNet)
+	if layers, eps, steps, ok := loadRLMiniPolicy(modelDir, "rl_bo.json"); ok {
+		loaded := &gnet.GorgoniaNet{Layers: layers}
+		a.qNet = loaded
+		a.target = gnet.Clone(loaded)
+		a.epsilon = eps
+		atomic.StoreInt64(&a.stepCount, steps)
+	}
 	return a
 }
 
@@ -220,6 +229,9 @@ func (a *RLBackoffAgent) trainStep() {
 	cnt := atomic.AddInt64(&a.trainCount, 1)
 	temp := a.temperature
 	eps := a.epsilon
+	if cnt%100 == 0 {
+		saveRLMiniPolicy(a.modelDir, "rl_bo.json", a.qNet.Layers, a.epsilon, atomic.LoadInt64(&a.stepCount))
+	}
 	a.mu.Unlock()
 	if cnt%10 == 0 {
 		boLog.Debug("train#%d eps=%.3f temp=%.3f steps=%d", cnt, eps, temp, atomic.LoadInt64(&a.stepCount))

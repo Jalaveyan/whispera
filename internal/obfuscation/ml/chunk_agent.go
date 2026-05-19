@@ -39,9 +39,10 @@ type ChunkView struct {
 type RLChunkAgent struct {
 	mu sync.RWMutex
 
-	qNet   *gnet.GorgoniaNet
-	target *gnet.GorgoniaNet
-	adam   *AdamState
+	modelDir string
+	qNet     *gnet.GorgoniaNet
+	target   *gnet.GorgoniaNet
+	adam     *AdamState
 
 	prb        *PrioritizedReplayBuffer
 	thompson   *ThompsonSampler
@@ -58,8 +59,9 @@ type RLChunkAgent struct {
 	pendingAction int
 }
 
-func NewRLChunkAgent() *RLChunkAgent {
+func NewRLChunkAgent(modelDir string) *RLChunkAgent {
 	a := &RLChunkAgent{
+		modelDir:      modelDir,
 		prb:           NewPrioritizedBuffer(chunkBufferSize),
 		thompson:      NewThompsonSampler(chunkNumActions),
 		sticky:        StickyExplorer{K: 1},
@@ -72,6 +74,13 @@ func NewRLChunkAgent() *RLChunkAgent {
 	a.qNet = gnet.New([]int{chunkStateSize, chunkHidden1, chunkHidden2, chunkNumActions})
 	a.target = gnet.Clone(a.qNet)
 	a.adam = NewAdamState(a.qNet)
+	if layers, eps, steps, ok := loadRLMiniPolicy(modelDir, "rl_chunk.json"); ok {
+		loaded := &gnet.GorgoniaNet{Layers: layers}
+		a.qNet = loaded
+		a.target = gnet.Clone(loaded)
+		a.epsilon = eps
+		atomic.StoreInt64(&a.stepCount, steps)
+	}
 	return a
 }
 
@@ -174,6 +183,9 @@ func (a *RLChunkAgent) trainStep() {
 	cnt := atomic.AddInt64(&a.trainCount, 1)
 	temp := a.temperature
 	eps := a.epsilon
+	if cnt%100 == 0 {
+		saveRLMiniPolicy(a.modelDir, "rl_chunk.json", a.qNet.Layers, a.epsilon, atomic.LoadInt64(&a.stepCount))
+	}
 	a.mu.Unlock()
 	if cnt%10 == 0 {
 		chunkLog.Debug("train#%d eps=%.3f temp=%.3f steps=%d", cnt, eps, temp, atomic.LoadInt64(&a.stepCount))

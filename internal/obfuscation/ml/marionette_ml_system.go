@@ -178,6 +178,6 @@ func NewUnifiedMLSystem() *UnifiedMLSystem {
 			ModelStatus:      "active",
 			LastUpdate:       util.GetGlobalTimeCache().Now(),
 		},
-		dataCollector: NewDataCollector(10000, "./ml_data"),
+		dataCollector: globalDataCollector,
 	}
 }

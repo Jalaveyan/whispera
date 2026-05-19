@@ -46,9 +46,10 @@ type TLSView struct {
 type RLTLSAgent struct {
 	mu sync.RWMutex
 
-	qNet   *gnet.GorgoniaNet
-	target *gnet.GorgoniaNet
-	adam   *AdamState
+	modelDir string
+	qNet     *gnet.GorgoniaNet
+	target   *gnet.GorgoniaNet
+	adam     *AdamState
 
 	prb        *PrioritizedReplayBuffer
 	thompson   *ThompsonSampler
@@ -65,8 +66,9 @@ type RLTLSAgent struct {
 	pendingAction int
 }
 
-func NewRLTLSAgent() *RLTLSAgent {
+func NewRLTLSAgent(modelDir string) *RLTLSAgent {
 	a := &RLTLSAgent{
+		modelDir:      modelDir,
 		prb:           NewPrioritizedBuffer(tlsBufferSize),
 		thompson:      NewThompsonSampler(tlsNumActions),
 		sticky:        StickyExplorer{K: 2},
@@ -79,6 +81,13 @@ func NewRLTLSAgent() *RLTLSAgent {
 	a.qNet = gnet.New([]int{tlsStateSize, tlsHidden1, tlsHidden2, tlsNumActions})
 	a.target = gnet.Clone(a.qNet)
 	a.adam = NewAdamState(a.qNet)
+	if layers, eps, steps, ok := loadRLMiniPolicy(modelDir, "rl_tls.json"); ok {
+		loaded := &gnet.GorgoniaNet{Layers: layers}
+		a.qNet = loaded
+		a.target = gnet.Clone(loaded)
+		a.epsilon = eps
+		atomic.StoreInt64(&a.stepCount, steps)
+	}
 	return a
 }
 
@@ -204,6 +213,9 @@ func (a *RLTLSAgent) trainStep() {
 	cnt := atomic.AddInt64(&a.trainCount, 1)
 	temp := a.temperature
 	eps := a.epsilon
+	if cnt%100 == 0 {
+		saveRLMiniPolicy(a.modelDir, "rl_tls.json", a.qNet.Layers, a.epsilon, atomic.LoadInt64(&a.stepCount))
+	}
 	a.mu.Unlock()
 	if cnt%10 == 0 {
 		tlsLog.Debug("train#%d eps=%.3f temp=%.3f steps=%d", cnt, eps, temp, atomic.LoadInt64(&a.stepCount))

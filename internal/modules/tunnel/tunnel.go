@@ -624,18 +624,18 @@ func New(cfg *Config) (*Manager, error) {
 		log.Info("RL SNI agent auto-fetch started: %s", cfg.SNIDomainsURL)
 	}
 
-	m.connAgent = mlpkg.NewRLConnAgent()
+	m.connAgent = mlpkg.NewRLConnAgent(cfg.SNIModelDir)
 	log.Info("RL Conn agent initialized")
 
 	m.transportAgent = mlpkg.NewRLTransportAgent(cfg.SNIModelDir, nil)
 	log.Info("RL Transport agent initialized (eps=%.2f)", m.transportAgent.Epsilon())
 
-	m.kaAgent = mlpkg.NewRLKeepaliveAgent()
-	m.boAgent = mlpkg.NewRLBackoffAgent()
-	m.jitterAgent = mlpkg.NewRLJitterAgent()
-	m.serverAgent = mlpkg.NewRLServerAgent()
-	m.chunkAgent = mlpkg.NewRLChunkAgent()
-	m.tlsAgent = mlpkg.NewRLTLSAgent()
+	m.kaAgent = mlpkg.NewRLKeepaliveAgent(cfg.SNIModelDir)
+	m.boAgent = mlpkg.NewRLBackoffAgent(cfg.SNIModelDir)
+	m.jitterAgent = mlpkg.NewRLJitterAgent(cfg.SNIModelDir)
+	m.serverAgent = mlpkg.NewRLServerAgent(cfg.SNIModelDir)
+	m.chunkAgent = mlpkg.NewRLChunkAgent(cfg.SNIModelDir)
+	m.tlsAgent = mlpkg.NewRLTLSAgent(cfg.SNIModelDir)
 	m.tspuDetector = mlpkg.NewTSPUDetector()
 	log.Info("RL agents initialized: keepalive, backoff, jitter, server, chunk, tls, tspu")
 

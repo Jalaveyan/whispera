@@ -176,23 +176,28 @@ check_os() {
 
 restore() {
     log_warn "Update failed or service unstable. Rolling back..."
-    
+
     if [[ -f "$BIN_PATH/whispera.bak" ]]; then
         log_info "Restoring server binary..."
         cp -f "$BIN_PATH/whispera.bak" "$BIN_PATH/whispera"
         chmod +x "$BIN_PATH/whispera"
     fi
-    
+
     if [[ -d "$DAT_PATH/panel.bak" ]]; then
         log_info "Restoring panel..."
         rm -rf "$DAT_PATH/panel"
         cp -r "$DAT_PATH/panel.bak" "$DAT_PATH/panel"
     fi
-    
-    systemctl restart whispera
+
+    systemctl daemon-reload
+    if systemctl restart whispera 2>/dev/null; then
+        log_success "Rollback complete. System restored to previous state."
+    else
+        log_warn "Rollback restart also failed. Trying start..."
+        systemctl start whispera 2>/dev/null || log_warn "Service could not be started. Run: systemctl start whispera"
+    fi
     systemctl restart whispera-panel 2>/dev/null || true
 
-    log_success "Rollback complete. System restored to previous state."
     exit 1
 }
 
@@ -1527,11 +1532,17 @@ ENVEOF
 
     setup_nginx_proxy
     log_info "Starting service..."
-    systemctl start whispera || true
+    systemctl daemon-reload
+    if ! systemctl start whispera; then
+        log_err "Whispera service failed to start after update!"
+        journalctl -u whispera -n 20 --no-pager 2>/dev/null || true
+        restore
+    fi
 
     sleep 3
     if ! systemctl is-active --quiet whispera; then
-        log_err "Whispera service failed to start!"
+        log_err "Whispera service started but is not active after 3s!"
+        journalctl -u whispera -n 20 --no-pager 2>/dev/null || true
         restore
     fi
 
