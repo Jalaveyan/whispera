@@ -30,6 +30,21 @@ func init() {
 	registry.GlobalFactoryRegistry.RegisterFactory(ModuleName, Factory)
 }
 
+// isNormalConnClose returns true for errors that indicate a normal connection
+// termination (broken pipe, reset by peer, closed network connection).
+// These are expected in a relay and should not pollute INFO logs.
+func isNormalConnClose(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "broken pipe") ||
+		strings.Contains(msg, "connection reset by peer") ||
+		strings.Contains(msg, "use of closed network connection") ||
+		strings.Contains(msg, "read/write on closed pipe") ||
+		strings.Contains(msg, "forcibly closed")
+}
+
 const (
 	ModuleName    = "relay.server"
 	ModuleVersion = "1.0.0"
@@ -630,7 +645,11 @@ func (s *Server) handleProxyStream(stream net.Conn) {
 	}
 	dur := time.Since(streamStart)
 	if firstErr != nil {
-		s.log.Info("stream done %s:%d up=%d down=%d in %s, %s err: %v", addr, port, up, down, dur, firstDir, firstErr)
+		if isNormalConnClose(firstErr) {
+			s.log.Debug("stream done %s:%d up=%d down=%d in %s, %s closed: %v", addr, port, up, down, dur, firstDir, firstErr)
+		} else {
+			s.log.Info("stream done %s:%d up=%d down=%d in %s, %s err: %v", addr, port, up, down, dur, firstDir, firstErr)
+		}
 	} else if dur > 5*time.Second || up+down > 0 {
 		s.log.Info("stream done %s:%d up=%d down=%d in %s", addr, port, up, down, dur)
 	}
