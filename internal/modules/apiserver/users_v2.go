@@ -115,7 +115,7 @@ func (s *Server) handleCreateUserV2(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.jsonOK(w, map[string]interface{}{
+	s.jsonCreated(w, map[string]interface{}{
 		"success": true,
 		"user":    user,
 	})
@@ -237,10 +237,7 @@ func (s *Server) handleDeleteUserV2(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.jsonOK(w, map[string]interface{}{
-		"success": true,
-		"message": "User deleted successfully",
-	})
+	s.jsonNoContent(w)
 }
 
 func (s *Server) handleLinkPublicKeyV2(w http.ResponseWriter, r *http.Request) {

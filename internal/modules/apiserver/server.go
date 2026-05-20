@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
+	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/hex"
@@ -418,6 +419,7 @@ func (s *Server) Start() error {
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 30 * time.Second,
 		IdleTimeout:  120 * time.Second,
+		TLSConfig:    &tls.Config{MinVersion: tls.VersionTLS12},
 	}
 
 	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", s.config.ListenAddr)
@@ -609,9 +611,10 @@ func (s *Server) corsMiddleware(next http.Handler) http.Handler {
 		}
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
+		w.Header().Set("Access-Control-Max-Age", "3600")
 
 		if r.Method == "OPTIONS" {
-			w.WriteHeader(http.StatusOK)
+			w.WriteHeader(http.StatusNoContent)
 			return
 		}
 
@@ -738,6 +741,7 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 		} else if qt := r.URL.Query().Get("token"); qt != "" {
 			token = qt
 		} else {
+			w.Header().Set("WWW-Authenticate", `Bearer realm="api"`)
 			http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
 			return
 		}
@@ -758,6 +762,7 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 			return
 		}
 
+		w.Header().Set("WWW-Authenticate", `Bearer realm="api", error="invalid_token", error_description="token expired or invalid"`)
 		http.Error(w, `{"error":"session expired"}`, http.StatusUnauthorized)
 	})
 }
@@ -897,6 +902,16 @@ type jsonResponse struct {
 func (s *Server) jsonOK(w http.ResponseWriter, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(data)
+}
+
+func (s *Server) jsonCreated(w http.ResponseWriter, data interface{}) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(data)
+}
+
+func (s *Server) jsonNoContent(w http.ResponseWriter) {
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) jsonError(w http.ResponseWriter, status int, message string) {
@@ -1870,8 +1885,7 @@ func (s *Server) handleAddUser(w http.ResponseWriter, r *http.Request) {
 	userStoreMu.Unlock()
 	go saveUsers()
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	s.jsonCreated(w, map[string]interface{}{
 		"success":    true,
 		"user":       user,
 		"privateKey": keys.PrivateKey,
@@ -1968,10 +1982,9 @@ func (s *Server) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 		go s.deleteUserInbounds(user)
 	}
 
-	s.jsonOK(w, map[string]interface{}{"success": true, "message": "User deleted"})
+	s.jsonNoContent(w)
 }
 
-// deleteUserInbounds удаляет все инбаунды, принадлежащие пользователю.
 func (s *Server) deleteUserInbounds(user *User) {
 	if s.registry == nil {
 		return
@@ -2761,7 +2774,7 @@ func (s *Server) handleAddRoutingRule(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.jsonOK(w, map[string]interface{}{
+	s.jsonCreated(w, map[string]interface{}{
 		"success": true,
 		"rule":    rule,
 	})
@@ -2874,7 +2887,7 @@ func (s *Server) handleAddOutbound(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.jsonOK(w, map[string]interface{}{
+	s.jsonCreated(w, map[string]interface{}{
 		"success":  true,
 		"outbound": req,
 	})

@@ -195,7 +195,7 @@ func (s *Server) handleAddInbound(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("[API] 🚀 Inbound %s started dynamically on port %d!", req.Tag, req.Port)
 
-	s.jsonOK(w, map[string]interface{}{
+	s.jsonCreated(w, map[string]interface{}{
 		"success": true,
 		"message": fmt.Sprintf("Inbound added and started on port %d (no restart needed!)", req.Port),
 		"inbound": req,

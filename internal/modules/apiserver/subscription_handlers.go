@@ -164,7 +164,7 @@ func (s *Server) handleAddSubscription(w http.ResponseWriter, r *http.Request) {
 	cp := *sub
 	cp.SubURL = buildSubURL(r, serverIP, s.getPublicURL(), token)
 
-	s.jsonOK(w, map[string]interface{}{
+	s.jsonCreated(w, map[string]interface{}{
 		"success":      true,
 		"subscription": &cp,
 	})
