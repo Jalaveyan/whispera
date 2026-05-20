@@ -88,6 +88,9 @@ func loadSubscriptions() {
 
 
 func (s *Server) handleGetSubscriptions(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
 	defer cancel()
 	serverIP, _ := network.DetectServerIP(ctx)
@@ -110,6 +113,9 @@ func (s *Server) handleGetSubscriptions(w http.ResponseWriter, r *http.Request) 
 }
 
 func (s *Server) handleAddSubscription(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
 	var req struct {
 		Name       string   `json:"name"`
 		Group      string   `json:"group"`
@@ -165,6 +171,9 @@ func (s *Server) handleAddSubscription(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleUpdateSubscription(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
 	var req struct {
 		ID         string   `json:"id"`
 		Name       string   `json:"name"`
@@ -208,6 +217,9 @@ func (s *Server) handleUpdateSubscription(w http.ResponseWriter, r *http.Request
 }
 
 func (s *Server) handleDeleteSubscription(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
 	var req struct {
 		ID string `json:"id"`
 	}

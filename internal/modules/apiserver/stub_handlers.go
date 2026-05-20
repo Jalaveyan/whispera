@@ -22,6 +22,9 @@ func (s *Server) handleAdblockRules(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAdblockAddRule(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
 	var req struct {
 		Domain string `json:"domain"`
 		Type   string `json:"type"`
@@ -35,6 +38,9 @@ func (s *Server) handleAdblockAddRule(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAdblockDeleteRule(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
 	var req struct {
 		ID string `json:"id"`
 	}
@@ -47,9 +53,15 @@ func (s *Server) handleAdblockDeleteRule(w http.ResponseWriter, r *http.Request)
 }
 
 func (s *Server) handleAdblockSettings(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
 	s.jsonOK(w, map[string]interface{}{"success": true})
 }
 
 func (s *Server) handleRenewCert(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
 	s.jsonOK(w, map[string]interface{}{"success": true, "message": "Certificate renewal initiated"})
 }

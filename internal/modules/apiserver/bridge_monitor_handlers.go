@@ -24,10 +24,16 @@ func isAllowedBinaryURL(rawURL string) bool {
 }
 
 func (s *Server) handleBridgeStats(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
 	s.jsonOK(w, s.bridgePool.BridgeStats())
 }
 
 func (s *Server) handleBridgeCheck(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
 	var req struct {
 		ID string `json:"id"`
 	}
@@ -50,6 +56,9 @@ func (s *Server) handleBridgeCheck(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleBridgeRollout(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
 	var req struct {
 		Version   string `json:"version"`
 		BinaryURL string `json:"binary_url"`

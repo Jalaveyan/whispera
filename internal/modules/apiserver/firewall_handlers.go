@@ -117,6 +117,9 @@ func getFirewallStatus() (*FirewallStatus, error) {
 }
 
 func (s *Server) handleFirewallStatus(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
 	status, err := getFirewallStatus()
 	if err != nil {
 		s.jsonOK(w, map[string]interface{}{

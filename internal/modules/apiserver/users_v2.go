@@ -28,6 +28,9 @@ func (s *Server) registerUserV2Routes() {
 }
 
 func (s *Server) handleListUsersV2(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
 	database := db.Global()
 	if database == nil {
 		s.jsonError(w, http.StatusServiceUnavailable, "Database not configured")
@@ -53,6 +56,9 @@ func (s *Server) handleListUsersV2(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleCreateUserV2(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
 	database := db.Global()
 	if database == nil {
 		s.jsonError(w, http.StatusServiceUnavailable, "Database not configured")
@@ -116,6 +122,9 @@ func (s *Server) handleCreateUserV2(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleGetUserV2(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
 	database := db.Global()
 	if database == nil {
 		s.jsonError(w, http.StatusServiceUnavailable, "Database not configured")
@@ -138,6 +147,9 @@ func (s *Server) handleGetUserV2(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleUpdateUserV2(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
 	database := db.Global()
 	if database == nil {
 		s.jsonError(w, http.StatusServiceUnavailable, "Database not configured")
@@ -192,6 +204,9 @@ func (s *Server) handleUpdateUserV2(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDeleteUserV2(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
 	database := db.Global()
 	if database == nil {
 		s.jsonError(w, http.StatusServiceUnavailable, "Database not configured")
@@ -229,6 +244,9 @@ func (s *Server) handleDeleteUserV2(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleLinkPublicKeyV2(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
 	database := db.Global()
 	if database == nil {
 		s.jsonError(w, http.StatusServiceUnavailable, "Database not configured")
@@ -273,6 +291,9 @@ func (s *Server) handleLinkPublicKeyV2(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleUserSessionsV2(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
 	database := db.Global()
 	if database == nil {
 		s.jsonError(w, http.StatusServiceUnavailable, "Database not configured")
@@ -304,6 +325,9 @@ func (s *Server) handleUserSessionsV2(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleUserStatsV2(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
 	database := db.Global()
 	if database == nil {
 		s.jsonError(w, http.StatusServiceUnavailable, "Database not configured")

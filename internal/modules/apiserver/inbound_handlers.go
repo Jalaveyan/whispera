@@ -46,6 +46,9 @@ func (s *Server) handleGetInbounds(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAddInbound(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
 	var req config.InboundConfig
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		log.Printf("[API] Failed to decode inbound request: %v", err)
@@ -238,6 +241,9 @@ func startDynamicInbound(inbound config.InboundConfig) error {
 	return dynamic.Global.StartInbound(inbound)
 }
 func (s *Server) handleUpdateInbound(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
 	var req config.InboundConfig
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		s.jsonError(w, http.StatusBadRequest, "Invalid request body")
@@ -274,6 +280,9 @@ func (s *Server) handleUpdateInbound(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDeleteInbound(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
 	var req struct {
 		Tag string `json:"tag"`
 	}

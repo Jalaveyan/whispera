@@ -42,6 +42,9 @@ func (s *Server) handleGetFingerprints(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleSetFingerprint(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
 	var req struct {
 		Fingerprint string `json:"fingerprint"`
 	}

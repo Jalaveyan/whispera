@@ -1169,6 +1169,9 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleReloadConfig(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
 	if s.registry == nil {
 		s.jsonError(w, http.StatusInternalServerError, "Registry not available")
 		return
@@ -1184,6 +1187,9 @@ func (s *Server) handleReloadConfig(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
 	if s.registry == nil {
 		s.jsonError(w, http.StatusInternalServerError, "Registry not available")
 		return
@@ -1289,6 +1295,9 @@ func (s *Server) handleGetSessions(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
 	s.jsonOK(w, map[string]string{"message": "Session deleted"})
 }
 
@@ -1401,6 +1410,9 @@ func (s *Server) handleDHCPLeases(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDHCPRelease(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
 	if globalDHCPManager == nil {
 		s.jsonError(w, http.StatusServiceUnavailable, "DHCP not initialized")
 		return
@@ -1781,6 +1793,9 @@ func loadUsers() {
 }
 
 func (s *Server) handleGetUsers(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
 	userStoreMu.RLock()
 	defer userStoreMu.RUnlock()
 
@@ -1801,6 +1816,9 @@ func (s *Server) handleGetUsers(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAddUser(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
 	var req struct {
 		Username          string `json:"username"`
 		TrafficLimit      int64  `json:"trafficLimit"`
@@ -1862,6 +1880,9 @@ func (s *Server) handleAddUser(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
 	idStr := r.PathValue("id")
 	if idStr == "" {
 		s.jsonError(w, http.StatusBadRequest, "User ID required")
@@ -1925,6 +1946,9 @@ func (s *Server) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
 	var req struct {
 		ID int `json:"id"`
 	}
@@ -2063,6 +2087,9 @@ func generateX25519Keys() (*KeyPair, error) {
 }
 
 func (s *Server) handleGenerateKeys(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
 	keys, err := generateX25519Keys()
 	if err != nil {
 		s.jsonError(w, http.StatusInternalServerError, "Failed to generate keys")
@@ -2086,6 +2113,9 @@ func randomRussianSNI() string {
 }
 
 func (s *Server) handleGenerateConnectionKey(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
 	var req struct {
 		Username        string                 `json:"username"`
 		Name            string                 `json:"name"`
@@ -2337,6 +2367,9 @@ func generateKeyID() string {
 }
 
 func (s *Server) handleRevokeKey(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
 	var req struct {
 		KeyID  string `json:"key_id"`
 		Reason string `json:"reason"`
@@ -2357,6 +2390,9 @@ func (s *Server) handleRevokeKey(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleListRevokedKeys(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
 	s.revokedKeysMu.RLock()
 	keys := make([]map[string]interface{}, 0, len(s.revokedKeys))
 	for kid, revokedAt := range s.revokedKeys {
@@ -2413,6 +2449,9 @@ func (s *Server) loadRevokedKeys() {
 }
 
 func (s *Server) handleGetSessionsAPI(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
 	allUserStats := stats.GetAllUserStats()
 	cutoff := time.Now().Add(-5 * time.Minute)
 
@@ -2440,6 +2479,9 @@ func (s *Server) handleGetSessionsAPI(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleKillSessionAPI(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
 	userID := r.PathValue("id")
 	if userID == "" {
 		s.jsonError(w, http.StatusBadRequest, "session id required")
@@ -2550,6 +2592,9 @@ func (s *Server) handleTrafficStatsAPI(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleGetUserTrafficAPI(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
 	userID := r.PathValue("id")
 	if userID == "" {
 		s.jsonError(w, http.StatusBadRequest, "User ID required")
@@ -2657,6 +2702,9 @@ func (s *Server) handleGetRoutingRules(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAddRoutingRule(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
 	router, err := s.getRouter()
 	if err != nil {
 		s.jsonError(w, http.StatusServiceUnavailable, err.Error())
@@ -2720,6 +2768,9 @@ func (s *Server) handleAddRoutingRule(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDeleteRoutingRule(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
 	router, err := s.getRouter()
 	if err != nil {
 		s.jsonError(w, http.StatusServiceUnavailable, err.Error())
@@ -2780,6 +2831,9 @@ func (s *Server) handleGetOutbounds(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAddOutbound(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
 	module, err := s.getConfigProvider()
 	if err != nil {
 		s.jsonError(w, http.StatusServiceUnavailable, err.Error())
@@ -2827,6 +2881,9 @@ func (s *Server) handleAddOutbound(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDeleteOutbound(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
 	module, err := s.getConfigProvider()
 	if err != nil {
 		s.jsonError(w, http.StatusServiceUnavailable, err.Error())
@@ -2871,6 +2928,9 @@ func (s *Server) handleDeleteOutbound(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleSystemInfoAPI(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
@@ -2979,6 +3039,9 @@ func (s *Server) handleSystemInfoAPI(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAdminUpdate(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
 	var req struct {
 		Username string `json:"username"`
 		Password string `json:"password"`
@@ -3068,6 +3131,9 @@ func (s *Server) handleGetEvents(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleGetLogsAPI(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
 	limitStr := r.URL.Query().Get("limit")
 	limit := 200
 	if limitStr != "" {
@@ -3276,6 +3342,9 @@ func (s *Server) handleMLConfig(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleMLTokenRotate(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
 	mlCfg := config.MLConfig{}
 	if s.registry != nil {
 		if mod, ok := s.registry.Get("config.provider"); ok {
