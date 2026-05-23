@@ -477,9 +477,8 @@ func runRESTUpload(ctx context.Context, client *http.Client, serverAddr, sni, or
 		req.Host = sni
 		req.Header.Set("Content-Type", contentType)
 		req.Header.Set(headerToken, "Bearer "+token)
-		req.Header.Set(headerSession, sessionHdr)
-		req.Header.Set("X-Transport", "rest")
 		applyBrowserHeaders(req, origin)
+		req.AddCookie(&http.Cookie{Name: sessionCookie, Value: sessionHdr})
 
 		resp, err := client.Do(req)
 		if err != nil {
@@ -623,9 +622,8 @@ func RESTClient(ctx context.Context, cfg *Config) (net.Conn, error) {
 		}
 		req.Host = sni
 		req.Header.Set(headerToken, "Bearer "+token)
-		req.Header.Set(headerSession, sessionHdr)
-		req.Header.Set("X-Transport", "hls")
 		applyBrowserHeaders(req, origin)
+		req.AddCookie(&http.Cookie{Name: sessionCookie, Value: sessionHdr})
 		return client.Do(req)
 	}
 
@@ -721,7 +719,7 @@ func RESTClient(ctx context.Context, cfg *Config) (net.Conn, error) {
 // handleRESTDownload handles GET requests that establish the download channel.
 func handleRESTDownload(w http.ResponseWriter, r *http.Request, cfg *Config) {
 	tokenHdr := r.Header.Get(headerToken)
-	sessionHdr := r.Header.Get(headerSession)
+	sessCookie, cookieErr := r.Cookie(sessionCookie)
 
 	if len(tokenHdr) < 8 || tokenHdr[:7] != "Bearer " {
 		serveDecoy(w, r, cfg)
@@ -729,7 +727,11 @@ func handleRESTDownload(w http.ResponseWriter, r *http.Request, cfg *Config) {
 	}
 	token := tokenHdr[7:]
 
-	sessionID, _, err := decodeSession(sessionHdr)
+	if cookieErr != nil {
+		serveDecoy(w, r, cfg)
+		return
+	}
+	sessionID, _, err := decodeSession(sessCookie.Value)
 	if err != nil {
 		serveDecoy(w, r, cfg)
 		return
@@ -843,7 +845,7 @@ func handleRESTDownload(w http.ResponseWriter, r *http.Request, cfg *Config) {
 // sequential segment handlers fill the FrameConn download stream.
 func handleHLSPlaylist(w http.ResponseWriter, r *http.Request, cfg *Config) {
 	tokenHdr := r.Header.Get(headerToken)
-	sessionHdr := r.Header.Get(headerSession)
+	sessCookie, cookieErr := r.Cookie(sessionCookie)
 
 	if len(tokenHdr) < 8 || tokenHdr[:7] != "Bearer " {
 		serveDecoy(w, r, cfg)
@@ -851,7 +853,11 @@ func handleHLSPlaylist(w http.ResponseWriter, r *http.Request, cfg *Config) {
 	}
 	token := tokenHdr[7:]
 
-	sessionID, _, err := decodeSession(sessionHdr)
+	if cookieErr != nil {
+		serveDecoy(w, r, cfg)
+		return
+	}
+	sessionID, _, err := decodeSession(sessCookie.Value)
 	if err != nil {
 		serveDecoy(w, r, cfg)
 		return
@@ -1012,9 +1018,13 @@ func handleHLSSegment(w http.ResponseWriter, r *http.Request, cfg *Config) {
 // Authentication is implicit: the 16-byte random sessionID is a capability token —
 // only a client that received a valid GET 200 knows it. No resolveSecret needed.
 func handleRESTUpload(w http.ResponseWriter, r *http.Request, cfg *Config) {
-	sessionHdr := r.Header.Get(headerSession)
+	sessCookie, err := r.Cookie(sessionCookie)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
 
-	sessionID, _, err := decodeSession(sessionHdr)
+	sessionID, _, err := decodeSession(sessCookie.Value)
 	if err != nil {
 		w.WriteHeader(http.StatusBadRequest)
 		return
@@ -1068,7 +1078,7 @@ func handleRESTUpload(w http.ResponseWriter, r *http.Request, cfg *Config) {
 func handleRESTOptions(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
-	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Session-Id, X-Transport")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 	w.Header().Set("Access-Control-Max-Age", "86400")
 	w.WriteHeader(http.StatusNoContent)
 }

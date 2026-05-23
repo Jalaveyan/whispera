@@ -48,6 +48,4 @@ func applyBrowserHeaders(req *http.Request, origin string) {
 
 	req.Header.Set("Origin", origin)
 	req.Header.Set("Referer", origin+"/")
-
-	req.Header.Set("X-Requested-With", "XMLHttpRequest")
 }

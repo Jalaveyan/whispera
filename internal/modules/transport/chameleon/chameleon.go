@@ -45,8 +45,8 @@ var chromeHelloPool = []utls.ClientHelloID{
 }
 
 const (
-	headerSession       = "X-Session-Id"
-	headerToken         = "Authorization"
+	sessionCookie = "_s"
+	headerToken   = "Authorization"
 	contentType         = "application/octet-stream"
 	contentTypeDownload = "video/mp4"
 )
@@ -181,8 +181,8 @@ func Client(ctx context.Context, cfg *Config) (net.Conn, error) {
 	req.Host = sni
 	req.Header.Set("Content-Type", contentType)
 	req.Header.Set(headerToken, "Bearer "+token)
-	req.Header.Set(headerSession, encodeSession(sessionID, anchor))
 	applyBrowserHeaders(req, origin)
+	req.AddCookie(&http.Cookie{Name: sessionCookie, Value: encodeSession(sessionID, anchor)})
 
 	local := staticAddr{"tcp", cfg.ServerAddr}
 	remote := staticAddr{"tcp", cfg.ServerAddr}
@@ -319,9 +319,10 @@ func (l *noDelayListener) Accept() (net.Conn, error) {
 }
 
 func handleRequest(w http.ResponseWriter, r *http.Request, cfg *Config) {
-	transport := r.Header.Get("X-Transport")
-	isREST := transport == "rest"
-	isHLS := transport == "hls"
+	hasSess := func() bool {
+		_, err := r.Cookie(sessionCookie)
+		return err == nil
+	}
 
 	switch r.Method {
 	case http.MethodOptions:
@@ -331,8 +332,8 @@ func handleRequest(w http.ResponseWriter, r *http.Request, cfg *Config) {
 		handleRESTDelete(w, r)
 		return
 	case http.MethodGet:
-		if isHLS {
-			path := r.URL.Path
+		path := r.URL.Path
+		if strings.HasPrefix(path, "/video/") {
 			if strings.HasSuffix(path, ".m3u8") {
 				handleHLSPlaylist(w, r, cfg)
 			} else {
@@ -340,87 +341,24 @@ func handleRequest(w http.ResponseWriter, r *http.Request, cfg *Config) {
 			}
 			return
 		}
-		if isREST {
+		if hasSess() {
 			handleRESTDownload(w, r, cfg)
 			return
 		}
 		serveDecoy(w, r, cfg)
 		return
-	case http.MethodPut, http.MethodPatch:
-		if isREST || isHLS {
+	case http.MethodPost, http.MethodPut, http.MethodPatch:
+		if hasSess() {
 			handleRESTUpload(w, r, cfg)
 			return
 		}
 		serveDecoy(w, r, cfg)
 		return
-	case http.MethodPost:
-		if isREST || isHLS {
-			handleRESTUpload(w, r, cfg)
-			return
-		}
-		// Legacy POST tunnel (old clients without X-Transport: rest).
 	default:
 		serveDecoy(w, r, cfg)
 		return
 	}
 
-	log.Printf("chameleon: POST %s from %s", r.URL.Path, r.RemoteAddr)
-
-	tokenHdr := r.Header.Get(headerToken)
-	sessionHdr := r.Header.Get(headerSession)
-
-	if len(tokenHdr) < 8 || tokenHdr[:7] != "Bearer " {
-		serveDecoy(w, r, cfg)
-		return
-	}
-	token := tokenHdr[7:]
-
-	sessionID, _, err := decodeSession(sessionHdr)
-	if err != nil {
-		serveDecoy(w, r, cfg)
-		return
-	}
-
-	secret, userID := resolveSecret(cfg, token, sessionID)
-	if secret == nil {
-		log.Printf("chameleon: auth failed from %s (token len=%d, session len=%d)", r.RemoteAddr, len(token), len(sessionHdr))
-		serveDecoy(w, r, cfg)
-		return
-	}
-
-	keys := DeriveKeys(secret, false)
-	log.Printf("chameleon: authenticated user=%s from %s", userID, r.RemoteAddr)
-
-	w.Header().Set("Content-Type", contentType)
-	w.Header().Set("Cache-Control", "no-store")
-	w.Header().Set("X-Content-Type-Options", "nosniff")
-	w.WriteHeader(http.StatusOK)
-
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		log.Printf("chameleon: ResponseWriter not a Flusher")
-		return
-	}
-
-	local := staticAddr{"tcp", r.Host}
-	remote := staticAddr{"tcp", r.RemoteAddr}
-
-	done := make(chan struct{})
-	h2s := newH2ServerConn(r.Body, w, flusher.Flush, local, remote, func() { close(done) })
-
-	fc, err := NewFrameConn(h2s, keys.DataSend, keys.DataRecv)
-	if err != nil {
-		log.Printf("chameleon: frame conn: %v", err)
-		return
-	}
-
-	shaped := newShapedConn(fc)
-
-	if cfg.OnConn != nil {
-		cfg.OnConn(shaped, userID)
-	}
-
-	<-done
 }
 
 func DeriveSecret(psk []byte) []byte {
