@@ -319,9 +319,12 @@ func (l *noDelayListener) Accept() (net.Conn, error) {
 }
 
 func handleRequest(w http.ResponseWriter, r *http.Request, cfg *Config) {
-	hasSess := func() bool {
-		_, err := r.Cookie(sessionCookie)
-		return err == nil
+	_, cookieErr := r.Cookie(sessionCookie)
+	hasSess := func() bool { return cookieErr == nil }
+
+	isSegGet := r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/video/") && !strings.HasSuffix(r.URL.Path, ".m3u8")
+	if !isSegGet {
+		stdlog.Printf("chameleon: req %s %s from %s cookie=%v", r.Method, r.URL.Path, r.RemoteAddr, cookieErr == nil)
 	}
 
 	switch r.Method {
