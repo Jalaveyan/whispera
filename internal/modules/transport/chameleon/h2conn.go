@@ -73,21 +73,19 @@ type pipelinedConn struct {
 	once   sync.Once
 	sig    sync.Once
 
-	readConn net.Conn
-	readPeer net.Conn
+	bodyReady chan struct{}
+	body      io.ReadCloser
 
 	localAddr  net.Addr
 	remoteAddr net.Addr
 }
 
 func newPipelinedConn(pr *io.PipeReader, bpw *bufferedPipeWriter, cancel func(), local, remote net.Addr) *pipelinedConn {
-	readConn, readPeer := net.Pipe()
 	return &pipelinedConn{
 		pr:         pr,
 		bpw:        bpw,
 		cancel:     cancel,
-		readConn:   readConn,
-		readPeer:   readPeer,
+		bodyReady:  make(chan struct{}),
 		localAddr:  local,
 		remoteAddr: remote,
 	}
@@ -97,29 +95,31 @@ func (c *pipelinedConn) deliver(body io.ReadCloser) bool {
 	ran := false
 	c.sig.Do(func() {
 		ran = true
-		if body == nil {
-			c.readPeer.Close()
-			return
-		}
-		go func() {
-			defer c.readPeer.Close()
-			defer body.Close()
-			io.CopyBuffer(c.readPeer, body, make([]byte, 256<<10))
-		}()
+		c.body = body
+		close(c.bodyReady)
 	})
 	return ran
 }
 
 func (c *pipelinedConn) Write(b []byte) (int, error) { return c.bpw.Write(b) }
-func (c *pipelinedConn) Read(b []byte) (int, error)  { return c.readConn.Read(b) }
+
+func (c *pipelinedConn) Read(b []byte) (int, error) {
+	<-c.bodyReady
+	if c.body == nil {
+		return 0, io.EOF
+	}
+	return c.body.Read(b)
+}
 
 func (c *pipelinedConn) Close() error {
 	c.once.Do(func() {
 		c.bpw.Close()
 		c.pr.Close()
-		c.readConn.Close()
-		c.readPeer.Close()
 		c.cancel()
+		c.sig.Do(func() { close(c.bodyReady) })
+		if c.body != nil {
+			c.body.Close()
+		}
 	})
 	return nil
 }
@@ -127,8 +127,8 @@ func (c *pipelinedConn) Close() error {
 func (c *pipelinedConn) LocalAddr() net.Addr  { return c.localAddr }
 func (c *pipelinedConn) RemoteAddr() net.Addr { return c.remoteAddr }
 
-func (c *pipelinedConn) SetDeadline(t time.Time) error      { return c.readConn.SetReadDeadline(t) }
-func (c *pipelinedConn) SetReadDeadline(t time.Time) error  { return c.readConn.SetReadDeadline(t) }
+func (c *pipelinedConn) SetDeadline(t time.Time) error      { return nil }
+func (c *pipelinedConn) SetReadDeadline(t time.Time) error  { return nil }
 func (c *pipelinedConn) SetWriteDeadline(t time.Time) error { return nil }
 
 type staticAddr struct{ network, addr string }

@@ -377,11 +377,9 @@ func (c *restServerConn) SetWriteDeadline(t time.Time) error { return nil }
 // ── Client-side net.Conn ─────────────────────────────────────────────────────
 
 type restClientConn struct {
-	// Read side: GET response body piped here
-	readConn net.Conn
-	readPeer net.Conn
+	bodyCh  chan io.ReadCloser
+	curBody io.ReadCloser
 
-	// Write side: queued data sent as POST/PUT/PATCH chunks
 	uploadCh chan []byte
 
 	ctx    context.Context
@@ -393,10 +391,8 @@ type restClientConn struct {
 }
 
 func newRestClientConn(ctx context.Context, cancel context.CancelFunc, local, remote net.Addr) *restClientConn {
-	rc, rp := net.Pipe()
 	return &restClientConn{
-		readConn:   rc,
-		readPeer:   rp,
+		bodyCh:     make(chan io.ReadCloser, 4),
 		uploadCh:   make(chan []byte, 512),
 		ctx:        ctx,
 		cancel:     cancel,
@@ -405,10 +401,32 @@ func newRestClientConn(ctx context.Context, cancel context.CancelFunc, local, re
 	}
 }
 
-func (c *restClientConn) Read(b []byte) (int, error) { return c.readConn.Read(b) }
+func (c *restClientConn) Read(b []byte) (int, error) {
+	for {
+		if c.curBody != nil {
+			n, err := c.curBody.Read(b)
+			if n > 0 {
+				return n, nil
+			}
+			c.curBody.Close()
+			c.curBody = nil
+			if err == io.EOF {
+				continue
+			}
+			return 0, err
+		}
+		select {
+		case body, ok := <-c.bodyCh:
+			if !ok || body == nil {
+				return 0, io.EOF
+			}
+			c.curBody = body
+		case <-c.ctx.Done():
+			return 0, io.EOF
+		}
+	}
+}
 
-// Write enqueues b for upload. Times out after 5s so a stalled network
-// cannot block yamux keepalives indefinitely.
 func (c *restClientConn) Write(b []byte) (int, error) {
 	bufp := uploadBufPool.Get().(*[]byte)
 	cp := append((*bufp)[:0], b...)
@@ -424,17 +442,22 @@ func (c *restClientConn) Write(b []byte) (int, error) {
 
 func (c *restClientConn) Close() error {
 	c.once.Do(func() {
-		c.readConn.Close()
-		c.readPeer.Close()
 		c.cancel()
+		go func() {
+			for body := range c.bodyCh {
+				if body != nil {
+					body.Close()
+				}
+			}
+		}()
 	})
 	return nil
 }
 
 func (c *restClientConn) LocalAddr() net.Addr               { return c.localAddr }
 func (c *restClientConn) RemoteAddr() net.Addr              { return c.remoteAddr }
-func (c *restClientConn) SetDeadline(t time.Time) error     { return c.readConn.SetDeadline(t) }
-func (c *restClientConn) SetReadDeadline(t time.Time) error  { return c.readConn.SetReadDeadline(t) }
+func (c *restClientConn) SetDeadline(t time.Time) error     { return nil }
+func (c *restClientConn) SetReadDeadline(t time.Time) error  { return nil }
 func (c *restClientConn) SetWriteDeadline(t time.Time) error { return nil }
 
 
@@ -688,20 +711,25 @@ func RESTClient(ctx context.Context, cfg *Config) (net.Conn, error) {
 	}
 
 	go func() {
-		defer conn.readPeer.Close()
+		defer close(conn.bodyCh)
 		nextCh := fetchSeg(0)
 		for segIdx := uint64(0); ; segIdx++ {
-			res := <-nextCh
+			var res segResult
+			select {
+			case res = <-nextCh:
+			case <-tunnelCtx.Done():
+				return
+			}
 			if res.err != nil {
 				return
 			}
-			// Pre-fetch next segment while reading current one.
 			nextCh = fetchSeg(segIdx + 1)
-			if _, err := io.Copy(conn.readPeer, res.resp.Body); err != nil {
+			select {
+			case conn.bodyCh <- res.resp.Body:
+			case <-tunnelCtx.Done():
 				res.resp.Body.Close()
 				return
 			}
-			res.resp.Body.Close()
 		}
 	}()
 
