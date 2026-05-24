@@ -3,6 +3,7 @@ package chameleon
 import (
 	"io"
 	"net"
+	"net/http"
 	"sync"
 	"time"
 )
@@ -134,3 +135,30 @@ type staticAddr struct{ network, addr string }
 
 func (a staticAddr) Network() string { return a.network }
 func (a staticAddr) String() string  { return a.addr }
+
+type httpStreamConn struct {
+	r      io.Reader
+	w      http.ResponseWriter
+	flush  func()
+	local  net.Addr
+	remote net.Addr
+}
+
+func newHTTPStreamConn(r io.Reader, w http.ResponseWriter, flush func(), local, remote net.Addr) *httpStreamConn {
+	return &httpStreamConn{r: r, w: w, flush: flush, local: local, remote: remote}
+}
+
+func (c *httpStreamConn) Read(b []byte) (int, error)  { return c.r.Read(b) }
+func (c *httpStreamConn) Write(b []byte) (int, error) {
+	n, err := c.w.Write(b)
+	if err == nil {
+		c.flush()
+	}
+	return n, err
+}
+func (c *httpStreamConn) Close() error                       { return nil }
+func (c *httpStreamConn) LocalAddr() net.Addr                { return c.local }
+func (c *httpStreamConn) RemoteAddr() net.Addr               { return c.remote }
+func (c *httpStreamConn) SetDeadline(t time.Time) error      { return nil }
+func (c *httpStreamConn) SetReadDeadline(t time.Time) error  { return nil }
+func (c *httpStreamConn) SetWriteDeadline(t time.Time) error { return nil }

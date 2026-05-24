@@ -375,7 +375,11 @@ func handleRequest(w http.ResponseWriter, r *http.Request, cfg *Config) {
 		return
 	case http.MethodPost, http.MethodPut, http.MethodPatch:
 		if hasSess() {
-			handleRESTUpload(w, r, cfg)
+			if r.ContentLength < 0 {
+				handleClientStream(w, r, cfg)
+			} else {
+				handleRESTUpload(w, r, cfg)
+			}
 			return
 		}
 		serveDecoy(w, r, cfg)
@@ -383,6 +387,50 @@ func handleRequest(w http.ResponseWriter, r *http.Request, cfg *Config) {
 	default:
 		serveDecoy(w, r, cfg)
 		return
+	}
+}
+
+func handleClientStream(w http.ResponseWriter, r *http.Request, cfg *Config) {
+	tokenHdr := r.Header.Get(headerToken)
+	if len(tokenHdr) < 8 || tokenHdr[:7] != "Bearer " {
+		serveDecoy(w, r, cfg)
+		return
+	}
+	token := tokenHdr[7:]
+
+	sessCookie, err := r.Cookie(sessionCookie)
+	if err != nil {
+		serveDecoy(w, r, cfg)
+		return
+	}
+	sessionID, _, err := decodeSession(sessCookie.Value)
+	if err != nil {
+		serveDecoy(w, r, cfg)
+		return
+	}
+
+	secret, userID := resolveSecret(cfg, token, sessionID)
+	if secret == nil {
+		serveDecoy(w, r, cfg)
+		return
+	}
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+	flusher.Flush()
+
+	local := staticAddr{"tcp", r.Host}
+	remote := staticAddr{"tcp", r.RemoteAddr}
+	conn := newHTTPStreamConn(r.Body, w, flusher.Flush, local, remote)
+	fc := NewFrameConn(conn)
+
+	if cfg.OnConn != nil {
+		cfg.OnConn(fc, userID)
 	}
 }
 
