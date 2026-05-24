@@ -322,10 +322,7 @@ func handleRequest(w http.ResponseWriter, r *http.Request, cfg *Config) {
 	_, cookieErr := r.Cookie(sessionCookie)
 	hasSess := func() bool { return cookieErr == nil }
 
-	isSegGet := r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/video/") && !strings.HasSuffix(r.URL.Path, ".m3u8")
-	if !isSegGet {
-		stdlog.Printf("chameleon: req %s %s from %s cookie=%v", r.Method, r.URL.Path, r.RemoteAddr, cookieErr == nil)
-	}
+	stdlog.Printf("chameleon: req %s %s from %s cookie=%v", r.Method, r.URL.Path, r.RemoteAddr, cookieErr == nil)
 
 	switch r.Method {
 	case http.MethodOptions:
