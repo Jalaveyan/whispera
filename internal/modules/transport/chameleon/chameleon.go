@@ -424,7 +424,6 @@ func handleClientStream(w http.ResponseWriter, r *http.Request, cfg *Config) {
 	w.Header().Set("X-Accel-Buffering", "no")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.WriteHeader(http.StatusOK)
-	w.Write(mp4FtypAtom[:])
 	flusher.Flush()
 
 	local := staticAddr{"tcp", r.Host}
