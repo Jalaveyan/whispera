@@ -246,6 +246,7 @@ type Config struct {
 	ChameleonAddr     string
 	ChameleonSNI      string
 	ChameleonSecret   []byte
+	ChameleonMux      int
 
 	EnableChatFSM        bool
 	ChatFSMCoverInterval time.Duration
@@ -810,7 +811,10 @@ func (m *Manager) connectInternal(ctx context.Context, isRotation bool) error {
 
 	targetPoolSize := 2
 	if m.config.EnableChameleon {
-		targetPoolSize = 1
+		targetPoolSize = m.config.ChameleonMux
+		if targetPoolSize < 1 {
+			targetPoolSize = 4
+		}
 	}
 	var connectedPool []*managedConn
 	var poolMu sync.Mutex
@@ -833,8 +837,6 @@ func (m *Manager) connectInternal(ctx context.Context, isRotation bool) error {
 
 		poolMu.Lock()
 		isFirst := len(connectedPool) == 0
-		if isFirst && m.handshake != nil {
-		}
 		connectedPool = append(connectedPool, mc)
 		poolMu.Unlock()
 
@@ -846,6 +848,24 @@ func (m *Manager) connectInternal(ctx context.Context, isRotation bool) error {
 				log.Info("[%s] First connection ready! (Latency: %v)", op, time.Since(start))
 			default:
 			}
+			return
+		}
+
+		m.connMu.Lock()
+		inPool := false
+		for _, c := range m.activePool {
+			if c == mc {
+				inPool = true
+				break
+			}
+		}
+		if !inPool {
+			m.activePool = append(m.activePool, mc)
+		}
+		size := len(m.activePool)
+		m.connMu.Unlock()
+		if !inPool {
+			log.Info("[%s] Late conn %d joined pool (size=%d)", op, idx, size)
 		}
 	}
 
