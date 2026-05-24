@@ -19,7 +19,6 @@ import (
 	"crypto/tls"
 
 	utls "github.com/refraction-networking/utls"
-	"golang.org/x/net/http2"
 )
 
 var uploadBufPool = sync.Pool{New: func() any { b := make([]byte, 0, 4096); return &b }}
@@ -598,38 +597,31 @@ func RESTClient(ctx context.Context, cfg *Config) (net.Conn, error) {
 
 	helloID := chromeHelloPool[mrand.Intn(len(chromeHelloPool))]
 
-	h2t := &http2.Transport{
-		MaxReadFrameSize:          1 << 20,
-		ReadIdleTimeout:           0,
-		MaxDecoderHeaderTableSize: 65536,
-		MaxHeaderListSize:         262144,
-		DisableCompression:        true,
-		DialTLSContext: func(dialCtx context.Context, network, addr string, _ *tls.Config) (net.Conn, error) {
-			d := &net.Dialer{Timeout: 10 * time.Second}
-			rawConn, err := d.DialContext(dialCtx, network, addr)
-			if err != nil {
-				return nil, err
-			}
-			if tcpConn, ok := rawConn.(*net.TCPConn); ok {
-				tcpConn.SetKeepAlive(true)
-				tcpConn.SetKeepAlivePeriod(time.Duration(30+mrand.Intn(61)) * time.Second)
-				tcpConn.SetNoDelay(true)
-			}
-			uCfg := &utls.Config{
-				ServerName:         sni,
-				InsecureSkipVerify: true,
-			}
-			if sc, ok := cfg.SessionCache.(utls.ClientSessionCache); ok {
-				uCfg.ClientSessionCache = sc
-			}
-			uConn := utls.UClient(rawConn, uCfg, helloID)
-			if err := uConn.HandshakeContext(dialCtx); err != nil {
-				rawConn.Close()
-				return nil, fmt.Errorf("chameleon: utls handshake: %w", err)
-			}
-			return uConn, nil
-		},
-	}
+	h2t := newH2Transport(func(dialCtx context.Context, network, addr string, _ *tls.Config) (net.Conn, error) {
+		d := &net.Dialer{Timeout: 10 * time.Second}
+		rawConn, err := d.DialContext(dialCtx, network, addr)
+		if err != nil {
+			return nil, err
+		}
+		if tcpConn, ok := rawConn.(*net.TCPConn); ok {
+			tcpConn.SetKeepAlive(true)
+			tcpConn.SetKeepAlivePeriod(time.Duration(30+mrand.Intn(61)) * time.Second)
+			tcpConn.SetNoDelay(true)
+		}
+		uCfg := &utls.Config{
+			ServerName:         sni,
+			InsecureSkipVerify: true,
+		}
+		if sc, ok := cfg.SessionCache.(utls.ClientSessionCache); ok {
+			uCfg.ClientSessionCache = sc
+		}
+		uConn := utls.UClient(rawConn, uCfg, helloID)
+		if err := uConn.HandshakeContext(dialCtx); err != nil {
+			rawConn.Close()
+			return nil, fmt.Errorf("chameleon: utls handshake: %w", err)
+		}
+		return uConn, nil
+	})
 
 	tunnelCtx, tunnelCancel := context.WithCancel(context.Background())
 

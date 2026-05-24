@@ -49,7 +49,31 @@ const (
 	headerToken   = "Authorization"
 	contentType         = "application/octet-stream"
 	contentTypeDownload = "video/mp4"
+
+	h2StreamWindow = 16 << 20
+	h2ConnWindow   = 64 << 20
 )
+
+func newH2Transport(dial func(context.Context, string, string, *tls.Config) (net.Conn, error)) *http2.Transport {
+	stub := &http.Transport{
+		HTTP2: &http.HTTP2Config{
+			MaxReceiveBufferPerStream:     h2StreamWindow,
+			MaxReceiveBufferPerConnection: h2ConnWindow,
+		},
+	}
+	h2t, err := http2.ConfigureTransports(stub)
+	if err != nil || h2t == nil {
+		h2t = &http2.Transport{}
+	}
+	h2t.ConnPool = nil
+	h2t.MaxReadFrameSize = 1 << 20
+	h2t.ReadIdleTimeout = 0
+	h2t.MaxDecoderHeaderTableSize = 65536
+	h2t.MaxHeaderListSize = 262144
+	h2t.DisableCompression = true
+	h2t.DialTLSContext = dial
+	return h2t
+}
 
 type UserEntry struct {
 	UserID string
@@ -162,38 +186,31 @@ func Client(ctx context.Context, cfg *Config) (net.Conn, error) {
 
 	helloID := chromeHelloPool[mrand.Intn(len(chromeHelloPool))]
 
-	h2Transport := &http2.Transport{
-		MaxReadFrameSize:          1 << 20,
-		ReadIdleTimeout:           0,
-		MaxDecoderHeaderTableSize: 65536,
-		MaxHeaderListSize:         262144,
-		DisableCompression:        true,
-		DialTLSContext: func(ctx context.Context, network, addr string, _ *tls.Config) (net.Conn, error) {
-			d := &net.Dialer{Timeout: 10 * time.Second}
-			rawConn, err := d.DialContext(ctx, network, addr)
-			if err != nil {
-				return nil, err
-			}
-			if tcpConn, ok := rawConn.(*net.TCPConn); ok {
-				tcpConn.SetKeepAlive(true)
-				tcpConn.SetKeepAlivePeriod(time.Duration(30+mrand.Intn(61)) * time.Second)
-				tcpConn.SetNoDelay(true)
-			}
-			uCfg := &utls.Config{
-				ServerName:         sni,
-				InsecureSkipVerify: true,
-			}
-			if sc, ok := cfg.SessionCache.(utls.ClientSessionCache); ok {
-				uCfg.ClientSessionCache = sc
-			}
-			uConn := utls.UClient(rawConn, uCfg, helloID)
-			if err := uConn.HandshakeContext(ctx); err != nil {
-				rawConn.Close()
-				return nil, fmt.Errorf("chameleon: utls handshake: %w", err)
-			}
-			return uConn, nil
-		},
-	}
+	h2Transport := newH2Transport(func(ctx context.Context, network, addr string, _ *tls.Config) (net.Conn, error) {
+		d := &net.Dialer{Timeout: 10 * time.Second}
+		rawConn, err := d.DialContext(ctx, network, addr)
+		if err != nil {
+			return nil, err
+		}
+		if tcpConn, ok := rawConn.(*net.TCPConn); ok {
+			tcpConn.SetKeepAlive(true)
+			tcpConn.SetKeepAlivePeriod(time.Duration(30+mrand.Intn(61)) * time.Second)
+			tcpConn.SetNoDelay(true)
+		}
+		uCfg := &utls.Config{
+			ServerName:         sni,
+			InsecureSkipVerify: true,
+		}
+		if sc, ok := cfg.SessionCache.(utls.ClientSessionCache); ok {
+			uCfg.ClientSessionCache = sc
+		}
+		uConn := utls.UClient(rawConn, uCfg, helloID)
+		if err := uConn.HandshakeContext(ctx); err != nil {
+			rawConn.Close()
+			return nil, fmt.Errorf("chameleon: utls handshake: %w", err)
+		}
+		return uConn, nil
+	})
 
 	pr, pw := io.Pipe()
 	bpw := newBufferedPipeWriter(pw)
