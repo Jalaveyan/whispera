@@ -100,6 +100,8 @@ jobs:
         if: matrix.goarch == 'arm64'
         run: |
           sudo dpkg --add-architecture arm64
+          sudo python3 -c "import re,glob;[open(f,'w').write(re.sub(r'(Types:[^\n]+\n)(?!Architectures:)',r'\1Architectures: amd64\n',open(f).read())) for f in glob.glob('/etc/apt/sources.list.d/*.sources')]"
+          printf 'deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports noble main restricted universe multiverse\ndeb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports noble-updates main restricted universe multiverse\ndeb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports noble-security main restricted universe multiverse\n' | sudo tee /etc/apt/sources.list.d/arm64-ports.list
           sudo apt-get update
           sudo apt-get install -y gcc-aarch64-linux-gnu libpcap-dev:arm64
 

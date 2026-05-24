@@ -14,6 +14,10 @@ import (
 	"golang.org/x/crypto/hkdf"
 )
 
+var frameBufPool = sync.Pool{
+	New: func() any { b := make([]byte, 0, 4+1+65536+16); return &b },
+}
+
 const (
 	maxFrameSize    = 4 * 1024 * 1024
 	frameTypeData   = byte(0x01)
@@ -63,6 +67,7 @@ type FrameConn struct {
 	sendSeq  uint64
 	recvSeq  uint64
 	buf      []byte
+	recvBuf  []byte
 }
 
 func NewFrameConn(conn net.Conn, sendKey, recvKey []byte) (*FrameConn, error) {
@@ -87,15 +92,26 @@ func counterNonce(seq uint64) [12]byte {
 func (fc *FrameConn) writeFrame(typ byte, p []byte) error {
 	overhead := fc.sendAEAD.Overhead()
 	plainLen := 1 + len(p)
-	buf := make([]byte, 4+plainLen+overhead)
+	total := 4 + plainLen + overhead
+
+	bufp := frameBufPool.Get().(*[]byte)
+	buf := *bufp
+	if cap(buf) < total {
+		buf = make([]byte, total)
+	} else {
+		buf = buf[:total]
+	}
+
 	binary.BigEndian.PutUint32(buf[:4], uint32(plainLen+overhead))
 	buf[4] = typ
 	copy(buf[5:], p)
 	nonce := counterNonce(fc.sendSeq)
-	// In-place seal: chacha20poly1305 supports aliased src/dst.
 	fc.sendAEAD.Seal(buf[4:4], nonce[:], buf[4:4+plainLen], nil)
 	fc.sendSeq++
-	_, err := fc.Conn.Write(buf)
+	_, err := fc.Conn.Write(buf[:total])
+
+	*bufp = buf
+	frameBufPool.Put(bufp)
 	return err
 }
 
@@ -140,13 +156,17 @@ func (fc *FrameConn) Read(b []byte) (int, error) {
 			return 0, fmt.Errorf("chameleon: bad frame len %d", ctLen)
 		}
 
-		ct := make([]byte, ctLen)
-		if _, err := io.ReadFull(fc.Conn, ct); err != nil {
+		if uint32(cap(fc.recvBuf)) < ctLen {
+			fc.recvBuf = make([]byte, ctLen)
+		} else {
+			fc.recvBuf = fc.recvBuf[:ctLen]
+		}
+		if _, err := io.ReadFull(fc.Conn, fc.recvBuf); err != nil {
 			return 0, err
 		}
 
 		recvNonce := counterNonce(fc.recvSeq)
-		pt, err := fc.recvAEAD.Open(nil, recvNonce[:], ct, nil)
+		pt, err := fc.recvAEAD.Open(fc.recvBuf[:0], recvNonce[:], fc.recvBuf[:ctLen], nil)
 		if err != nil {
 			return 0, fmt.Errorf("chameleon: decrypt: %w", err)
 		}

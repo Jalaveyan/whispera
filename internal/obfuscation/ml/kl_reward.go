@@ -88,19 +88,18 @@ func (f *FlowObserver) RecordPacket(sizeBytes int) {
 	now := time.Now().UnixNano()
 	prev := atomic.SwapInt64(&f.lastPacketAt, now)
 
-	var iatMs float64
+	sb := f.sizeBucket(sizeBytes)
+	ib := -1
 	if prev > 0 {
-		iatMs = float64(now-prev) / 1e6
+		ib = f.iatBucket(float64(now-prev) / 1e6)
 	}
 
-	f.mu.Lock()
-	f.sizeCounts[f.sizeBucket(sizeBytes)]++
-	if prev > 0 {
-		f.iatCounts[f.iatBucket(iatMs)]++
-	}
 	total := atomic.AddInt64(&f.total, 1)
-	// Rolling: reset counters every klDecayPerReset packets so the distribution
-	// tracks recent behavior rather than the entire session.
+	f.mu.Lock()
+	f.sizeCounts[sb]++
+	if ib >= 0 {
+		f.iatCounts[ib]++
+	}
 	if total%klDecayPerReset == 0 {
 		f.sizeCounts = [7]int64{}
 		f.iatCounts = [5]int64{}

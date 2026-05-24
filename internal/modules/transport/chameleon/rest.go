@@ -22,6 +22,8 @@ import (
 	"golang.org/x/net/http2"
 )
 
+var uploadBufPool = sync.Pool{New: func() any { b := make([]byte, 0, 4096); return &b }}
+
 // mp4FtypAtom is a minimal valid MP4 ftyp box prepended to every download
 // response so the first bytes match the MP4 signature that DPI sniffers check.
 // size=24 "ftyp" major="isom" ver=0x200 compat="isom","mp42"
@@ -102,6 +104,8 @@ func (r *segmentRouter) acquireSlot() (*segSlot, error) {
 	if s != nil {
 		return s, nil
 	}
+	t := time.NewTimer(10 * time.Second)
+	defer t.Stop()
 	select {
 	case s, ok := <-r.sess.segCh:
 		if !ok {
@@ -115,6 +119,8 @@ func (r *segmentRouter) acquireSlot() (*segSlot, error) {
 		return &s, nil
 	case <-r.connDone:
 		return nil, io.ErrClosedPipe
+	case <-t.C:
+		return nil, fmt.Errorf("chameleon: no segment in 10s")
 	}
 }
 
@@ -332,7 +338,7 @@ func (c *restServerConn) Write(b []byte) (n int, err error) {
 			upRatio = up / (up + down)
 		}
 		action := c.ganDecide(iatMean, c.sizeSum/c.writeCount, upRatio)
-		if action.SleepMs > 0.5 {
+		if action.SleepMs > 0.5 && action.SleepMs <= 2.0 {
 			time.Sleep(time.Duration(action.SleepMs * float64(time.Millisecond)))
 		}
 		c.lastWrite = time.Now()
@@ -404,15 +410,15 @@ func (c *restClientConn) Read(b []byte) (int, error) { return c.readConn.Read(b)
 // Write enqueues b for upload. Times out after 5s so a stalled network
 // cannot block yamux keepalives indefinitely.
 func (c *restClientConn) Write(b []byte) (int, error) {
-	cp := make([]byte, len(b))
-	copy(cp, b)
+	bufp := uploadBufPool.Get().(*[]byte)
+	cp := append((*bufp)[:0], b...)
+	*bufp = cp
 	select {
 	case c.uploadCh <- cp:
 		return len(b), nil
 	case <-c.ctx.Done():
+		uploadBufPool.Put(bufp)
 		return 0, io.ErrClosedPipe
-	case <-time.After(5 * time.Second):
-		return 0, fmt.Errorf("chameleon: upload channel full")
 	}
 }
 
@@ -447,18 +453,18 @@ func runRESTUpload(ctx context.Context, client *http.Client, serverAddr, sni, or
 		select {
 		case data := <-uploadCh:
 			buf = append(buf, data...)
+			uploadBufPool.Put(&data)
 		case <-ctx.Done():
 			return
 		}
 
 		// Non-blocking drain: grab everything already queued without waiting.
-		// Sparse traffic (pings, DNS) sends immediately; bulk traffic batches
-		// naturally because the channel is already full.
 	drain:
 		for len(buf) < 512*1024 {
 			select {
 			case data := <-uploadCh:
 				buf = append(buf, data...)
+				uploadBufPool.Put(&data)
 			case <-ctx.Done():
 				return
 			default:
@@ -755,7 +761,7 @@ func handleRESTDownload(w http.ResponseWriter, r *http.Request, cfg *Config) {
 		secret:   secret,
 	}
 	sessionKey := hex.EncodeToString(sessionID)
-	cfg.sessions.Store(sessionKey, sess)
+	cfg.storeSession(sessionKey, sess)
 	defer func() {
 		close(sess.closed)
 		cfg.sessions.Delete(sessionKey)
@@ -779,13 +785,6 @@ func handleRESTDownload(w http.ResponseWriter, r *http.Request, cfg *Config) {
 	remote := staticAddr{"tcp", r.RemoteAddr}
 
 	decide := cfg.GANDecide
-	if decide == nil {
-		ratio := cfg.AsymBiasRatio
-		if ratio <= 0 {
-			ratio = 5.0 // REST default: streaming API is ~5:1 down:up
-		}
-		decide = StreamingBiasGANDecide(ratio)
-	}
 
 	done := make(chan struct{})
 	conn := newRestServerConn(sess, w, local, remote, func() { close(done) }, decide)
@@ -809,22 +808,25 @@ func handleRESTDownload(w http.ResponseWriter, r *http.Request, cfg *Config) {
 	// fingerprinting and maintain the target download/upload ratio.
 	if decide != nil {
 		go func() {
-			t := time.NewTicker(200 * time.Millisecond)
-			defer t.Stop()
 			for {
+				jitter := time.Duration(mrand.Intn(100)-50) * time.Millisecond
+				t := time.NewTimer(200*time.Millisecond + jitter)
 				select {
 				case <-done:
+					t.Stop()
 					return
 				case <-t.C:
-					up := float64(atomic.LoadInt64(&sess.uploadBytes))
-					down := float64(atomic.LoadInt64(&sess.downloadBytes))
-					upRatio := 0.0
-					if up+down > 0 {
-						upRatio = up / (up + down)
-					}
-					action := decide(0, 0, upRatio)
-					if action.PaddingN > 0 {
-						fc.WritePad(action.PaddingN) //nolint:errcheck
+				}
+				up := float64(atomic.LoadInt64(&sess.uploadBytes))
+				down := float64(atomic.LoadInt64(&sess.downloadBytes))
+				upRatio := 0.0
+				if up+down > 0 {
+					upRatio = up / (up + down)
+				}
+				action := decide(0, 0, upRatio)
+				if action.PaddingN > 0 {
+					if err := fc.WritePad(action.PaddingN); err != nil {
+						return
 					}
 				}
 			}
@@ -880,7 +882,7 @@ func handleHLSPlaylist(w http.ResponseWriter, r *http.Request, cfg *Config) {
 		secret:   secret,
 	}
 	sessionKey := hlsSessionKey(sessionID)
-	cfg.sessions.Store(sessionKey, sess)
+	cfg.storeSession(sessionKey, sess)
 
 	playlist := hlsM3U8(0)
 	w.Header().Set("Content-Type", "application/x-mpegURL")
@@ -898,13 +900,6 @@ func handleHLSPlaylist(w http.ResponseWriter, r *http.Request, cfg *Config) {
 	remote := staticAddr{"tcp", r.RemoteAddr}
 
 	decide := cfg.GANDecide
-	if decide == nil {
-		ratio := cfg.AsymBiasRatio
-		if ratio <= 0 {
-			ratio = 10.0
-		}
-		decide = StreamingBiasGANDecide(ratio)
-	}
 
 	go func() {
 		defer func() {
@@ -924,22 +919,25 @@ func handleHLSPlaylist(w http.ResponseWriter, r *http.Request, cfg *Config) {
 
 		if decide != nil {
 			go func() {
-				t := time.NewTicker(200 * time.Millisecond)
-				defer t.Stop()
 				for {
+					jitter := time.Duration(mrand.Intn(100)-50) * time.Millisecond
+					t := time.NewTimer(200*time.Millisecond + jitter)
 					select {
 					case <-done:
+						t.Stop()
 						return
 					case <-t.C:
-						up := float64(atomic.LoadInt64(&sess.uploadBytes))
-						down := float64(atomic.LoadInt64(&sess.downloadBytes))
-						upRatio := 0.0
-						if up+down > 0 {
-							upRatio = up / (up + down)
-						}
-						action := decide(0, 0, upRatio)
-						if action.PaddingN > 0 {
-							fc.WritePad(action.PaddingN) //nolint:errcheck
+					}
+					up := float64(atomic.LoadInt64(&sess.uploadBytes))
+					down := float64(atomic.LoadInt64(&sess.downloadBytes))
+					upRatio := 0.0
+					if up+down > 0 {
+						upRatio = up / (up + down)
+					}
+					action := decide(0, 0, upRatio)
+					if action.PaddingN > 0 {
+						if err := fc.WritePad(action.PaddingN); err != nil {
+							return
 						}
 					}
 				}
@@ -962,22 +960,11 @@ func handleHLSSegment(w http.ResponseWriter, r *http.Request, cfg *Config) {
 		return
 	}
 
-	val, ok := cfg.sessions.Load(sessionKey)
+	sess, ok := cfg.waitSession(sessionKey, 3*time.Second)
 	if !ok {
-		// Session not ready yet — wait up to 3s (race between playlist and first segment).
-		deadline := time.Now().Add(3 * time.Second)
-		for time.Now().Before(deadline) {
-			time.Sleep(20 * time.Millisecond)
-			if val, ok = cfg.sessions.Load(sessionKey); ok {
-				break
-			}
-		}
-		if !ok {
-			w.WriteHeader(http.StatusNotFound)
-			return
-		}
+		w.WriteHeader(http.StatusNotFound)
+		return
 	}
-	sess := val.(*restSession)
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -1028,17 +1015,8 @@ func handleRESTUpload(w http.ResponseWriter, r *http.Request, cfg *Config) {
 
 	sessionKey := hex.EncodeToString(sessionID)
 
-	// Wait up to 3s for the GET handler to register the session.
-	var sess *restSession
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		if val, ok := cfg.sessions.Load(sessionKey); ok {
-			sess = val.(*restSession)
-			break
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	if sess == nil {
+	sess, ok := cfg.waitSession(sessionKey, 3*time.Second)
+	if !ok {
 		log.Printf("chameleon: upload from %s: session %s not found (503)", r.RemoteAddr, sessionKey[:8])
 		w.WriteHeader(http.StatusServiceUnavailable)
 		return
@@ -1058,7 +1036,7 @@ func handleRESTUpload(w http.ResponseWriter, r *http.Request, cfg *Config) {
 		case <-sess.closed:
 			w.WriteHeader(http.StatusGone)
 			return
-		case <-time.After(5 * time.Second):
+		case <-r.Context().Done():
 			w.WriteHeader(http.StatusRequestTimeout)
 			return
 		}

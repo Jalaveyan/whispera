@@ -490,13 +490,15 @@ func StartInbound(inbound modconfig.InboundConfig, serverConfig *modconfig.Serve
 				wsTrans.Close()
 				log.Printf("⏹ [Dynamic] Stopped inbound %s (WebSocket)", inbound.Tag)
 			}()
+			backoffWS := 10 * time.Millisecond
 			for {
 				conn, err := wsTrans.Accept()
 				if err != nil {
 					log.Printf("⚠ [Dynamic] WS Accept error on %s: %v", inbound.Tag, err)
-					time.Sleep(100 * time.Millisecond)
+					acceptBackoff(&backoffWS)
 					continue
 				}
+				backoffWS = 10 * time.Millisecond
 				if globalRelay != nil {
 					go globalRelay.ServeTunnel(conn, false)
 				} else {
@@ -539,13 +541,15 @@ func StartInbound(inbound modconfig.InboundConfig, serverConfig *modconfig.Serve
 				ssTrans.Close()
 				log.Printf("⏹ [Dynamic] Stopped inbound %s (Shadowsocks)", inbound.Tag)
 			}()
+			backoffSS := 10 * time.Millisecond
 			for {
 				conn, err := ssTrans.Accept()
 				if err != nil {
 					log.Printf("⚠ [Dynamic] Shadowsocks Accept error on %s: %v", inbound.Tag, err)
-					time.Sleep(100 * time.Millisecond)
+					acceptBackoff(&backoffSS)
 					continue
 				}
+				backoffSS = 10 * time.Millisecond
 				if globalRelay != nil {
 					go globalRelay.ServeTunnel(conn, false)
 				} else {
@@ -582,13 +586,15 @@ func StartInbound(inbound modconfig.InboundConfig, serverConfig *modconfig.Serve
 				obfsTrans.Close()
 				log.Printf("⏹ [Dynamic] Stopped inbound %s (obfs4)", inbound.Tag)
 			}()
+			backoffObfs := 10 * time.Millisecond
 			for {
 				conn, err := obfsTrans.Accept()
 				if err != nil {
 					log.Printf("⚠ [Dynamic] obfs4 Accept error on %s: %v", inbound.Tag, err)
-					time.Sleep(100 * time.Millisecond)
+					acceptBackoff(&backoffObfs)
 					continue
 				}
+				backoffObfs = 10 * time.Millisecond
 				if globalRelay != nil {
 					go globalRelay.ServeTunnel(conn, false)
 				} else {
@@ -647,13 +653,15 @@ func StartInbound(inbound modconfig.InboundConfig, serverConfig *modconfig.Serve
 				log.Printf("⏹ [Dynamic] Stopped inbound %s (H2C)", inbound.Tag)
 			}()
 
+			backoffH2C := 10 * time.Millisecond
 			for {
 				conn, err := h2cTrans.Accept()
 				if err != nil {
 					log.Printf("⚠ [Dynamic] H2C Accept error on %s: %v", inbound.Tag, err)
-					time.Sleep(100 * time.Millisecond)
+					acceptBackoff(&backoffH2C)
 					continue
 				}
+				backoffH2C = 10 * time.Millisecond
 				if globalRelay != nil {
 					go globalRelay.ServeTunnel(conn, false)
 				} else {
@@ -692,13 +700,15 @@ func StartInbound(inbound modconfig.InboundConfig, serverConfig *modconfig.Serve
 				stTrans.Close()
 				log.Printf("⏹ [Dynamic] Stopped inbound %s (ShadowTLS)", inbound.Tag)
 			}()
+			backoffST := 10 * time.Millisecond
 			for {
 				conn, err := stTrans.Accept()
 				if err != nil {
 					log.Printf("⚠ [Dynamic] ShadowTLS Accept error on %s: %v", inbound.Tag, err)
-					time.Sleep(100 * time.Millisecond)
+					acceptBackoff(&backoffST)
 					continue
 				}
+				backoffST = 10 * time.Millisecond
 				if globalRelay != nil {
 					go globalRelay.ServeTunnel(conn, false)
 				} else {
@@ -838,6 +848,13 @@ func StartReverseInbound(inbound modconfig.InboundConfig, serverConfig *modconfi
 		}
 
 		log.Printf("🔁 [Reverse] %s: connection closed, reconnecting...", inbound.Tag)
+	}
+}
+
+func acceptBackoff(d *time.Duration) {
+	time.Sleep(*d)
+	if *d < time.Second {
+		*d *= 2
 	}
 }
 
@@ -1441,12 +1458,14 @@ func createModules(manager *lifecycle.Manager, ctx context.Context) error {
 			go func() {
 				time.Sleep(1 * time.Second)
 				log.Printf("[TCP] Starting legacy accept loop on %s", serverConfig.Transport.TCP.ListenAddr)
+				backoffTCP := 10 * time.Millisecond
 				for {
 					conn, err := tcpTransport.Accept()
 					if err != nil {
-						time.Sleep(100 * time.Millisecond)
+						acceptBackoff(&backoffTCP)
 						continue
 					}
+					backoffTCP = 10 * time.Millisecond
 					go handleTCPConnection(conn, globalHandshake)
 				}
 			}()
@@ -1647,7 +1666,6 @@ func createModules(manager *lifecycle.Manager, ctx context.Context) error {
 			log.Printf("[GAN] pcap collector started on %s:%d", ganIface, ganPort)
 		}
 
-		hlsBias := chameleon.StreamingBiasGANDecide(10.0)
 		cCfg := &chameleon.Config{
 			GANDecide: func(iatMean, sizeMean, upRatio float64) chameleon.GANAction {
 				a := ganRunner.GAN().Decide(mlpkg.FlowFeatures{
@@ -1655,15 +1673,9 @@ func createModules(manager *lifecycle.Manager, ctx context.Context) error {
 					SizeMean: sizeMean,
 					UpRatio:  upRatio,
 				})
-				ganPad := int(a.PaddingFrac * float64(ganMaxPadding))
-				biasPad := hlsBias(iatMean, sizeMean, upRatio).PaddingN
-				pad := ganPad
-				if biasPad > pad {
-					pad = biasPad
-				}
 				return chameleon.GANAction{
 					SleepMs:  a.SleepMs,
-					PaddingN: pad,
+					PaddingN: int(a.PaddingFrac * float64(ganMaxPadding)),
 				}
 			},
 			ListenAddr:  serverConfig.Chameleon.ListenAddr,

@@ -296,8 +296,11 @@ func (c *PCAPCollector) capture(handle *pcap.Handle) {
 		select {
 		case <-ticker.C:
 			for k, f := range flows {
-				if len(f.packets) > 0 && ts-f.firstSeen > 30 {
+				age := ts - f.firstSeen
+				if age > 30 && len(f.packets) > 0 {
 					emit(k, f)
+				} else if age > 60 {
+					delete(flows, k)
 				}
 			}
 		default:

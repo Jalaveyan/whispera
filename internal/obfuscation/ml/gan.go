@@ -23,7 +23,7 @@ import (
 //   2. D is trained with BCE loss
 //   3. G is trained to maximize D(G(tunnel_features))
 type TrafficGAN struct {
-	mu sync.Mutex
+	mu sync.RWMutex
 
 	disc     *gnet.GorgoniaNet // discriminator: 10 → 64 → 32 → 1
 	discAdam *AdamState
@@ -109,14 +109,13 @@ func (g *TrafficGAN) Train(lf LabeledFlow) {
 	g.trainCount++
 }
 
-// Decide returns the action for the current connection's live flow stats.
-// Called on each write from the REST transport.
-func (g *TrafficGAN) Decide(f FlowFeatures) GeneratorAction {
-	g.mu.Lock()
-	defer g.mu.Unlock()
+const GANDecideThreshold int64 = 500
 
-	if g.trainCount < 100 {
-		// Not enough training — no action.
+func (g *TrafficGAN) Decide(f FlowFeatures) GeneratorAction {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+
+	if g.trainCount < GANDecideThreshold {
 		return GeneratorAction{}
 	}
 
@@ -156,8 +155,8 @@ func (g *TrafficGAN) applyAction(x []float64, a GeneratorAction) []float64 {
 
 // ExportDiscWeights returns discriminator layer weights for sync to clients.
 func (g *TrafficGAN) ExportDiscWeights() []gnet.LayerDef {
-	g.mu.Lock()
-	defer g.mu.Unlock()
+	g.mu.RLock()
+	defer g.mu.RUnlock()
 	layers := make([]gnet.LayerDef, len(g.disc.Layers))
 	for i, l := range g.disc.Layers {
 		layers[i] = gnet.LayerDef{

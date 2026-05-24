@@ -86,8 +86,36 @@ type Config struct {
 	// Leave at 0 to use the defaults. Ignored when GANDecide is also set.
 	AsymBiasRatio float64
 
-	proxy    *decoyProxy
-	sessions sync.Map // server-side: hex(sessionID) → *restSession
+	proxy      *decoyProxy
+	sessions   sync.Map
+	sessionMu  sync.Mutex
+	sessionCond *sync.Cond
+}
+
+func (cfg *Config) initCond() {
+	if cfg.sessionCond == nil {
+		cfg.sessionCond = sync.NewCond(&cfg.sessionMu)
+	}
+}
+
+func (cfg *Config) storeSession(key string, sess *restSession) {
+	cfg.sessions.Store(key, sess)
+	cfg.sessionCond.Broadcast()
+}
+
+func (cfg *Config) waitSession(key string, timeout time.Duration) (*restSession, bool) {
+	deadline := time.Now().Add(timeout)
+	cfg.sessionMu.Lock()
+	defer cfg.sessionMu.Unlock()
+	for {
+		if v, ok := cfg.sessions.Load(key); ok {
+			return v.(*restSession), true
+		}
+		if time.Now().After(deadline) {
+			return nil, false
+		}
+		cfg.sessionCond.Wait()
+	}
 }
 
 func encodeSession(sessionID []byte, anchor time.Time) string {
@@ -217,6 +245,7 @@ func Client(ctx context.Context, cfg *Config) (net.Conn, error) {
 }
 
 func ListenAndServe(ctx context.Context, cfg *Config) error {
+	cfg.initCond()
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		handleRequest(w, r, cfg)
