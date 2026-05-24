@@ -915,14 +915,6 @@ func handleHLSPlaylist(w http.ResponseWriter, r *http.Request, cfg *Config) {
 	// restServerConn handles the Read (upload) side; writes go through segRouter.
 	conn := newRestServerConn(sess, segRouter, local, remote, func() { close(done) }, decide)
 
-	go func() {
-		select {
-		case <-r.Context().Done():
-			conn.Close()
-		case <-done:
-		}
-	}()
-
 	fc, err := NewFrameConn(conn, keys.DataSend, keys.DataRecv)
 	if err != nil {
 		log.Printf("chameleon: HLS frame conn: %v", err)
