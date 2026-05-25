@@ -813,7 +813,7 @@ func (m *Manager) connectInternal(ctx context.Context, isRotation bool) error {
 	if m.config.EnableChameleon {
 		targetPoolSize = m.config.ChameleonMux
 		if targetPoolSize < 1 {
-			targetPoolSize = 4
+			targetPoolSize = 8
 		}
 	}
 	var connectedPool []*managedConn
@@ -870,7 +870,13 @@ func (m *Manager) connectInternal(ctx context.Context, isRotation bool) error {
 	}
 
 	for i := 0; i < targetPoolSize; i++ {
-		go spawnConnection(i)
+		idx := i
+		go func() {
+			if idx > 0 && m.config.EnableChameleon {
+				time.Sleep(time.Duration(mrand.Intn(150)) * time.Millisecond)
+			}
+			spawnConnection(idx)
+		}()
 	}
 
 	var firstConn *managedConn
