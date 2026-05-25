@@ -1265,21 +1265,19 @@ do_update() {
     
     log_info "Stopping service..."
     systemctl stop whispera 2>/dev/null || true
-    for _ in 1 2 3 4 5 6 7 8 9 10; do
+    for _ in 1 2 3 4; do
         if ! pgrep -x whispera >/dev/null 2>&1; then
             break
         fi
-        sleep 1
+        sleep 0.5
     done
     if pgrep -x whispera >/dev/null 2>&1; then
-        log_warn "whispera process still alive after 10s, sending SIGKILL"
         pkill -9 -x whispera 2>/dev/null || true
-        sleep 1
+        sleep 0.3
     fi
     if fuser "$BIN_PATH/whispera" >/dev/null 2>&1; then
-        log_warn "binary still in use, force-killing holders"
         fuser -k "$BIN_PATH/whispera" 2>/dev/null || true
-        sleep 1
+        sleep 0.3
     fi
 
     log_info "Installing binary..."
