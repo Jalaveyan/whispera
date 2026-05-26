@@ -8,7 +8,7 @@ import (
 	"sync/atomic"
 )
 
-const Size = 65536
+const Size = 66048
 
 var ErrShort = errors.New("buf: short write")
 
