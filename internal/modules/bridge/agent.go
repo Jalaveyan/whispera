@@ -14,8 +14,11 @@ import (
 	"sync/atomic"
 	"time"
 
+	"whispera/internal/logger"
 	"whispera/internal/obfuscation/ml/gnet"
 )
+
+var log = logger.Module("bridge")
 
 type AgentConfig struct {
 	BridgeID           string        `yaml:"bridge_id"`
