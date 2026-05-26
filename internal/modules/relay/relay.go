@@ -578,7 +578,6 @@ func (s *Server) handleProxyStream(stream net.Conn) {
 	}
 
 	if tcpTarget, ok := target.(*net.TCPConn); ok {
-		tcpTarget.SetNoDelay(true)
 		tcpTarget.SetKeepAlive(true)
 		tcpTarget.SetKeepAlivePeriod(45 * time.Second)
 		tcpTarget.SetReadBuffer(4 * 1024 * 1024)

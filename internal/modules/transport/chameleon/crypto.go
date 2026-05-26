@@ -1,6 +1,7 @@
 package chameleon
 
 import (
+	"bufio"
 	crand "crypto/rand"
 	"crypto/sha256"
 	"encoding/binary"
@@ -50,11 +51,16 @@ type FrameConn struct {
 	buf     []byte
 	recvBuf []byte
 
+	bufRead *bufio.Reader
+
 	bytesRecent uint64
 }
 
 func NewFrameConn(conn net.Conn) *FrameConn {
-	return &FrameConn{Conn: conn}
+	return &FrameConn{
+		Conn:    conn,
+		bufRead: bufio.NewReaderSize(conn, 128*1024),
+	}
 }
 
 func (fc *FrameConn) writeFrame(typ byte, p []byte) error {
@@ -112,7 +118,7 @@ func (fc *FrameConn) Read(b []byte) (int, error) {
 		}
 
 		var hdr [4]byte
-		if _, err := io.ReadFull(fc.Conn, hdr[:]); err != nil {
+		if _, err := io.ReadFull(fc.bufRead, hdr[:]); err != nil {
 			return 0, err
 		}
 		frameLen := binary.BigEndian.Uint32(hdr[:])
@@ -125,7 +131,7 @@ func (fc *FrameConn) Read(b []byte) (int, error) {
 		} else {
 			fc.recvBuf = fc.recvBuf[:frameLen]
 		}
-		if _, err := io.ReadFull(fc.Conn, fc.recvBuf); err != nil {
+		if _, err := io.ReadFull(fc.bufRead, fc.recvBuf); err != nil {
 			return 0, err
 		}
 
