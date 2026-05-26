@@ -9,17 +9,9 @@ import (
 	"net"
 	"sync"
 	"time"
-)
 
-// frameBufPool holds scratch buffers for PaddedConn read/write frames.
-// Max frame: 2-byte outer len + 2-byte inner len + 65000 data + 128 pad = 65132 bytes.
-// We allocate 66008 to have headroom and cover the read side (up to 66000).
-var frameBufPool = sync.Pool{
-	New: func() any {
-		buf := make([]byte, 66008)
-		return &buf
-	},
-}
+	"whispera/internal/buf"
+)
 
 // PaddedConn wraps a net.Conn and adds random-length padding to every write,
 // making the on-wire frame sizes unpredictable.  This defeats DPI that
@@ -77,24 +69,23 @@ func (pc *PaddedConn) Write(p []byte) (int, error) {
 
 func (pc *PaddedConn) writeFrame(data []byte) error {
 	padLen := pc.computePad(len(data))
-	totalLen := 2 + len(data) + padLen // 2 for real-data-len header
+	totalLen := 2 + len(data) + padLen
 	frameSize := 2 + totalLen
 
-	bufp := frameBufPool.Get().(*[]byte)
-	frame := (*bufp)[:frameSize]
+	b := buf.NewSize(frameSize)
+	defer b.Release()
+	frame := b.Extend(frameSize)
 
-	// Frame: [2: totalLen][2: dataLen][data][padding]
 	binary.BigEndian.PutUint16(frame[0:2], uint16(totalLen))
 	binary.BigEndian.PutUint16(frame[2:4], uint16(len(data)))
 	copy(frame[4:], data)
 	if padLen > 0 {
 		if _, err := crand.Read(frame[4+len(data):]); err != nil {
-			// zeros are fine — size variation is what matters
+			_ = err
 		}
 	}
 
 	_, err := pc.Conn.Write(frame)
-	frameBufPool.Put(bufp)
 	return err
 }
 
@@ -150,28 +141,23 @@ func (pc *PaddedConn) Read(p []byte) (int, error) {
 		return 0, fmt.Errorf("padded_conn: invalid frame length %d", totalLen)
 	}
 
-	// Read the full frame
-	bufp := frameBufPool.Get().(*[]byte)
-	frameBuf := (*bufp)[:totalLen]
-	_, err := io.ReadFull(pc.Conn, frameBuf)
-	if err != nil {
-		frameBufPool.Put(bufp)
+	b := buf.NewSize(totalLen)
+	defer b.Release()
+	frameBuf := b.Extend(totalLen)
+	if _, err := io.ReadFull(pc.Conn, frameBuf); err != nil {
 		return 0, err
 	}
 
 	dataLen := int(binary.BigEndian.Uint16(frameBuf[:2]))
 	if dataLen > totalLen-2 {
-		frameBufPool.Put(bufp)
 		return 0, fmt.Errorf("padded_conn: data length %d exceeds frame %d", dataLen, totalLen)
 	}
 
 	realData := frameBuf[2 : 2+dataLen]
 	n := copy(p, realData)
 	if n < dataLen {
-		// Buffer the rest for next Read call
 		pc.readBuf = append(pc.readBuf[:0], realData[n:]...)
 	}
-	frameBufPool.Put(bufp)
 	return n, nil
 }
 
