@@ -429,6 +429,7 @@ type Manager struct {
 	rekeyTicker     *time.Ticker
 	rekeyCancel     context.CancelFunc
 
+	streamIdx         uint32
 	reconnectAttempts uint32
 	reconnecting      int32
 	bytesUp           uint64
@@ -2664,17 +2665,8 @@ func (m *Manager) OpenStream(ctx context.Context, proto byte, addr string, port 
 		healthy = pool
 	}
 
-	mc := healthy[0]
-	if len(healthy) > 1 {
-		minStreams := mc.session.NumStreams()
-		for i := 1; i < len(healthy); i++ {
-			n := healthy[i].session.NumStreams()
-			if n < minStreams {
-				minStreams = n
-				mc = healthy[i]
-			}
-		}
-	}
+	idx := atomic.AddUint32(&m.streamIdx, 1) % uint32(len(healthy))
+	mc := healthy[idx]
 
 	stream, err := mc.session.OpenStream()
 	if err != nil {

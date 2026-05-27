@@ -51,8 +51,8 @@ const (
 	contentType         = "application/octet-stream"
 	contentTypeDownload = "video/mp4"
 
-	h2StreamWindow = 64 << 20
-	h2ConnWindow   = 256 << 20
+	h2StreamWindow = 16 << 20
+	h2ConnWindow   = 64 << 20
 )
 
 func newH2Transport(dial func(context.Context, string, string, *tls.Config) (net.Conn, error)) *http2.Transport {
@@ -187,7 +187,7 @@ func Client(ctx context.Context, cfg *Config) (net.Conn, error) {
 
 	helloID := chromeHelloPool[mrand.Intn(len(chromeHelloPool))]
 
-	dialFn := func(ctx context.Context, network, addr string, _ *tls.Config) (net.Conn, error) {
+	h2Transport := newH2Transport(func(ctx context.Context, network, addr string, _ *tls.Config) (net.Conn, error) {
 		d := &net.Dialer{Timeout: 10 * time.Second}
 		rawConn, err := d.DialContext(ctx, network, addr)
 		if err != nil {
@@ -211,10 +211,7 @@ func Client(ctx context.Context, cfg *Config) (net.Conn, error) {
 			return nil, fmt.Errorf("chameleon: utls handshake: %w", err)
 		}
 		return uConn, nil
-	}
-
-	h2Transport := newH2Transport(dialFn)
-	decoyTransport := newH2Transport(dialFn)
+	})
 
 	pr, pw := io.Pipe()
 	bpw := newBufferedPipeWriter(pw)
@@ -240,11 +237,10 @@ func Client(ctx context.Context, cfg *Config) (net.Conn, error) {
 	pc := newPipelinedConn(pr, bpw, tunnelCancel, local, remote)
 
 	client := &http.Client{Transport: h2Transport}
-	decoyClient := &http.Client{Transport: decoyTransport}
 
 	fc := NewFrameConn(pc)
 
-	go runDecoy(tunnelCtx, decoyClient, cfg.ServerAddr, sni, origin, bp, fc)
+	go runDecoy(tunnelCtx, client, cfg.ServerAddr, sni, origin, bp, fc)
 
 	go func() {
 		time.Sleep(time.Duration(20+mrand.Intn(80)) * time.Millisecond)
@@ -333,8 +329,8 @@ func ListenAndServe(ctx context.Context, cfg *Config) error {
 	}
 
 	if err := http2.ConfigureServer(srv, &http2.Server{
-		MaxUploadBufferPerConnection: 1 << 28,
-		MaxUploadBufferPerStream:     1 << 26,
+		MaxUploadBufferPerConnection: 1 << 26,
+		MaxUploadBufferPerStream:     1 << 24,
 	}); err != nil {
 		return fmt.Errorf("chameleon: h2 server config: %w", err)
 	}
@@ -577,29 +573,6 @@ func runDecoy(ctx context.Context, client *http.Client, serverAddr, sni, origin 
 		}
 	}
 
-	burstFor := func(base int) int {
-		if fc == nil {
-			return base
-		}
-		recent := atomic.LoadUint64(&fc.bytesRecent)
-		switch {
-		case recent > 4<<20:
-			return 1
-		case recent > 1<<20:
-			if base > 2 {
-				return 2
-			}
-		}
-		return base
-	}
-
-	heavyLoad := func() bool {
-		if fc == nil {
-			return false
-		}
-		return atomic.LoadUint64(&fc.bytesRecent) > 4<<20
-	}
-
 	sleep := func(ms int) bool {
 		ms *= loadFactor()
 		jitter := time.Duration(mrand.Intn(ms/4+1)) * time.Millisecond
@@ -635,9 +608,6 @@ func runDecoy(ctx context.Context, client *http.Client, serverAddr, sni, origin 
 				return
 			case <-time.After(time.Duration(ms) * time.Millisecond):
 			}
-			if heavyLoad() {
-				continue
-			}
 			get(api[mrand.Intn(len(api))])
 		}
 	}()
@@ -662,12 +632,12 @@ func runDecoy(ctx context.Context, client *http.Client, serverAddr, sni, origin 
 			return
 		}
 
-		parallel(decoyGraph[1], burstFor(bp.BurstSize))
+		parallel(decoyGraph[1], bp.BurstSize)
 		if !sleep(20) {
 			return
 		}
 
-		parallel(decoyGraph[2], burstFor(1+mrand.Intn(2)))
+		parallel(decoyGraph[2], 1+mrand.Intn(2))
 		if !sleep(bp.ParseDelayMs/2) {
 			return
 		}
