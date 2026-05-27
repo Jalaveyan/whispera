@@ -36,7 +36,7 @@ func (a ConnAction) String() string {
 }
 
 const (
-	connStateSize    = 6
+	connStateSize    = 8
 	connHidden1      = 16
 	connHidden2      = 8
 	connNumActions   = 3
@@ -48,7 +48,10 @@ const (
 	connEpsilonDecay = 0.999
 	connTargetSync   = 100
 	connTrainEvery   = 4
-	connMaxPoolSize  = 5
+	connMaxPoolSize  = 16
+	// connGoodputScale normalizes goodput (bytes/sec) into [0,1] for state and
+	// reward. 1e8 B/s ≈ 800 Mbit/s saturates the signal.
+	connGoodputScale = 1e8
 )
 
 type ConnPoolView struct {
@@ -57,6 +60,11 @@ type ConnPoolView struct {
 	ErrorRate  float64
 	MissedKAs  int
 	CBFailures int
+	// BytesDnSec/BytesUpSec are the measured aggregate goodput across the pool
+	// at decision time. They drive the agent toward more parallelism while the
+	// path still yields throughput, instead of shrinking on RTT alone.
+	BytesDnSec float64
+	BytesUpSec float64
 }
 
 type RLConnAgent struct {
@@ -96,7 +104,7 @@ func NewRLConnAgent(modelDir string) *RLConnAgent {
 	a.qNet = gnet.New([]int{connStateSize, connHidden1, connHidden2, connNumActions})
 	a.target = gnet.Clone(a.qNet)
 	a.adam = NewAdamState(a.qNet)
-	if layers, eps, steps, ok := loadRLMiniPolicy(modelDir, "rl_conn.json"); ok {
+	if layers, eps, steps, ok := loadRLMiniPolicy(modelDir, "rl_conn_v2.json"); ok {
 		loaded := &gnet.GorgoniaNet{Layers: layers}
 		a.qNet = loaded
 		a.target = gnet.Clone(loaded)
@@ -115,6 +123,8 @@ func (a *RLConnAgent) EncodeState(v ConnPoolView) []float64 {
 	hour := float64(time.Now().Hour()) + float64(time.Now().Minute())/60.0
 	s[4] = math.Sin(2 * math.Pi * hour / 24.0)
 	s[5] = math.Cos(2 * math.Pi * hour / 24.0)
+	s[6] = math.Min(v.BytesDnSec/connGoodputScale, 1.0)
+	s[7] = math.Min(v.BytesUpSec/connGoodputScale, 1.0)
 	return s
 }
 
@@ -173,7 +183,13 @@ func (a *RLConnAgent) RecordOutcome(quality float64) {
 	}
 
 	connCountNorm := state[0]
-	reward := quality - 0.05*connCountNorm + GlobalFlowObserver.KLReward()
+	goodputNorm := state[6]
+	// Throughput dominates: the agent is rewarded for goodput, so it grows the
+	// pool while the path keeps yielding more. quality (RTT/keepalive health)
+	// keeps it from chasing throughput on a dying link. The connection-count
+	// term is a small regularizer to avoid pointless growth when goodput is
+	// flat — it must never outweigh a real throughput gain.
+	reward := 0.6*goodputNorm + 0.4*quality - 0.02*connCountNorm + GlobalFlowObserver.KLReward()
 
 	a.mu.Lock()
 	divBonus := a.diversity.Record(action)
@@ -220,7 +236,7 @@ func (a *RLConnAgent) trainStep() {
 	temp := a.temperature
 	eps := a.epsilon
 	if cnt%100 == 0 {
-		saveRLMiniPolicy(a.modelDir, "rl_conn.json", a.qNet.Layers, a.epsilon, atomic.LoadInt64(&a.stepCount))
+		saveRLMiniPolicy(a.modelDir, "rl_conn_v2.json", a.qNet.Layers, a.epsilon, atomic.LoadInt64(&a.stepCount))
 	}
 	a.mu.Unlock()
 	if cnt%10 == 0 {

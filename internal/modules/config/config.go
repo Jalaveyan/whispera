@@ -46,12 +46,8 @@ const (
 type MLConfig struct {
 	Enabled bool `yaml:"enabled" json:"enabled"`
 
-	// ServerURL — публичный адрес ML-сервера, вшивается в connection key.
-	// Должен быть доступен клиентам снаружи, например "http://1.2.3.4:8000".
 	ServerURL string `yaml:"server_url" json:"server_url"`
 
-	// ListenAddr — адрес, на котором ML-сервер слушает на этой машине.
-	// Если не задан, используется ":8000".
 	ListenAddr string `yaml:"listen_addr" json:"listen_addr"`
 
 	TokenFile string `yaml:"token_file" json:"token_file"`
@@ -377,23 +373,15 @@ type PhantomConfig struct {
 
 type ChameleonConfig struct {
 	Enabled    bool   `yaml:"enabled" json:"enabled"`
-	ListenAddr string `yaml:"listen_addr" json:"listen_addr"` // default ":443"
-	// Manual TLS — takes priority over autocert.
+	ListenAddr string `yaml:"listen_addr" json:"listen_addr"`
 	TLSCert string `yaml:"tls_cert" json:"tls_cert"`
 	TLSKey  string `yaml:"tls_key" json:"tls_key"`
-	// Autocert (Let's Encrypt) — used when TLSCert is empty.
-	Domain  string `yaml:"domain" json:"domain"`    // e.g. "vpn.example.com"
-	ACMEDir string `yaml:"acme_dir" json:"acme_dir"` // cert cache dir
-	// DecoyOrigin: upstream that serves non-VPN traffic on the same port (e.g. http://127.0.0.1:80
-	// pointing at nginx loopback). Non-POST or unauthenticated requests are reverse-proxied here.
+	Domain  string `yaml:"domain" json:"domain"`
+	ACMEDir string `yaml:"acme_dir" json:"acme_dir"`
 	DecoyOrigin string `yaml:"decoy_origin" json:"decoy_origin"`
 	GANIface      string `yaml:"gan_iface" json:"gan_iface"`
 	GANPort       int    `yaml:"gan_port" json:"gan_port"`
 	GANMaxPadding int    `yaml:"gan_max_padding" json:"gan_max_padding"`
-	// BrutalMbps: when >0 on Linux with the apernet/tcp-brutal kernel module
-	// loaded, accepted sockets use "brutal" congestion control paced at this
-	// rate (Mbit/s). Holds throughput on lossy/long-RTT paths where TCP backs
-	// off. No-op without the module.
 	BrutalMbps int `yaml:"brutal_mbps" json:"brutal_mbps"`
 }
 

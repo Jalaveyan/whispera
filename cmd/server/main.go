@@ -23,6 +23,7 @@ import (
 	"golang.org/x/crypto/curve25519"
 	"golang.org/x/net/proxy"
 
+	"whispera/internal/bond"
 	"whispera/internal/cache"
 	"whispera/internal/core/base"
 	"whispera/internal/core/events"
@@ -1670,6 +1671,8 @@ func createModules(manager *lifecycle.Manager, ctx context.Context) error {
 			log.Printf("[GAN] pcap collector started on %s:%d", ganIface, ganPort)
 		}
 
+		bondCoord := bond.NewCoordinator()
+
 		cCfg := &chameleon.Config{
 			GANDecide: func(iatMean, sizeMean, upRatio float64) chameleon.GANAction {
 				a := ganRunner.GAN().Decide(mlpkg.FlowFeatures{
@@ -1702,16 +1705,28 @@ func createModules(manager *lifecycle.Manager, ctx context.Context) error {
 				return entries
 			},
 			OnConn: func(conn net.Conn, userID string) {
-				mlpkg.FlowRegistry.Register(conn.RemoteAddr().String(), mlpkg.FlowTunnel)
-				if globalRelay != nil {
-					go func() {
-						globalRelay.ServeTunnelRaw(conn, false)
-						mlpkg.FlowRegistry.Delete(conn.RemoteAddr().String())
-					}()
-				} else {
-					mlpkg.FlowRegistry.Delete(conn.RemoteAddr().String())
+				b, legacy, err := bondCoord.Offer(conn)
+				if err != nil {
 					conn.Close()
+					return
 				}
+				switch {
+				case b != nil:
+					conn = b
+				case legacy != nil:
+					conn = legacy
+				default:
+					return
+				}
+				if globalRelay == nil {
+					conn.Close()
+					return
+				}
+				mlpkg.FlowRegistry.Register(conn.RemoteAddr().String(), mlpkg.FlowTunnel)
+				go func() {
+					globalRelay.ServeTunnelRaw(conn, false)
+					mlpkg.FlowRegistry.Delete(conn.RemoteAddr().String())
+				}()
 			},
 		}
 		go func() {

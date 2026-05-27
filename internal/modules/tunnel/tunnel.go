@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"nhooyr.io/websocket"
+	"whispera/internal/bond"
 	"whispera/internal/buf"
 	"whispera/internal/core/base"
 	whisperdns "whispera/internal/dns"
@@ -242,6 +243,8 @@ type Config struct {
 	ChameleonSNI      string
 	ChameleonSecret   []byte
 	ChameleonMux      int
+	ChameleonStripe   bool
+	ChameleonStripeN  int
 
 	EnableChatFSM        bool
 	ChatFSMCoverInterval time.Duration
@@ -458,6 +461,14 @@ type Manager struct {
 	sniAgent           *mlpkg.RLSNIAgent
 	connAgent          *mlpkg.RLConnAgent
 	connAgentStop      chan struct{}
+	gpLastDn           uint64
+	gpLastUp           uint64
+	gpLastSample       time.Time
+	scaleAccBytes      uint64
+	scaleLastEval      time.Time
+	scaleMu            sync.Mutex
+	chScaleOpening     int32
+	stripe             atomic.Pointer[stripeState]
 	transportAgent     *mlpkg.RLTransportAgent
 	kaAgent            *mlpkg.RLKeepaliveAgent
 	boAgent            *mlpkg.RLBackoffAgent
@@ -501,7 +512,7 @@ type Manager struct {
 }
 
 func (m *Manager) getMuxConfig() *mux.Config {
-	base := 8 + mrand.Intn(7) // 8-14s interval — fast dead-connection detection
+	base := 8 + mrand.Intn(7)
 
 	frameSize := 65535
 	if m.chunkAgent != nil {
@@ -854,9 +865,13 @@ func (m *Manager) connectInternal(ctx context.Context, isRotation bool) error {
 
 	targetPoolSize := 2
 	if m.config.EnableChameleon {
-		targetPoolSize = m.config.ChameleonMux
-		if targetPoolSize < 1 {
-			targetPoolSize = 8
+		if m.config.ChameleonStripe {
+			targetPoolSize = 1
+		} else {
+			targetPoolSize = m.config.ChameleonMux
+			if targetPoolSize < 1 {
+				targetPoolSize = 16
+			}
 		}
 	}
 	var connectedPool []*managedConn
@@ -1152,17 +1167,31 @@ func (m *Manager) dial(ctx context.Context) (net.Conn, error) {
 			}
 			sni = host
 		}
-		conn, err := chameleon.Client(ctx, &chameleon.Config{
+		cCfg := &chameleon.Config{
 			ServerAddr:   addr,
 			ServerName:   sni,
 			SharedSecret: m.config.ChameleonSecret,
 			SessionCache: m.chameleonSessionCache,
-		})
-		if err == nil {
-			m.isTransportSecure = true
-			return conn, nil
 		}
-		log.Warn("chameleon dial failed (%v), falling back to standard transports", err)
+		dialOne := func(ctx context.Context) (net.Conn, error) {
+			return chameleon.Client(ctx, cCfg)
+		}
+		if m.config.ChameleonStripe {
+			b, err := bond.Dial(ctx, dialOne)
+			if err == nil {
+				m.stripe.Store(&stripeState{bond: b, dial: dialOne})
+				m.isTransportSecure = true
+				return b, nil
+			}
+			log.Warn("chameleon stripe dial failed (%v), falling back to standard transports", err)
+		} else {
+			conn, err := dialOne(ctx)
+			if err == nil {
+				m.isTransportSecure = true
+				return conn, nil
+			}
+			log.Warn("chameleon dial failed (%v), falling back to standard transports", err)
+		}
 	}
 
 	m.preparePhantomASN()
@@ -1970,6 +1999,42 @@ func (m *Manager) enableKillSwitch(remoteAddr net.Addr) {
 	}
 }
 
+func (mc *managedConn) Close() error {
+	mc.closeOnce.Do(func() {
+		close(mc.closing)
+		if mc.session != nil {
+			mc.session.Close()
+		}
+		if mc.Conn != nil {
+			mc.Conn.Close()
+		}
+	})
+	return nil
+}
+
+func (m *Manager) removeDeadConn(mc *managedConn) {
+	m.connMu.Lock()
+	for i, c := range m.activePool {
+		if c == mc {
+			m.activePool = append(m.activePool[:i], m.activePool[i+1:]...)
+			break
+		}
+	}
+	for sid, c := range m.streamConns {
+		if c == mc {
+			delete(m.streamConns, sid)
+		}
+	}
+	if m.activeConn == mc {
+		if len(m.activePool) > 0 {
+			m.activeConn = m.activePool[0]
+		} else {
+			m.activeConn = nil
+		}
+	}
+	m.connMu.Unlock()
+}
+
 func (m *Manager) Disconnect() {
 	m.stopKeepalive()
 	m.stopRotation()
@@ -1978,16 +2043,12 @@ func (m *Manager) Disconnect() {
 	m.connMu.Lock()
 
 	for _, c := range m.activePool {
-		c.closeOnce.Do(func() { close(c.closing) })
-		c.session.Close()
 		c.Close()
 	}
 	m.activePool = nil
 	m.activeConn = nil
 
 	for _, c := range m.drainingConns {
-		c.closeOnce.Do(func() { close(c.closing) })
-		c.session.Close()
 		c.Close()
 	}
 	m.drainingConns = nil
@@ -2291,7 +2352,10 @@ func (m *Manager) RotateSNI() {
 }
 
 func (m *Manager) readLoop(mc *managedConn) {
-	defer mc.Close()
+	defer func() {
+		m.removeDeadConn(mc)
+		mc.Close()
+	}()
 
 	var inputReader io.Reader = mc
 	if m.obfuscator != nil && !m.isTransportSecure && atomic.LoadInt32(&m.transportSecureOverride) == 0 {
@@ -2575,6 +2639,7 @@ func (m *Manager) readLoop(mc *managedConn) {
 			select {
 			case ch <- b:
 				atomic.AddUint64(&m.bytesDown, uint64(len(frameData)))
+				m.feedScale(len(frameData))
 				m.UpdateActivity()
 			default:
 				log.Warn("Stream %d buffer full, dropping frame", streamID)
@@ -2584,6 +2649,7 @@ func (m *Manager) readLoop(mc *managedConn) {
 			select {
 			case m.readCh <- b:
 				atomic.AddUint64(&m.bytesDown, uint64(len(frameData)))
+				m.feedScale(len(frameData))
 				m.UpdateActivity()
 			case <-mc.closing:
 				b.Release()
@@ -2699,12 +2765,6 @@ func (m *Manager) OpenStream(ctx context.Context, proto byte, addr string, port 
 		return nil, fmt.Errorf("write connect header: %w", err)
 	}
 
-	// Optimistic (0-RTT) open: don't block on the connect ack here. The caller
-	// starts pumping client data immediately, pipelining the first request
-	// (e.g. TLS ClientHello) right behind the connect header instead of waiting
-	// a full RTT for the server's ack. The 1-byte ack is consumed lazily on the
-	// first downstream Read by ackStripConn; a non-zero ack or dial failure
-	// surfaces there as a read error, tearing the stream down (the app retries).
 	return &ackStripConn{Conn: proxyStream, stream: stream}, nil
 }
 
@@ -2910,6 +2970,7 @@ func (m *Manager) Send(data []byte) error {
 		}
 
 		atomic.AddUint64(&m.bytesUp, uint64(n))
+		m.feedScale(n)
 		m.UpdateActivity()
 		return nil
 	}
@@ -2969,8 +3030,6 @@ closeNow:
 	}
 	m.connMu.Unlock()
 
-	mc.closeOnce.Do(func() { close(mc.closing) })
-	mc.session.Close()
 	mc.Close()
 	log.Info("Draining connection closed (%s)", reason)
 }
@@ -3104,6 +3163,9 @@ func (m *Manager) startConnAgent() {
 	if m.connAgent == nil {
 		return
 	}
+	if m.config.EnableChameleon {
+		return
+	}
 	stop := make(chan struct{})
 	m.connAgentStop = stop
 	go func() {
@@ -3187,12 +3249,28 @@ func (m *Manager) connAgentTick() {
 		errorRate = math.Min(float64(cbFail)/10.0, 1.0)
 	}
 
+	dnTotal := atomic.LoadUint64(&m.bytesDown)
+	upTotal := atomic.LoadUint64(&m.bytesUp)
+	var dnRate, upRate float64
+	now := time.Now()
+	if !m.gpLastSample.IsZero() {
+		if dt := now.Sub(m.gpLastSample).Seconds(); dt > 0 {
+			dnRate = float64(dnTotal-m.gpLastDn) / dt
+			upRate = float64(upTotal-m.gpLastUp) / dt
+		}
+	}
+	m.gpLastDn = dnTotal
+	m.gpLastUp = upTotal
+	m.gpLastSample = now
+
 	view := mlpkg.ConnPoolView{
 		Size:       poolSize,
 		RTTMs:      rttMs,
 		ErrorRate:  errorRate,
 		MissedKAs:  missedKAs,
 		CBFailures: cbFail,
+		BytesDnSec: dnRate,
+		BytesUpSec: upRate,
 	}
 
 	action := m.connAgent.Decide(view)
@@ -3281,6 +3359,149 @@ func (m *Manager) closeWorstPoolConn() bool {
 
 	log.Info("[CONN-AGENT] Pool shrunk to %d connections (closed oldest conn)", len(m.activePool))
 	return true
+}
+
+const (
+	chScaleGrowPerConn   = 2.5 * 1024 * 1024
+	chScaleShrinkPerConn = 640 * 1024
+	chScaleMaxConns      = 32
+	scaleEvalBytes       = 2 * 1024 * 1024
+)
+
+type stripeState struct {
+	bond *bond.Conn
+	dial func(context.Context) (net.Conn, error)
+}
+
+func (m *Manager) feedScale(n int) {
+	if n <= 0 || !m.config.EnableChameleon {
+		return
+	}
+	sum := atomic.AddUint64(&m.scaleAccBytes, uint64(n))
+	if sum >= scaleEvalBytes && atomic.CompareAndSwapUint64(&m.scaleAccBytes, sum, 0) {
+		m.evalScale()
+	}
+}
+
+func (m *Manager) evalScale() {
+	m.scaleMu.Lock()
+	now := time.Now()
+	last := m.scaleLastEval
+	m.scaleLastEval = now
+	m.scaleMu.Unlock()
+	if last.IsZero() {
+		return
+	}
+	dt := now.Sub(last).Seconds()
+	if dt <= 0 {
+		return
+	}
+	rate := float64(scaleEvalBytes) / dt
+
+	if m.config.ChameleonStripe {
+		m.evalStripe(rate)
+		return
+	}
+
+	m.connMu.RLock()
+	poolSize := len(m.activePool)
+	m.connMu.RUnlock()
+	if poolSize == 0 {
+		return
+	}
+	base := m.config.ChameleonMux
+	if base < 1 {
+		base = 16
+	}
+	perConn := rate / float64(poolSize)
+
+	switch {
+	case perConn >= chScaleGrowPerConn && poolSize < chScaleMaxConns:
+		if atomic.LoadInt32(&m.chScaleOpening) != 0 {
+			return
+		}
+		grow := poolSize / 4
+		if grow < 1 {
+			grow = 1
+		}
+		if poolSize+grow > chScaleMaxConns {
+			grow = chScaleMaxConns - poolSize
+		}
+		log.Info("[CH-SCALE] saturated: %.0f Mbit/s over %d conns (%.0f/conn) → +%d",
+			rate*8/1e6, poolSize, perConn*8/1e6, grow)
+		atomic.StoreInt32(&m.chScaleOpening, int32(grow))
+		for i := 0; i < grow; i++ {
+			safeGo("chScaleOpen", func() {
+				defer atomic.AddInt32(&m.chScaleOpening, -1)
+				ctx, cancel := context.WithTimeout(context.Background(), m.config.ConnectionTimeout)
+				defer cancel()
+				if err := m.openPoolConn(ctx); err != nil {
+					log.Warn("[CH-SCALE] grow failed: %v", err)
+				}
+			})
+		}
+	case perConn < chScaleShrinkPerConn && poolSize > base:
+		if m.closeIdlePoolConn(base) {
+			log.Info("[CH-SCALE] underutilized → shrink pool")
+		}
+	}
+}
+
+func (m *Manager) evalStripe(rate float64) {
+	st := m.stripe.Load()
+	if st == nil || st.bond == nil {
+		return
+	}
+	w := st.bond.Width()
+	if w < 1 {
+		return
+	}
+	maxW := m.config.ChameleonStripeN
+	if maxW < 2 || maxW > chScaleMaxConns {
+		maxW = chScaleMaxConns
+	}
+	perMember := rate / float64(w)
+	if perMember < chScaleGrowPerConn || w >= maxW {
+		return
+	}
+	if !atomic.CompareAndSwapInt32(&m.chScaleOpening, 0, 1) {
+		return
+	}
+	b, dial := st.bond, st.dial
+	safeGo("stripeGrow", func() {
+		defer atomic.StoreInt32(&m.chScaleOpening, 0)
+		ctx, cancel := context.WithTimeout(context.Background(), m.config.ConnectionTimeout)
+		defer cancel()
+		if err := b.Grow(ctx, dial); err != nil {
+			log.Warn("[CH-STRIPE] widen failed: %v", err)
+			return
+		}
+		log.Info("[CH-STRIPE] widened bond to %d members (%.0f Mbit/s, %.0f/member)",
+			b.Width(), rate*8/1e6, perMember*8/1e6)
+	})
+}
+
+func (m *Manager) closeIdlePoolConn(base int) bool {
+	m.connMu.Lock()
+	defer m.connMu.Unlock()
+	if len(m.activePool) <= base {
+		return false
+	}
+	inUse := make(map[*managedConn]int, len(m.streamConns))
+	for _, c := range m.streamConns {
+		inUse[c]++
+	}
+	for i := len(m.activePool) - 1; i >= 0; i-- {
+		c := m.activePool[i]
+		if c == m.activeConn || inUse[c] > 0 {
+			continue
+		}
+		m.activePool = append(m.activePool[:i], m.activePool[i+1:]...)
+		m.drainingConns = append(m.drainingConns, c)
+		go m.monitorDrainingConn(c)
+		return true
+	}
+	return false
 }
 
 func (m *Manager) GetState() TunnelState {

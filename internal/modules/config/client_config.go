@@ -18,6 +18,8 @@ type ClientConfig struct {
 	ServerWS     string   `yaml:"server_ws" json:"server_ws"`
 	ChameleonAddr string  `yaml:"chameleon_addr" json:"chameleon_addr"`
 	ChameleonSNI  string  `yaml:"chameleon_sni" json:"chameleon_sni"`
+	ChameleonStripeOff bool `yaml:"chameleon_stripe_off" json:"chameleon_stripe_off"`
+	ChameleonStripeN   int  `yaml:"chameleon_stripe_n" json:"chameleon_stripe_n"`
 	ServerWS2    string `yaml:"server_ws2" json:"server_ws2"`
 	TUN          string `yaml:"tun" json:"tun"`
 	TunIP        string `yaml:"tun_ip" json:"tun_ip"`
