@@ -190,14 +190,39 @@ func (r *Resolver) resolveDoH(ctx context.Context, host string) ([]net.IP, error
 
 	query := buildDNSQuery(host, 1)
 
+	type dohResult struct {
+		ips []net.IP
+		err error
+	}
+	rctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	ch := make(chan dohResult, len(r.config.Servers))
 	for _, server := range r.config.Servers {
-		ips, err := r.doHQuery(ctx, server, query)
-		if err == nil {
-			return ips, nil
-		}
+		server := server
+		go func() {
+			ips, err := r.doHQuery(rctx, server, query)
+			ch <- dohResult{ips: ips, err: err}
+		}()
 	}
 
-	return nil, errors.New("all DoH servers failed")
+	var lastErr error
+	for range r.config.Servers {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case res := <-ch:
+			if res.err == nil && len(res.ips) > 0 {
+				return res.ips, nil
+			}
+			if res.err != nil {
+				lastErr = res.err
+			}
+		}
+	}
+	if lastErr == nil {
+		lastErr = errors.New("all DoH servers failed")
+	}
+	return nil, lastErr
 }
 
 func (r *Resolver) doHQuery(ctx context.Context, server string, query []byte) ([]net.IP, error) {
