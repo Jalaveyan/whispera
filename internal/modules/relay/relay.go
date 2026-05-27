@@ -546,10 +546,10 @@ func (s *Server) handleProxyStream(stream net.Conn) {
 		if dialFn != nil {
 			target, err = dialFn(context.Background(), outboundTag, network, targetAddr)
 		} else {
-			target, err = dialer.Dial(network, targetAddr)
+			target, err = dialTarget(dialer, network, addr, port)
 		}
 	} else {
-		target, err = dialer.Dial(network, targetAddr)
+		target, err = dialTarget(dialer, network, addr, port)
 	}
 	dialDur := time.Since(dialStart)
 	if err != nil {

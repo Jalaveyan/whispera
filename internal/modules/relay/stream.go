@@ -7,13 +7,15 @@ import (
 	"io"
 	"log"
 	"net"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
-	lru "github.com/hashicorp/golang-lru/v2"
 	"github.com/klauspost/reedsolomon"
 	"golang.org/x/net/proxy"
+
+	"whispera/internal/dns"
 )
 
 var packetPool = sync.Pool{
@@ -30,17 +32,14 @@ var streamReadBufPool = sync.Pool{
 	},
 }
 
-var dnsCache *lru.Cache[string, dnsCacheEntry]
+// dohResolver resolves upstream hostnames over DNS-over-HTTPS (Cloudflare /
+// Google / Yandex, port 443) with its own LRU cache. DoH avoids both the
+// flaky systemd-resolved stub and any transparent :53 hijacking by the host
+// provider, and is tamper-resistant on the wire.
+var dohResolver = dns.NewResolver(dns.DefaultConfig())
 
-func init() {
-	dnsCache, _ = lru.New[string, dnsCacheEntry](5000)
-}
-
-type dnsCacheEntry struct {
-	ips       []net.IP
-	expiresAt time.Time
-}
-
+// fastResolver is the plaintext-UDP fallback used only when DoH is
+// unreachable (e.g. outbound 443 to the DoH providers is blocked).
 var fastResolver = &net.Resolver{
 	PreferGo: true,
 	Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
@@ -54,30 +53,43 @@ var fastResolver = &net.Resolver{
 }
 
 func lookupIPCached(host string) ([]net.IP, error) {
-	key := strings.ToLower(host)
-
-	entry, ok := dnsCache.Get(key)
-	if ok && time.Now().Before(entry.expiresAt) {
-		return entry.ips, nil
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-
-	ips, err := fastResolver.LookupIP(ctx, "ip", host)
-	if err != nil {
-		if ok {
-			return entry.ips, nil
-		}
-		return nil, err
+	if ips, err := dohResolver.Resolve(ctx, host); err == nil && len(ips) > 0 {
+		return ips, nil
 	}
 
-	dnsCache.Add(key, dnsCacheEntry{
-		ips:       ips,
-		expiresAt: time.Now().Add(5 * time.Minute),
-	})
+	// DoH unreachable — fall back to plaintext UDP so resolution never
+	// regresses below the previous behaviour.
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel2()
+	return fastResolver.LookupIP(ctx2, "ip", host)
+}
 
-	return ips, nil
+// dialTarget resolves host through the cached resolver (which queries 1.1.1.1
+// directly, bypassing a slow/flaky systemd-resolved stub) and dials the
+// resulting IPs in order. Only the local Direct dialer benefits — upstream
+// proxies resolve remotely, and bare IP targets need no lookup, so both pass
+// through untouched. On lookup failure it falls back to the dialer's own
+// resolution so behaviour never regresses below the previous path.
+func dialTarget(dialer proxy.Dialer, network, host string, port uint16) (net.Conn, error) {
+	addr := net.JoinHostPort(host, strconv.Itoa(int(port)))
+	if dialer != proxy.Direct || net.ParseIP(host) != nil {
+		return dialer.Dial(network, addr)
+	}
+	ips, err := lookupIPCached(host)
+	if err != nil || len(ips) == 0 {
+		return dialer.Dial(network, addr)
+	}
+	var lastErr error
+	for _, ip := range ips {
+		conn, derr := dialer.Dial(network, net.JoinHostPort(ip.String(), strconv.Itoa(int(port))))
+		if derr == nil {
+			return conn, nil
+		}
+		lastErr = derr
+	}
+	return nil, lastErr
 }
 
 type Stream struct {
