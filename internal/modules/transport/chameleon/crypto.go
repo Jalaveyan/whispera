@@ -59,22 +59,112 @@ func DeriveKeys(sharedSecret []byte) *Keys {
 	return keys
 }
 
+type frameReq struct {
+	data     []byte
+	bufp     *[]byte
+	addBytes uint64
+	done     chan error
+}
+
 type FrameConn struct {
 	net.Conn
-	sendMu  sync.Mutex
-	buf     []byte
-	recvBuf []byte
+	writeCh   chan *frameReq
+	closed    chan struct{}
+	closeOnce sync.Once
+	buf       []byte
+	recvBuf   []byte
 
 	bytesRecent uint64
 }
 
 func NewFrameConn(conn net.Conn) *FrameConn {
-	return &FrameConn{Conn: conn}
+	fc := &FrameConn{
+		Conn:    conn,
+		writeCh: make(chan *frameReq, 128),
+		closed:  make(chan struct{}),
+	}
+	go fc.writer()
+	return fc
 }
 
-func (fc *FrameConn) writeFrame(typ byte, p []byte) error {
-	total := 4 + 1 + len(p)
+func (fc *FrameConn) Close() error {
+	fc.closeOnce.Do(func() { close(fc.closed) })
+	return fc.Conn.Close()
+}
 
+func (fc *FrameConn) writer() {
+	var scratch []byte
+	var batch []*frameReq
+	for {
+		batch = batch[:0]
+		select {
+		case req := <-fc.writeCh:
+			batch = append(batch, req)
+		case <-fc.closed:
+			return
+		}
+	drain:
+		for len(batch) < 64 {
+			select {
+			case req := <-fc.writeCh:
+				batch = append(batch, req)
+			default:
+				break drain
+			}
+		}
+
+		total := 0
+		for _, r := range batch {
+			total += len(r.data)
+		}
+		if cap(scratch) < total {
+			scratch = make([]byte, total)
+		} else {
+			scratch = scratch[:total]
+		}
+		off := 0
+		var addBytes uint64
+		for _, r := range batch {
+			copy(scratch[off:], r.data)
+			off += len(r.data)
+			addBytes += r.addBytes
+			if r.bufp != nil {
+				frameBufPool.Put(r.bufp)
+			}
+		}
+
+		_, err := fc.Conn.Write(scratch[:off])
+		if err == nil && addBytes > 0 {
+			atomic.AddUint64(&fc.bytesRecent, addBytes)
+		}
+		for _, r := range batch {
+			select {
+			case r.done <- err:
+			default:
+			}
+		}
+	}
+}
+
+func (fc *FrameConn) submit(req *frameReq) error {
+	select {
+	case fc.writeCh <- req:
+	case <-fc.closed:
+		if req.bufp != nil {
+			frameBufPool.Put(req.bufp)
+		}
+		return io.ErrClosedPipe
+	}
+	select {
+	case err := <-req.done:
+		return err
+	case <-fc.closed:
+		return io.ErrClosedPipe
+	}
+}
+
+func (fc *FrameConn) buildFrame(typ byte, p []byte) (*[]byte, []byte) {
+	total := 4 + 1 + len(p)
 	bufp := frameBufPool.Get().(*[]byte)
 	buf := *bufp
 	if cap(buf) < total {
@@ -82,24 +172,24 @@ func (fc *FrameConn) writeFrame(typ byte, p []byte) error {
 	} else {
 		buf = buf[:total]
 	}
-
 	binary.BigEndian.PutUint32(buf[:4], uint32(1+len(p)))
 	buf[4] = typ
 	copy(buf[5:], p)
-	_, err := fc.Conn.Write(buf[:total])
-
 	*bufp = buf
-	frameBufPool.Put(bufp)
-	return err
+	return bufp, buf[:total]
 }
 
 func (fc *FrameConn) Write(p []byte) (int, error) {
-	fc.sendMu.Lock()
-	defer fc.sendMu.Unlock()
-	if err := fc.writeFrame(frameTypeData, p); err != nil {
+	bufp, framed := fc.buildFrame(frameTypeData, p)
+	req := &frameReq{
+		data:     framed,
+		bufp:     bufp,
+		addBytes: uint64(len(p)),
+		done:     make(chan error, 1),
+	}
+	if err := fc.submit(req); err != nil {
 		return 0, err
 	}
-	atomic.AddUint64(&fc.bytesRecent, uint64(len(p)))
 	return len(p), nil
 }
 
@@ -200,18 +290,15 @@ func (fc *FrameConn) WriteMultiBuffer(mb buf.MultiBuffer) error {
 		off += 5 + len(data)
 		payloadBytes += uint64(len(data))
 	}
-
-	fc.sendMu.Lock()
-	_, err := fc.Conn.Write(combined[:off])
-	fc.sendMu.Unlock()
-
 	*bufp = combined
-	frameBufPool.Put(bufp)
 
-	if err == nil {
-		atomic.AddUint64(&fc.bytesRecent, payloadBytes)
+	req := &frameReq{
+		data:     combined[:off],
+		bufp:     bufp,
+		addBytes: payloadBytes,
+		done:     make(chan error, 1),
 	}
-	return err
+	return fc.submit(req)
 }
 
 func (fc *FrameConn) WritePad(n int) error {
@@ -222,9 +309,13 @@ func (fc *FrameConn) WritePad(n int) error {
 	defer b.Release()
 	pad := b.Extend(n)
 	crand.Read(pad)
-	fc.sendMu.Lock()
-	defer fc.sendMu.Unlock()
-	return fc.writeFrame(framePadding, pad)
+	bufp, framed := fc.buildFrame(framePadding, pad)
+	req := &frameReq{
+		data: framed,
+		bufp: bufp,
+		done: make(chan error, 1),
+	}
+	return fc.submit(req)
 }
 
 func (fc *FrameConn) Read(b []byte) (int, error) {
