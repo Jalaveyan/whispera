@@ -60,7 +60,7 @@ func lookupIPCached(host string) ([]net.IP, error) {
 	}
 
 	// DoH unreachable — fall back to plaintext UDP so resolution never
-	// regresses below the previous behaviour.
+	// regresses below the previous behavior.
 	ctx2, cancel2 := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel2()
 	return fastResolver.LookupIP(ctx2, "ip", host)
@@ -71,7 +71,7 @@ func lookupIPCached(host string) ([]net.IP, error) {
 // resulting IPs in order. Only the local Direct dialer benefits — upstream
 // proxies resolve remotely, and bare IP targets need no lookup, so both pass
 // through untouched. On lookup failure it falls back to the dialer's own
-// resolution so behaviour never regresses below the previous path.
+// resolution so behavior never regresses below the previous path.
 func dialTarget(dialer proxy.Dialer, network, host string, port uint16) (net.Conn, error) {
 	addr := net.JoinHostPort(host, strconv.Itoa(int(port)))
 	if dialer != proxy.Direct || net.ParseIP(host) != nil {
