@@ -130,10 +130,18 @@ func (m *Manager) Stop() error {
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), m.shutdownTimeout)
 	defer shutdownCancel()
 
-	
-	for _, cb := range m.onStop {
-		if err := cb(); err != nil {
-			log.Printf("[Lifecycle] Pre-stop callback error: %v", err)
+	const cbTimeout = 5 * time.Second
+
+	for i, cb := range m.onStop {
+		done := make(chan error, 1)
+		go func(c func() error) { done <- c() }(cb)
+		select {
+		case err := <-done:
+			if err != nil {
+				log.Printf("[Lifecycle] Pre-stop callback error: %v", err)
+			}
+		case <-time.After(cbTimeout):
+			log.Printf("[Lifecycle] Pre-stop callback[%d] timeout %s — продолжаем", i, cbTimeout)
 		}
 	}
 
@@ -148,7 +156,6 @@ func (m *Manager) Stop() error {
 	// Каждый onShutdown callback ограничиваем 5s. Раньше любой зависший
 	// callback (например, net.Close на активном соединении) держал shutdown
 	// дольше systemd TimeoutStopSec → SIGKILL.
-	const cbTimeout = 5 * time.Second
 	for i, cb := range m.onShutdown {
 		done := make(chan struct{})
 		go func(c func()) { defer close(done); defer recoverPanic(i); c() }(cb)
@@ -187,7 +194,16 @@ func (m *Manager) Run() error {
 				}
 			case syscall.SIGINT, syscall.SIGTERM:
 				log.Printf("[Lifecycle] Received %v, initiating shutdown...", sig)
-				return m.Stop()
+				done := make(chan error, 1)
+				go func() { done <- m.Stop() }()
+				select {
+				case err := <-done:
+					return err
+				case <-time.After(m.shutdownTimeout + 15*time.Second):
+					log.Printf("[Lifecycle] shutdown exceeded %s — forcing exit", m.shutdownTimeout+15*time.Second)
+					os.Exit(0)
+					return nil
+				}
 			}
 		case <-m.ctx.Done():
 			return m.Stop()
