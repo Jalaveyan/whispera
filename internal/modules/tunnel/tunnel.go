@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"nhooyr.io/websocket"
+	"github.com/sourcegraph/conc/iter"
 	"whispera/internal/bond"
 	"whispera/internal/buf"
 	"whispera/internal/core/base"
@@ -4047,28 +4048,15 @@ func (m *Manager) pickServer(ctx context.Context) string {
 		return ""
 	}
 
-	type probeResult struct {
-		addr    string
-		latency time.Duration
-	}
-	ch := make(chan probeResult, len(candidates))
-	for _, addr := range candidates {
-		addr := addr
-		go func() {
-			lat, err := probeLatency(ctx, addr, 200*time.Millisecond)
-			if err != nil {
-				ch <- probeResult{addr: addr, latency: math.MaxInt64}
-				return
-			}
-			log.Info("[LATENCY] %s RTT=%v", addr, lat)
-			ch <- probeResult{addr: addr, latency: lat}
-		}()
-	}
-	probes := make([]mlpkg.ServerProbe, len(candidates))
-	for i := range candidates {
-		r := <-ch
-		probes[i] = mlpkg.ServerProbe{Addr: r.addr, Latency: r.latency}
-	}
+	probes := iter.Map(candidates, func(a *string) mlpkg.ServerProbe {
+		addr := *a
+		lat, err := probeLatency(ctx, addr, 200*time.Millisecond)
+		if err != nil {
+			return mlpkg.ServerProbe{Addr: addr, Latency: math.MaxInt64}
+		}
+		log.Info("[LATENCY] %s RTT=%v", addr, lat)
+		return mlpkg.ServerProbe{Addr: addr, Latency: lat}
+	})
 
 	if m.serverAgent != nil {
 		if chosen := m.serverAgent.Decide(probes); chosen != "" {
