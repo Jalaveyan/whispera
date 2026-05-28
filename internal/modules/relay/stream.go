@@ -38,32 +38,10 @@ var streamReadBufPool = sync.Pool{
 // provider, and is tamper-resistant on the wire.
 var dohResolver = dns.NewResolver(dns.DefaultConfig())
 
-// fastResolver is the plaintext-UDP fallback used only when DoH is
-// unreachable (e.g. outbound 443 to the DoH providers is blocked).
-var fastResolver = &net.Resolver{
-	PreferGo: true,
-	Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
-		d := net.Dialer{Timeout: 2 * time.Second}
-		conn, err := d.DialContext(ctx, "udp", "1.1.1.1:53")
-		if err != nil {
-			conn, err = d.DialContext(ctx, "udp", "8.8.8.8:53")
-		}
-		return conn, err
-	},
-}
-
 func lookupIPCached(host string) ([]net.IP, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	if ips, err := dohResolver.Resolve(ctx, host); err == nil && len(ips) > 0 {
-		return ips, nil
-	}
-
-	// DoH unreachable — fall back to plaintext UDP so resolution never
-	// regresses below the previous behavior.
-	ctx2, cancel2 := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel2()
-	return fastResolver.LookupIP(ctx2, "ip", host)
+	return dohResolver.Resolve(ctx, host)
 }
 
 // dialTarget resolves host through the cached resolver (which queries 1.1.1.1
@@ -287,7 +265,7 @@ func (s *Stream) Connect(ctx context.Context) error {
 
 	connectTimeout := 5 * time.Second
 
-	target := net.JoinHostPort(s.TargetAddr, fmt.Sprintf("%d", s.TargetPort))
+	target := net.JoinHostPort(s.TargetAddr, strconv.Itoa(int(s.TargetPort)))
 
 	var err error
 	switch s.Protocol {
@@ -766,7 +744,7 @@ func NewStreamManager(dialer proxy.Dialer) *StreamManager {
 		dialer:   dialer,
 		ctx:      ctx,
 		cancel:   cancel,
-		connPool: NewConnectionPool(1*time.Second, 64),
+		connPool: NewConnectionPool(30*time.Second, 64),
 	}
 
 	go sm.cleanupLoop()
