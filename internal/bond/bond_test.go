@@ -183,11 +183,11 @@ func TestBondCloseEOF(t *testing.T) {
 
 func TestReordererGapsAndDups(t *testing.T) {
 	r := newReorderer(1 << 20)
-	r.push(2, []byte("c"))
-	r.push(0, []byte("a"))
-	r.push(1, []byte("b"))
-	r.push(1, []byte("X"))
-	r.push(2, []byte("Y"))
+	r.push(2, []byte("c"), nil)
+	r.push(0, []byte("a"), nil)
+	r.push(1, []byte("b"), nil)
+	r.push(1, []byte("X"), nil)
+	r.push(2, []byte("Y"), nil)
 	r.setClosed(nil)
 
 	var out []byte

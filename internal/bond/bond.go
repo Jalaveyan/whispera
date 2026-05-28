@@ -21,12 +21,32 @@ const (
 
 var ErrClosed = errors.New("bond: closed")
 
+var framePool = sync.Pool{
+	New: func() interface{} {
+		b := make([]byte, hdrSize+maxChunk)
+		return &b
+	},
+}
+
+func frameGet() *[]byte {
+	bp := framePool.Get().(*[]byte)
+	*bp = (*bp)[:cap(*bp)]
+	return bp
+}
+
+func framePut(bp *[]byte) {
+	if bp == nil {
+		return
+	}
+	framePool.Put(bp)
+}
+
 type Conn struct {
 	id bondID
 
 	mu      sync.Mutex
-	members []net.Conn
-	wq      []chan []byte
+	members [maxBondMembers]net.Conn
+	wq      [maxBondMembers]chan *[]byte
 	n       int32
 
 	writeMu sync.Mutex
@@ -42,32 +62,31 @@ type Conn struct {
 
 func newConn(id bondID, first net.Conn) *Conn {
 	c := &Conn{
-		id:      id,
-		members: make([]net.Conn, 0, maxBondMembers),
-		wq:      make([]chan []byte, 0, maxBondMembers),
-		closed:  make(chan struct{}),
-		ro:      newReorderer(defaultBudget),
+		id:     id,
+		closed: make(chan struct{}),
+		ro:     newReorderer(defaultBudget),
 	}
 	c.AddMember(first)
 	return c
 }
 
 func (c *Conn) AddMember(m net.Conn) bool {
+	c.mu.Lock()
 	select {
 	case <-c.closed:
+		c.mu.Unlock()
 		m.Close()
 		return false
 	default:
 	}
-	c.mu.Lock()
-	if len(c.members) >= maxBondMembers {
+	i := int(c.n)
+	if i >= maxBondMembers {
 		c.mu.Unlock()
 		m.Close()
 		return false
 	}
-	i := len(c.members)
-	c.members = append(c.members, m)
-	c.wq = append(c.wq, make(chan []byte, writeQueueDepth))
+	c.members[i] = m
+	c.wq[i] = make(chan *[]byte, writeQueueDepth)
 	c.writerWg.Add(1)
 	atomic.StoreInt32(&c.n, int32(i+1))
 	c.mu.Unlock()
@@ -115,34 +134,24 @@ func (c *Conn) shutdown(err error, graceful bool) error {
 	}
 	c.ro.setClosed(c.loadErr())
 	c.mu.Lock()
-	members := append([]net.Conn(nil), c.members...)
+	n := int(c.n)
 	c.mu.Unlock()
-	for _, m := range members {
-		m.Close()
+	for i := 0; i < n; i++ {
+		if c.members[i] != nil {
+			c.members[i].Close()
+		}
 	}
 	return nil
 }
 
-func (c *Conn) queue(i int) chan []byte {
-	c.mu.Lock()
-	ch := c.wq[i]
-	c.mu.Unlock()
-	return ch
-}
-
-func (c *Conn) member(i int) net.Conn {
-	c.mu.Lock()
-	m := c.members[i]
-	c.mu.Unlock()
-	return m
-}
-
 func (c *Conn) writeLoop(i int) {
 	defer c.writerWg.Done()
-	m := c.member(i)
-	q := c.queue(i)
-	write := func(frame []byte) bool {
-		if _, err := m.Write(frame); err != nil {
+	m := c.members[i]
+	q := c.wq[i]
+	write := func(bp *[]byte) bool {
+		_, err := m.Write(*bp)
+		framePut(bp)
+		if err != nil {
 			c.setErr(err)
 			return false
 		}
@@ -150,15 +159,15 @@ func (c *Conn) writeLoop(i int) {
 	}
 	for {
 		select {
-		case frame := <-q:
-			if !write(frame) {
+		case bp := <-q:
+			if !write(bp) {
 				return
 			}
 		case <-c.closed:
 			for {
 				select {
-				case frame := <-q:
-					if !write(frame) {
+				case bp := <-q:
+					if !write(bp) {
 						return
 					}
 				default:
@@ -170,23 +179,26 @@ func (c *Conn) writeLoop(i int) {
 }
 
 func (c *Conn) readLoop(i int) {
-	m := c.member(i)
-	hdr := make([]byte, hdrSize)
+	m := c.members[i]
+	var hdr [hdrSize]byte
 	for {
-		if _, err := io.ReadFull(m, hdr); err != nil {
+		if _, err := io.ReadFull(m, hdr[:]); err != nil {
 			c.setErr(err)
 			return
 		}
 		seq := binary.BigEndian.Uint64(hdr[0:8])
 		ln := binary.BigEndian.Uint32(hdr[8:12])
-		data := make([]byte, ln)
+		bp := frameGet()
+		data := (*bp)[:ln]
 		if ln > 0 {
 			if _, err := io.ReadFull(m, data); err != nil {
+				framePut(bp)
 				c.setErr(err)
 				return
 			}
 		}
-		if !c.ro.push(seq, data) {
+		if !c.ro.push(seq, data, bp) {
+			framePut(bp)
 			return
 		}
 	}
@@ -208,19 +220,36 @@ func (c *Conn) Write(p []byte) (int, error) {
 		}
 		seq := c.nextSeq
 		c.nextSeq++
-		frame := make([]byte, hdrSize+n)
+		bp := frameGet()
+		frame := (*bp)[:hdrSize+n]
 		binary.BigEndian.PutUint64(frame[0:8], seq)
 		binary.BigEndian.PutUint32(frame[8:12], uint32(n))
 		copy(frame[hdrSize:], p[:n])
-		width := atomic.LoadInt32(&c.n)
+		*bp = frame
+		width := int(atomic.LoadInt32(&c.n))
 		if width < 1 {
+			framePut(bp)
 			return total, c.loadErr()
 		}
-		idx := int(seq % uint64(width))
-		select {
-		case c.queue(idx) <- frame:
-		case <-c.closed:
-			return total, c.loadErr()
+		start := int(seq % uint64(width))
+		placed := false
+		for off := 0; off < width; off++ {
+			select {
+			case c.wq[(start+off)%width] <- bp:
+				placed = true
+			default:
+			}
+			if placed {
+				break
+			}
+		}
+		if !placed {
+			select {
+			case c.wq[start] <- bp:
+			case <-c.closed:
+				framePut(bp)
+				return total, c.loadErr()
+			}
 		}
 		total += n
 		p = p[n:]
@@ -247,38 +276,42 @@ func (c *Conn) RemoteAddr() net.Addr {
 }
 
 func (c *Conn) member0() net.Conn {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if len(c.members) > 0 {
-		return c.members[0]
+	if atomic.LoadInt32(&c.n) == 0 {
+		return nil
 	}
-	return nil
+	return c.members[0]
 }
 
 func (c *Conn) SetDeadline(t time.Time) error      { return nil }
 func (c *Conn) SetReadDeadline(t time.Time) error  { return nil }
 func (c *Conn) SetWriteDeadline(t time.Time) error { return nil }
 
+type rchunk struct {
+	data []byte
+	buf  *[]byte
+}
+
 type reorderer struct {
-	mu       sync.Mutex
-	cond     *sync.Cond
-	next     uint64
-	pending  map[uint64][]byte
-	ready    [][]byte
-	leftover []byte
-	budget   int
-	bufBytes int
-	closed   bool
-	err      error
+	mu          sync.Mutex
+	cond        *sync.Cond
+	next        uint64
+	pending     map[uint64]rchunk
+	ready       []rchunk
+	leftover    []byte
+	leftoverBuf *[]byte
+	budget      int
+	bufBytes    int
+	closed      bool
+	err         error
 }
 
 func newReorderer(budget int) *reorderer {
-	r := &reorderer{pending: make(map[uint64][]byte), budget: budget}
+	r := &reorderer{pending: make(map[uint64]rchunk), budget: budget}
 	r.cond = sync.NewCond(&r.mu)
 	return r
 }
 
-func (r *reorderer) push(seq uint64, data []byte) bool {
+func (r *reorderer) push(seq uint64, data []byte, buf *[]byte) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for !r.closed && seq != r.next && r.bufBytes >= r.budget {
@@ -288,27 +321,30 @@ func (r *reorderer) push(seq uint64, data []byte) bool {
 		return false
 	}
 	if seq < r.next {
+		framePut(buf)
 		return true
 	}
 	if seq == r.next {
-		r.ready = append(r.ready, data)
+		r.ready = append(r.ready, rchunk{data: data, buf: buf})
 		r.next++
 		for {
-			d, ok := r.pending[r.next]
+			c, ok := r.pending[r.next]
 			if !ok {
 				break
 			}
 			delete(r.pending, r.next)
-			r.bufBytes -= len(d)
-			r.ready = append(r.ready, d)
+			r.bufBytes -= len(c.data)
+			r.ready = append(r.ready, c)
 			r.next++
 		}
 		r.cond.Broadcast()
 		return true
 	}
 	if _, exists := r.pending[seq]; !exists {
-		r.pending[seq] = data
+		r.pending[seq] = rchunk{data: data, buf: buf}
 		r.bufBytes += len(data)
+	} else {
+		framePut(buf)
 	}
 	return true
 }
@@ -323,12 +359,18 @@ func (r *reorderer) read(p []byte) (int, error) {
 		r.cond.Wait()
 	}
 	if len(r.leftover) == 0 {
-		r.leftover = r.ready[0]
-		r.ready[0] = nil
+		c := r.ready[0]
+		r.ready[0] = rchunk{}
 		r.ready = r.ready[1:]
+		r.leftover = c.data
+		r.leftoverBuf = c.buf
 	}
 	n := copy(p, r.leftover)
 	r.leftover = r.leftover[n:]
+	if len(r.leftover) == 0 {
+		framePut(r.leftoverBuf)
+		r.leftoverBuf = nil
+	}
 	r.cond.Broadcast()
 	return n, nil
 }
