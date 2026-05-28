@@ -20,6 +20,26 @@ var frameBufPool = sync.Pool{
 	New: func() any { b := make([]byte, 0, 5+65536); return &b },
 }
 
+var frameReqPool = sync.Pool{
+	New: func() any { return &frameReq{done: make(chan error, 1)} },
+}
+
+func acquireFrameReq() *frameReq {
+	r := frameReqPool.Get().(*frameReq)
+	select {
+	case <-r.done:
+	default:
+	}
+	return r
+}
+
+func releaseFrameReq(r *frameReq) {
+	r.data = nil
+	r.bufp = nil
+	r.addBytes = 0
+	frameReqPool.Put(r)
+}
+
 const (
 	maxFrameSize  = 4 * 1024 * 1024
 	frameTypeData = byte(0x01)
@@ -167,10 +187,12 @@ func (fc *FrameConn) submit(req *frameReq) error {
 		if req.bufp != nil {
 			frameBufPool.Put(req.bufp)
 		}
+		releaseFrameReq(req)
 		return io.ErrClosedPipe
 	}
 	select {
 	case err := <-req.done:
+		releaseFrameReq(req)
 		return err
 	case <-fc.closed:
 		return io.ErrClosedPipe
@@ -195,12 +217,10 @@ func (fc *FrameConn) buildFrame(typ byte, p []byte) (*[]byte, []byte) {
 
 func (fc *FrameConn) Write(p []byte) (int, error) {
 	bufp, framed := fc.buildFrame(frameTypeData, p)
-	req := &frameReq{
-		data:     framed,
-		bufp:     bufp,
-		addBytes: uint64(len(p)),
-		done:     make(chan error, 1),
-	}
+	req := acquireFrameReq()
+	req.data = framed
+	req.bufp = bufp
+	req.addBytes = uint64(len(p))
 	if err := fc.submit(req); err != nil {
 		return 0, err
 	}
@@ -306,12 +326,10 @@ func (fc *FrameConn) WriteMultiBuffer(mb buf.MultiBuffer) error {
 	}
 	*bufp = combined
 
-	req := &frameReq{
-		data:     combined[:off],
-		bufp:     bufp,
-		addBytes: payloadBytes,
-		done:     make(chan error, 1),
-	}
+	req := acquireFrameReq()
+	req.data = combined[:off]
+	req.bufp = bufp
+	req.addBytes = payloadBytes
 	return fc.submit(req)
 }
 
@@ -324,11 +342,9 @@ func (fc *FrameConn) WritePad(n int) error {
 	pad := b.Extend(n)
 	crand.Read(pad)
 	bufp, framed := fc.buildFrame(framePadding, pad)
-	req := &frameReq{
-		data: framed,
-		bufp: bufp,
-		done: make(chan error, 1),
-	}
+	req := acquireFrameReq()
+	req.data = framed
+	req.bufp = bufp
 	return fc.submit(req)
 }
 
