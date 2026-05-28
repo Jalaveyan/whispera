@@ -906,7 +906,10 @@ show_extras_menu() {
             15) systemctl status whispera ;;
             16) journalctl -u whispera -f ;;
             17) ${EDITOR:-nano} /etc/whispera/config.yaml; refresh_config ;;
-            18) bash <(curl -sL https://raw.githubusercontent.com/Jalaveyan/Whispera/main/update.sh) ;;
+            18)
+                pkill -9 whispera 2>/dev/null
+                bash <(curl -sL https://raw.githubusercontent.com/Jalaveyan/Whispera/main/update.sh)
+                ;;
             19)
                 local tok=$(cat "$CONF_PATH/bridge.token" 2>/dev/null)
                 if [[ -z "$tok" ]]; then
