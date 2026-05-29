@@ -17,9 +17,12 @@ const (
 	writeQueueDepth = 256
 	flushTimeout    = 2 * time.Second
 	maxBondMembers  = 1024
+	gapStallTimeout = 8 * time.Second
 )
 
 var ErrClosed = errors.New("bond: closed")
+
+var ErrGapStalled = errors.New("bond: reorder gap stalled")
 
 var framePool = sync.Pool{
 	New: func() interface{} {
@@ -68,6 +71,7 @@ func newConn(id bondID, first net.Conn) *Conn {
 		closed: make(chan struct{}),
 		ro:     newReorderer(defaultBudget),
 	}
+	c.ro.onStall = func() { c.setErr(ErrGapStalled) }
 	c.AddMember(first)
 	return c
 }
@@ -363,10 +367,38 @@ type reorderer struct {
 	bufBytes    int
 	closed      bool
 	err         error
+
+	onStall      func()
+	stallTimer   *time.Timer
+	stallTimeout time.Duration
+}
+
+func (r *reorderer) fireStall() {
+	r.mu.Lock()
+	stuck := !r.closed && r.bufBytes > 0
+	r.mu.Unlock()
+	if stuck && r.onStall != nil {
+		r.onStall()
+	}
+}
+
+func (r *reorderer) syncGapTimer(advanced bool) {
+	if advanced && r.stallTimer != nil {
+		r.stallTimer.Stop()
+		r.stallTimer = nil
+	}
+	if r.bufBytes > 0 {
+		if r.stallTimer == nil && !r.closed {
+			r.stallTimer = time.AfterFunc(r.stallTimeout, r.fireStall)
+		}
+	} else if r.stallTimer != nil {
+		r.stallTimer.Stop()
+		r.stallTimer = nil
+	}
 }
 
 func newReorderer(budget int) *reorderer {
-	r := &reorderer{pending: make(map[uint64]rchunk), budget: budget}
+	r := &reorderer{pending: make(map[uint64]rchunk), budget: budget, stallTimeout: gapStallTimeout}
 	r.cond = sync.NewCond(&r.mu)
 	return r
 }
@@ -397,6 +429,7 @@ func (r *reorderer) push(seq uint64, data []byte, buf *[]byte) bool {
 			r.ready = append(r.ready, c)
 			r.next++
 		}
+		r.syncGapTimer(true)
 		r.cond.Broadcast()
 		return true
 	}
@@ -406,6 +439,7 @@ func (r *reorderer) push(seq uint64, data []byte, buf *[]byte) bool {
 	} else {
 		framePut(buf)
 	}
+	r.syncGapTimer(false)
 	return true
 }
 
@@ -440,6 +474,10 @@ func (r *reorderer) setClosed(err error) {
 	if !r.closed {
 		r.closed = true
 		r.err = err
+	}
+	if r.stallTimer != nil {
+		r.stallTimer.Stop()
+		r.stallTimer = nil
 	}
 	r.cond.Broadcast()
 	r.mu.Unlock()

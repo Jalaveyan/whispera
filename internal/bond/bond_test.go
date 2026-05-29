@@ -181,6 +181,58 @@ func TestBondCloseEOF(t *testing.T) {
 	b.Close()
 }
 
+func TestReordererGapTimeoutFires(t *testing.T) {
+	r := newReorderer(defaultBudget)
+	r.stallTimeout = 50 * time.Millisecond
+	stalled := make(chan struct{}, 1)
+	r.onStall = func() {
+		select {
+		case stalled <- struct{}{}:
+		default:
+		}
+	}
+
+	bp := frameGet()
+	data := (*bp)[:4]
+	copy(data, "data")
+	r.push(1, data, bp)
+
+	select {
+	case <-stalled:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("onStall did not fire on a stuck gap")
+	}
+}
+
+func TestReordererGapFilledNoStall(t *testing.T) {
+	r := newReorderer(defaultBudget)
+	r.stallTimeout = 80 * time.Millisecond
+	stalled := make(chan struct{}, 1)
+	r.onStall = func() {
+		select {
+		case stalled <- struct{}{}:
+		default:
+		}
+	}
+
+	b1 := frameGet()
+	d1 := (*b1)[:3]
+	copy(d1, "one")
+	r.push(1, d1, b1)
+
+	time.Sleep(20 * time.Millisecond)
+	b0 := frameGet()
+	d0 := (*b0)[:4]
+	copy(d0, "zero")
+	r.push(0, d0, b0)
+
+	select {
+	case <-stalled:
+		t.Fatal("onStall fired though the gap was filled")
+	case <-time.After(250 * time.Millisecond):
+	}
+}
+
 func TestReordererGapsAndDups(t *testing.T) {
 	r := newReorderer(1 << 20)
 	r.push(2, []byte("c"), nil)
