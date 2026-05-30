@@ -10,15 +10,6 @@ import (
 	"time"
 )
 
-// testConn — управляемый fake net.Conn для проверки FrameConn writer'а.
-//
-// Режимы:
-//   mode == "normal"  — Write возвращает (len(p), nil)
-//   mode == "partial" — Write возвращает (partialN, nil) где partialN = min(maxPerWrite, len(p))
-//   mode == "zero"    — Write возвращает (0, nil)
-//   mode == "error"   — Write возвращает (0, writeErr)
-//
-// Все записанные байты копятся в writes (под mu) — для проверки порядка/потерь.
 type testConn struct {
 	mu          sync.Mutex
 	mode        string
@@ -84,7 +75,6 @@ func TestFrameConn_NormalWrite(t *testing.T) {
 		t.Fatalf("Write returned %d, want %d", n, len(payload))
 	}
 
-	// Frame layout: 4 bytes len + 1 byte type + payload
 	want := []byte{0, 0, 0, 6, frameTypeData, 'h', 'e', 'l', 'l', 'o'}
 	got := tc.bytesWritten()
 	if string(got) != string(want) {
@@ -106,13 +96,11 @@ func TestFrameConn_PartialWriteRetries(t *testing.T) {
 		t.Fatalf("Write returned %d, want %d", n, len(payload))
 	}
 
-	// Total written must equal frame size: 4 + 1 + 14 = 19 bytes
 	got := tc.bytesWritten()
 	if len(got) != 19 {
 		t.Fatalf("written %d bytes, want 19; payload truncated despite no err — short-write bug",
 			len(got))
 	}
-	// More than 1 syscall expected (19 bytes / 3 per write = 7 syscalls)
 	if tc.syscalls() < 2 {
 		t.Fatalf("expected >=2 syscalls under partial mode, got %d", tc.syscalls())
 	}
@@ -164,12 +152,10 @@ func TestFrameConn_ConcurrentWritesCoalesce(t *testing.T) {
 	}
 	wg.Wait()
 
-	// Total bytes = N * (4+1+1) = 600
 	got := tc.bytesWritten()
 	if len(got) != N*6 {
 		t.Fatalf("written %d bytes, want %d", len(got), N*6)
 	}
-	// Syscalls should be substantially fewer than N due to batching
 	if tc.syscalls() >= N {
 		t.Fatalf("no batching: %d syscalls for %d writes (expected <%d)",
 			tc.syscalls(), N, N)
@@ -178,7 +164,6 @@ func TestFrameConn_ConcurrentWritesCoalesce(t *testing.T) {
 }
 
 func TestFrameConn_CloseUnblocksPendingSubmit(t *testing.T) {
-	// blockingConn: Write blocks until Close.
 	blocked := make(chan struct{})
 	bc := &blockingConn{block: blocked}
 
@@ -190,10 +175,9 @@ func TestFrameConn_CloseUnblocksPendingSubmit(t *testing.T) {
 		errCh <- err
 	}()
 
-	// Give submit time to enter and block.
 	time.Sleep(50 * time.Millisecond)
 	fc.Close()
-	close(blocked) // release the blocked Write
+	close(blocked)
 
 	select {
 	case err := <-errCh:
@@ -226,7 +210,7 @@ func TestFrameConn_WriteMultiBufferPartialRetries(t *testing.T) {
 	fc := NewFrameConn(tc)
 	defer fc.Close()
 
-	mb := []byte("AAAAAAAAAA") // 10 bytes
+	mb := []byte("AAAAAAAAAA")
 	if _, err := fc.Write(mb); err != nil {
 		t.Fatalf("Write err: %v", err)
 	}

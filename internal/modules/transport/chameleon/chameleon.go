@@ -101,8 +101,6 @@ type Config struct {
 
 	DecoyOrigin string
 
-	BrutalMbps int
-
 	OnConn func(conn net.Conn, userID string)
 
 	GANDecide GANDecideFunc
@@ -344,18 +342,13 @@ func ListenAndServe(ctx context.Context, cfg *Config) error {
 	if err != nil {
 		return fmt.Errorf("chameleon: listen: %w", err)
 	}
-	tlsLn := tls.NewListener(&noDelayListener{TCPListener: rawLn.(*net.TCPListener), brutalMbps: cfg.BrutalMbps}, tlsCfg)
-	if cfg.BrutalMbps > 0 {
-		log.Printf("Chameleon listening on %s (brutal CC @ %d Mbit/s)", listenAddr, cfg.BrutalMbps)
-	} else {
-		log.Printf("Chameleon listening on %s", listenAddr)
-	}
+	tlsLn := tls.NewListener(&noDelayListener{TCPListener: rawLn.(*net.TCPListener)}, tlsCfg)
+	log.Printf("Chameleon listening on %s", listenAddr)
 	return srv.Serve(tlsLn)
 }
 
 type noDelayListener struct {
 	*net.TCPListener
-	brutalMbps int
 }
 
 func (l *noDelayListener) Accept() (net.Conn, error) {
@@ -366,12 +359,7 @@ func (l *noDelayListener) Accept() (net.Conn, error) {
 	tc.SetKeepAlive(true)
 	tc.SetKeepAlivePeriod(time.Duration(30+mrand.Intn(61)) * time.Second)
 	tc.SetNoDelay(true)
-	_ = tc.SetReadBuffer(16 * 1024 * 1024)
-	_ = tc.SetWriteBuffer(16 * 1024 * 1024)
 	tcpFastKeepalive(tc)
-	if l.brutalMbps > 0 {
-		setBrutalRate(tc, l.brutalMbps)
-	}
 	return tc, nil
 }
 

@@ -370,7 +370,7 @@ func (s *Server) ServeTunnelRaw(conn net.Conn, streamObf bool) {
 func (s *Server) serveTunnel(conn net.Conn, streamObf bool, usePadding bool) {
 	defer conn.Close()
 	clientID := conn.RemoteAddr().String()
-	s.log.Info("Starting tunnel session for %s", clientID)
+	s.log.Debug("Starting tunnel session for %s", clientID)
 
 	if tcpConn, ok := conn.(*net.TCPConn); ok {
 		_ = tcpConn.SetNoDelay(true)
@@ -406,10 +406,10 @@ func (s *Server) serveTunnel(conn net.Conn, streamObf bool, usePadding bool) {
 	}
 	defer session.Close()
 
-	s.log.Info("Tunnel session ready for %s", clientID)
+	s.log.Debug("Tunnel session ready for %s", clientID)
 
 	firstStream := true
-	s.log.Info("waiting for first stream from %s", clientID)
+	s.log.Debug("waiting for first stream from %s", clientID)
 	for {
 		stream, err := session.AcceptStream()
 		if err != nil {
@@ -426,7 +426,7 @@ func (s *Server) serveTunnel(conn net.Conn, streamObf bool, usePadding bool) {
 		}
 		if firstStream {
 			firstStream = false
-			s.log.Info("control stream (1) accepted from %s", clientID)
+			s.log.Debug("control stream (1) accepted from %s", clientID)
 			if streamObf {
 				go io.Copy(io.Discard, transport.WrapStreamTLS(stream))
 			} else {
@@ -544,7 +544,9 @@ func (s *Server) handleProxyStream(stream net.Conn) {
 		dialFn := s.outboundDial
 		s.mu.RUnlock()
 		if dialFn != nil {
-			target, err = dialFn(context.Background(), outboundTag, network, targetAddr)
+			dctx, dcancel := context.WithTimeout(context.Background(), targetDialTimeout)
+			target, err = dialFn(dctx, outboundTag, network, targetAddr)
+			dcancel()
 		} else {
 			target, err = dialTarget(dialer, network, addr, port)
 		}
@@ -559,7 +561,7 @@ func (s *Server) handleProxyStream(stream net.Conn) {
 	}
 	defer target.Close()
 	if dialDur > 500*time.Millisecond {
-		s.log.Info("slow dial %s:%d took %s", addr, port, dialDur)
+		s.log.Debug("slow dial %s:%d took %s", addr, port, dialDur)
 	}
 
 	ackStart := time.Now()
@@ -568,14 +570,12 @@ func (s *Server) handleProxyStream(stream net.Conn) {
 		return
 	}
 	if d := time.Since(ackStart); d > 200*time.Millisecond {
-		s.log.Info("slow ack write %s:%d took %s", addr, port, d)
+		s.log.Debug("slow ack write %s:%d took %s", addr, port, d)
 	}
 
 	if tcpTarget, ok := target.(*net.TCPConn); ok {
 		tcpTarget.SetKeepAlive(true)
 		tcpTarget.SetKeepAlivePeriod(45 * time.Second)
-		tcpTarget.SetReadBuffer(4 * 1024 * 1024)
-		tcpTarget.SetWriteBuffer(4 * 1024 * 1024)
 	}
 
 	type copyResult struct {
@@ -672,7 +672,7 @@ func (s *Server) handleProxyStream(stream net.Conn) {
 		if isNormalConnClose(firstErr) {
 			s.log.Debug("stream done %s:%d up=%d down=%d in %s, %s closed: %v", addr, port, up, down, dur, firstDir, firstErr)
 		} else {
-			s.log.Info("stream done %s:%d up=%d down=%d in %s, %s err: %v", addr, port, up, down, dur, firstDir, firstErr)
+			s.log.Debug("stream done %s:%d up=%d down=%d in %s, %s err: %v", addr, port, up, down, dur, firstDir, firstErr)
 		}
 	} else if dur > 5*time.Second || up+down > 0 {
 		s.log.Debug("stream done %s:%d up=%d down=%d in %s", addr, port, up, down, dur)

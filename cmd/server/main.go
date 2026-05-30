@@ -1691,7 +1691,6 @@ func createModules(manager *lifecycle.Manager, ctx context.Context) error {
 			Domain:      serverConfig.Chameleon.Domain,
 			ACMEDir:     serverConfig.Chameleon.ACMEDir,
 			DecoyOrigin: serverConfig.Chameleon.DecoyOrigin,
-			BrutalMbps:  serverConfig.Chameleon.BrutalMbps,
 			GetUsers: func() []chameleon.UserEntry {
 				registered := apiserver.GetRegisteredUsers()
 				entries := make([]chameleon.UserEntry, 0, len(registered))

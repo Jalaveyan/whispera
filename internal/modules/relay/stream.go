@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/klauspost/reedsolomon"
@@ -24,7 +25,6 @@ var packetPool = sync.Pool{
 	},
 }
 
-// streamReadBufPool holds buffers for readFromTarget goroutines (HeaderSize+65536).
 var streamReadBufPool = sync.Pool{
 	New: func() any {
 		buf := make([]byte, HeaderSize+65536)
@@ -32,10 +32,6 @@ var streamReadBufPool = sync.Pool{
 	},
 }
 
-// dohResolver resolves upstream hostnames over DNS-over-HTTPS (Cloudflare /
-// Google / Yandex, port 443) with its own LRU cache. DoH avoids both the
-// flaky systemd-resolved stub and any transparent :53 hijacking by the host
-// provider, and is tamper-resistant on the wire.
 var dohResolver = dns.NewResolver(dns.DefaultConfig())
 
 func lookupIPCached(host string) ([]net.IP, error) {
@@ -44,24 +40,28 @@ func lookupIPCached(host string) ([]net.IP, error) {
 	return dohResolver.Resolve(ctx, host)
 }
 
-// dialTarget resolves host through the cached resolver (which queries 1.1.1.1
-// directly, bypassing a slow/flaky systemd-resolved stub) and dials the
-// resulting IPs in order. Only the local Direct dialer benefits — upstream
-// proxies resolve remotely, and bare IP targets need no lookup, so both pass
-// through untouched. On lookup failure it falls back to the dialer's own
-// resolution so behavior never regresses below the previous path.
+const targetDialTimeout = 15 * time.Second
+
 func dialTarget(dialer proxy.Dialer, network, host string, port uint16) (net.Conn, error) {
 	addr := net.JoinHostPort(host, strconv.Itoa(int(port)))
+	ctx, cancel := context.WithTimeout(context.Background(), targetDialTimeout)
+	defer cancel()
+	dial := func(a string) (net.Conn, error) {
+		if cd, ok := dialer.(proxy.ContextDialer); ok {
+			return cd.DialContext(ctx, network, a)
+		}
+		return dialer.Dial(network, a)
+	}
 	if dialer != proxy.Direct || net.ParseIP(host) != nil {
-		return dialer.Dial(network, addr)
+		return dial(addr)
 	}
 	ips, err := lookupIPCached(host)
 	if err != nil || len(ips) == 0 {
-		return dialer.Dial(network, addr)
+		return dial(addr)
 	}
 	var lastErr error
 	for _, ip := range ips {
-		conn, derr := dialer.Dial(network, net.JoinHostPort(ip.String(), strconv.Itoa(int(port))))
+		conn, derr := dial(net.JoinHostPort(ip.String(), strconv.Itoa(int(port))))
 		if derr == nil {
 			return conn, nil
 		}
@@ -93,8 +93,8 @@ type Stream struct {
 
 	bytesIn  uint64
 	bytesOut uint64
-	created  time.Time
-	lastT    time.Time
+	created   time.Time
+	lastTNano int64
 
 	RetryCount int
 
@@ -136,7 +136,7 @@ func NewStream(id uint16, proto uint8, addr string, port uint16, profile uint8, 
 		outgoing:        make(chan []byte, 65536),
 		closeChan:       make(chan struct{}),
 		created:         time.Now(),
-		lastT:           time.Now(),
+		lastTNano:       time.Now().UnixNano(),
 		dialer:          dialer,
 		adaptiveTimeout: NewAdaptiveTimeout(100),
 		earlyDataBuf:    make([]byte, 0, 65536),
@@ -224,6 +224,14 @@ func (s *Stream) dialWithHappyEyeballs(ctx context.Context, target string) (net.
 	for i := 0; i < 2; i++ {
 		select {
 		case conn := <-connChan:
+			go func() {
+				select {
+				case c := <-connChan:
+					c.Close()
+				case <-errChan:
+				case <-time.After(5 * time.Second):
+				}
+			}()
 			return conn, nil
 		case <-errChan:
 		case <-ctx.Done():
@@ -288,9 +296,6 @@ func (s *Stream) Connect(ctx context.Context) error {
 		go s.speculativeConnect(target)
 
 		if tcpConn, ok := s.conn.(*net.TCPConn); ok {
-			bufferSize := 8 * 1024 * 1024
-			tcpConn.SetReadBuffer(bufferSize)
-			tcpConn.SetWriteBuffer(bufferSize)
 			tcpConn.SetNoDelay(true)
 			tcpConn.SetKeepAlive(true)
 			tcpConn.SetKeepAlivePeriod(15 * time.Second)
@@ -379,14 +384,14 @@ func (s *Stream) Write(data []byte) error {
 		return err
 	}
 
-	s.lastT = time.Now()
+	atomic.StoreInt64(&s.lastTNano, time.Now().UnixNano())
 
 	if s.Protocol == ProtoTCP && conn != nil {
 		n, err := conn.Write(data)
 		if err != nil {
 			return err
 		}
-		s.bytesOut += uint64(n)
+		atomic.AddUint64(&s.bytesOut, uint64(n))
 		return nil
 	} else if s.Protocol == ProtoUDP && udpConn != nil {
 		s.sackTracker.RecordPacket(s.seqNum)
@@ -396,7 +401,7 @@ func (s *Stream) Write(data []byte) error {
 		if err != nil {
 			return err
 		}
-		s.bytesOut += uint64(n)
+		atomic.AddUint64(&s.bytesOut, uint64(n))
 		return nil
 	}
 
@@ -422,7 +427,7 @@ func (s *Stream) HandleUDPData(data []byte) error {
 		return ErrStreamClosed
 	}
 
-	s.lastT = time.Now()
+	atomic.StoreInt64(&s.lastTNano, time.Now().UnixNano())
 
 	if len(data) < 4 {
 		return fmt.Errorf("short UDP data")
@@ -482,7 +487,7 @@ func (s *Stream) HandleUDPData(data []byte) error {
 		if err != nil {
 			return err
 		}
-		s.bytesOut += uint64(n)
+		atomic.AddUint64(&s.bytesOut, uint64(n))
 		return nil
 	}
 
@@ -518,9 +523,9 @@ func (s *Stream) readFromTarget() {
 		}
 
 		if n > 0 {
-			s.bytesIn += uint64(n)
+			atomic.AddUint64(&s.bytesIn, uint64(n))
 			now := time.Now()
-			s.lastT = now
+			atomic.StoreInt64(&s.lastTNano, now.UnixNano())
 			s.conn.SetReadDeadline(now.Add(60 * time.Second))
 
 			if s.sackEnabled {
@@ -608,8 +613,8 @@ func (s *Stream) readUDPFromTarget() {
 		}
 
 		if n > 0 {
-			s.bytesIn += uint64(n)
-			s.lastT = time.Now()
+			atomic.AddUint64(&s.bytesIn, uint64(n))
+			atomic.StoreInt64(&s.lastTNano, time.Now().UnixNano())
 
 			rAddr := s.udpConn.RemoteAddr()
 			udpAddr, ok := rAddr.(*net.UDPAddr)
@@ -675,8 +680,8 @@ func (s *Stream) readRelayUDP() {
 		}
 
 		if n > 0 {
-			s.bytesIn += uint64(n)
-			s.lastT = time.Now()
+			atomic.AddUint64(&s.bytesIn, uint64(n))
+			atomic.StoreInt64(&s.lastTNano, time.Now().UnixNano())
 
 			atyp := uint8(0x01)
 			if addr.IP.To4() == nil {
@@ -858,8 +863,8 @@ func (sm *StreamManager) Stats() (activeStreams int, totalBytesIn, totalBytesOut
 
 	activeStreams = len(sm.streams)
 	for _, stream := range sm.streams {
-		totalBytesIn += stream.bytesIn
-		totalBytesOut += stream.bytesOut
+		totalBytesIn += atomic.LoadUint64(&stream.bytesIn)
+		totalBytesOut += atomic.LoadUint64(&stream.bytesOut)
 	}
 	return
 }
@@ -893,7 +898,7 @@ func (sm *StreamManager) cleanup() {
 			continue
 		}
 
-		if now.Sub(stream.lastT) > staleTimeout {
+		if now.Sub(time.Unix(0, atomic.LoadInt64(&stream.lastTNano))) > staleTimeout {
 			stream.Close()
 			delete(sm.streams, id)
 		}
@@ -939,7 +944,7 @@ func (s *Stream) flushEarlyData() {
 		fmt.Printf("[0-RTT] Early data flush error: %v\n", err)
 	}
 
-	s.bytesOut += uint64(len(s.earlyDataBuf))
+	atomic.AddUint64(&s.bytesOut, uint64(len(s.earlyDataBuf)))
 	s.earlyDataBuf = s.earlyDataBuf[:0]
 }
 

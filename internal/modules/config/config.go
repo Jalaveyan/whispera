@@ -382,7 +382,6 @@ type ChameleonConfig struct {
 	GANIface      string `yaml:"gan_iface" json:"gan_iface"`
 	GANPort       int    `yaml:"gan_port" json:"gan_port"`
 	GANMaxPadding int    `yaml:"gan_max_padding" json:"gan_max_padding"`
-	BrutalMbps int `yaml:"brutal_mbps" json:"brutal_mbps"`
 }
 
 type ServerSettings struct {
