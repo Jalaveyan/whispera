@@ -82,7 +82,7 @@ func NewRLJitterAgent(modelDir string) *RLJitterAgent {
 	a.qNet = gnet.New([]int{jStateSize, jHidden1, jHidden2, jNumActions})
 	a.target = gnet.Clone(a.qNet)
 	a.adam = NewAdamState(a.qNet)
-	if layers, eps, steps, ok := loadRLMiniPolicy(modelDir, "rl_jitter.json"); ok {
+	if layers, eps, steps, ok := loadRLMiniPolicy(modelDir, "rl_jitter.json", jStateSize, jNumActions); ok {
 		loaded := &gnet.GorgoniaNet{Layers: layers}
 		a.qNet = loaded
 		a.target = gnet.Clone(loaded)
@@ -148,15 +148,12 @@ func (a *RLJitterAgent) RecordOutcome(quality float64) {
 	a.mu.Lock()
 	divBonus := a.diversity.Record(action)
 	reward += divBonus
-	if a.curriculum.Add(reward) {
-		a.epsilon = math.Min(jEpsilonStart, a.epsilon*2)
-	} else {
-		a.epsilon = math.Max(jEpsilonMin, a.epsilon*jEpsilonDecay)
-	}
+	a.curriculum.Add(reward)
+	a.epsilon = math.Max(jEpsilonMin, a.epsilon*jEpsilonDecay)
 	a.thompson.Update(action, reward)
 	a.prb.Add(Experience{
 		State: state, Action: action, Reward: reward,
-		NextState: state, Done: quality < 0.1,
+		NextState: state, Done: true,
 	})
 	step := atomic.AddInt64(&a.stepCount, 1)
 	eps := a.epsilon

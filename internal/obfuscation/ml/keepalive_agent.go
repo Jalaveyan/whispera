@@ -80,7 +80,7 @@ func NewRLKeepaliveAgent(modelDir string) *RLKeepaliveAgent {
 	a.qNet = gnet.New([]int{kaStateSize, kaHidden1, kaHidden2, kaNumActions})
 	a.target = gnet.Clone(a.qNet)
 	a.adam = NewAdamState(a.qNet)
-	if layers, eps, steps, ok := loadRLMiniPolicy(modelDir, "rl_ka.json"); ok {
+	if layers, eps, steps, ok := loadRLMiniPolicy(modelDir, "rl_ka.json", kaStateSize, kaNumActions); ok {
 		loaded := &gnet.GorgoniaNet{Layers: layers}
 		a.qNet = loaded
 		a.target = gnet.Clone(loaded)
@@ -138,21 +138,17 @@ func (a *RLKeepaliveAgent) RecordOutcome(quality float64) {
 		return
 	}
 
-	intervalPenalty := float64(action) * 0.03
-	reward := quality - intervalPenalty + GlobalFlowObserver.KLReward()
+	reward := quality + GlobalFlowObserver.KLReward()
 
 	a.mu.Lock()
 	divBonus := a.diversity.Record(action)
 	reward += divBonus
-	if a.curriculum.Add(reward) {
-		a.epsilon = math.Min(kaEpsilonStart, a.epsilon*2)
-	} else {
-		a.epsilon = math.Max(kaEpsilonMin, a.epsilon*kaEpsilonDecay)
-	}
+	a.curriculum.Add(reward)
+	a.epsilon = math.Max(kaEpsilonMin, a.epsilon*kaEpsilonDecay)
 	a.thompson.Update(action, reward)
 	a.prb.Add(Experience{
 		State: state, Action: action, Reward: reward,
-		NextState: state, Done: quality < 0.1,
+		NextState: state, Done: true,
 	})
 	step := atomic.AddInt64(&a.stepCount, 1)
 	eps := a.epsilon

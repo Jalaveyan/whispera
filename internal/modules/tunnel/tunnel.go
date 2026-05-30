@@ -3287,7 +3287,7 @@ func (m *Manager) connAgentTick() {
 		BytesUpSec: upRate,
 	}
 
-	action := m.connAgent.Decide(view)
+	action, decision := m.connAgent.Decide(view)
 
 	switch action {
 	case mlpkg.ConnActionOpen:
@@ -3297,10 +3297,10 @@ func (m *Manager) connAgentTick() {
 			defer cancel()
 			if err := m.openPoolConn(ctx); err != nil {
 				log.Warn("[CONN-AGENT] OPEN failed: %v", err)
-				m.connAgent.RecordOutcome(0.0)
+				m.connAgent.RecordOutcome(decision, 0.0)
 			} else {
 				quality := m.connQuality()
-				m.connAgent.RecordOutcome(quality)
+				m.connAgent.RecordOutcome(decision, quality)
 			}
 		}()
 
@@ -3308,13 +3308,13 @@ func (m *Manager) connAgentTick() {
 		log.Info("[CONN-AGENT] CLOSE_WORST: removing connection from pool (current=%d)", poolSize)
 		closed := m.closeWorstPoolConn()
 		if closed {
-			m.connAgent.RecordOutcome(m.connQuality())
+			m.connAgent.RecordOutcome(decision, m.connQuality())
 		} else {
-			m.connAgent.RecordOutcome(m.connQuality())
+			m.connAgent.RecordOutcome(decision, m.connQuality())
 		}
 
 	default:
-		m.connAgent.RecordOutcome(m.connQuality())
+		m.connAgent.RecordOutcome(decision, m.connQuality())
 	}
 }
 

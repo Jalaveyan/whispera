@@ -74,7 +74,7 @@ func NewRLChunkAgent(modelDir string) *RLChunkAgent {
 	a.qNet = gnet.New([]int{chunkStateSize, chunkHidden1, chunkHidden2, chunkNumActions})
 	a.target = gnet.Clone(a.qNet)
 	a.adam = NewAdamState(a.qNet)
-	if layers, eps, steps, ok := loadRLMiniPolicy(modelDir, "rl_chunk.json"); ok {
+	if layers, eps, steps, ok := loadRLMiniPolicy(modelDir, "rl_chunk.json", chunkStateSize, chunkNumActions); ok {
 		loaded := &gnet.GorgoniaNet{Layers: layers}
 		a.qNet = loaded
 		a.target = gnet.Clone(loaded)
@@ -138,15 +138,12 @@ func (a *RLChunkAgent) RecordOutcome(quality float64) {
 	a.mu.Lock()
 	divBonus := a.diversity.Record(action)
 	reward += divBonus
-	if a.curriculum.Add(reward) {
-		a.epsilon = math.Min(chunkEpsilonStart, a.epsilon*2)
-	} else {
-		a.epsilon = math.Max(chunkEpsilonMin, a.epsilon*chunkEpsilonDecay)
-	}
+	a.curriculum.Add(reward)
+	a.epsilon = math.Max(chunkEpsilonMin, a.epsilon*chunkEpsilonDecay)
 	a.thompson.Update(action, reward)
 	a.prb.Add(Experience{
 		State: state, Action: action, Reward: reward,
-		NextState: state, Done: quality < 0.1,
+		NextState: state, Done: true,
 	})
 	step := atomic.AddInt64(&a.stepCount, 1)
 	eps := a.epsilon

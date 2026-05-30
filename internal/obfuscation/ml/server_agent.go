@@ -75,7 +75,7 @@ func NewRLServerAgent(modelDir string) *RLServerAgent {
 	a.qNet = gnet.New([]int{srvStateSize, srvHidden1, srvHidden2, srvNumActions})
 	a.target = gnet.Clone(a.qNet)
 	a.adam = NewAdamState(a.qNet)
-	if layers, eps, steps, ok := loadRLMiniPolicy(modelDir, "rl_server.json"); ok {
+	if layers, eps, steps, ok := loadRLMiniPolicy(modelDir, "rl_server.json", srvStateSize, srvNumActions); ok {
 		loaded := &gnet.GorgoniaNet{Layers: layers}
 		a.qNet = loaded
 		a.target = gnet.Clone(loaded)
@@ -171,15 +171,12 @@ func (a *RLServerAgent) RecordOutcome(success bool, latencyMs float64) {
 	a.mu.Lock()
 	divBonus := a.diversity.Record(action)
 	reward += divBonus
-	if a.curriculum.Add(reward) {
-		a.epsilon = math.Min(srvEpsilonStart, a.epsilon*2)
-	} else {
-		a.epsilon = math.Max(srvEpsilonMin, a.epsilon*srvEpsilonDecay)
-	}
+	a.curriculum.Add(reward)
+	a.epsilon = math.Max(srvEpsilonMin, a.epsilon*srvEpsilonDecay)
 	a.thompson.Update(action, reward)
 	a.prb.Add(Experience{
 		State: state, Action: action, Reward: reward,
-		NextState: state, Done: !success,
+		NextState: state, Done: true,
 	})
 	step := atomic.AddInt64(&a.stepCount, 1)
 	eps := a.epsilon

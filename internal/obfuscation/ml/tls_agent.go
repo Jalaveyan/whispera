@@ -81,7 +81,7 @@ func NewRLTLSAgent(modelDir string) *RLTLSAgent {
 	a.qNet = gnet.New([]int{tlsStateSize, tlsHidden1, tlsHidden2, tlsNumActions})
 	a.target = gnet.Clone(a.qNet)
 	a.adam = NewAdamState(a.qNet)
-	if layers, eps, steps, ok := loadRLMiniPolicy(modelDir, "rl_tls.json"); ok {
+	if layers, eps, steps, ok := loadRLMiniPolicy(modelDir, "rl_tls.json", tlsStateSize, tlsNumActions); ok {
 		loaded := &gnet.GorgoniaNet{Layers: layers}
 		a.qNet = loaded
 		a.target = gnet.Clone(loaded)
@@ -169,15 +169,12 @@ func (a *RLTLSAgent) RecordOutcome(success bool) {
 	a.mu.Lock()
 	divBonus := a.diversity.Record(action)
 	reward += divBonus
-	if a.curriculum.Add(reward) {
-		a.epsilon = math.Min(tlsEpsilonStart, a.epsilon*2)
-	} else {
-		a.epsilon = math.Max(tlsEpsilonMin, a.epsilon*tlsEpsilonDecay)
-	}
+	a.curriculum.Add(reward)
+	a.epsilon = math.Max(tlsEpsilonMin, a.epsilon*tlsEpsilonDecay)
 	a.thompson.Update(action, reward)
 	a.prb.Add(Experience{
 		State: state, Action: action, Reward: reward,
-		NextState: state, Done: !success,
+		NextState: state, Done: true,
 	})
 	step := atomic.AddInt64(&a.stepCount, 1)
 	eps := a.epsilon

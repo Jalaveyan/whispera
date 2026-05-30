@@ -224,9 +224,7 @@ func (a *RLTransportAgent) RecordOutcome(success bool, latencyMs float64) {
 	a.mu.Lock()
 	divBonus := a.diversity.Record(action)
 	reward += divBonus
-	if a.curriculum.Add(reward) {
-		a.epsilon = math.Min(RLEpsilonStart, a.epsilon*2)
-	}
+	a.curriculum.Add(reward)
 	a.thompson.Update(action, reward)
 	a.mu.Unlock()
 
@@ -234,7 +232,7 @@ func (a *RLTransportAgent) RecordOutcome(success bool, latencyMs float64) {
 
 	nextState := make([]float64, len(state))
 	copy(nextState, state)
-	a.RecordExperience(state, action, reward, nextState, !success)
+	a.RecordExperience(state, action, reward, nextState, true)
 }
 
 func (a *RLTransportAgent) ShouldRotate() bool {
@@ -455,7 +453,7 @@ func (a *RLTransportAgent) PreSeed() {
 				Action:    idx,
 				Reward:    reward,
 				NextState: nextState,
-				Done:      reward < 0,
+				Done:      true,
 			})
 			atomic.AddInt64(&a.stepCount, 1)
 		}
@@ -513,6 +511,7 @@ func (a *RLTransportAgent) Stats() map[string]interface{} {
 }
 
 type rlPolicyState struct {
+	Version int             `json:"v"`
 	Layers  []gnet.LayerDef `json:"layers"`
 	Epsilon float64         `json:"epsilon"`
 	Steps   int64           `json:"steps"`
@@ -523,6 +522,7 @@ func (a *RLTransportAgent) savePolicyLocked() {
 		return
 	}
 	state := rlPolicyState{
+		Version: rlPolicyVersion,
 		Layers:  a.qNet.Layers,
 		Epsilon: a.epsilon,
 		Steps:   atomic.LoadInt64(&a.stepCount),
@@ -547,7 +547,7 @@ func (a *RLTransportAgent) loadPolicy() bool {
 	if err := json.Unmarshal(data, &state); err != nil {
 		return false
 	}
-	if len(state.Layers) > 0 {
+	if state.Version == rlPolicyVersion && validLayers(state.Layers, RLStateSize, RLActionSize) {
 		loaded := &gnet.GorgoniaNet{Layers: state.Layers}
 		a.mu.Lock()
 		a.qNet = loaded

@@ -89,7 +89,7 @@ func NewRLBackoffAgent(modelDir string) *RLBackoffAgent {
 	a.qNet = gnet.New([]int{boStateSize, boHidden1, boHidden2, boNumActions})
 	a.target = gnet.Clone(a.qNet)
 	a.adam = NewAdamState(a.qNet)
-	if layers, eps, steps, ok := loadRLMiniPolicy(modelDir, "rl_bo.json"); ok {
+	if layers, eps, steps, ok := loadRLMiniPolicy(modelDir, "rl_bo.json", boStateSize, boNumActions); ok {
 		loaded := &gnet.GorgoniaNet{Layers: layers}
 		a.qNet = loaded
 		a.target = gnet.Clone(loaded)
@@ -149,8 +149,7 @@ func (a *RLBackoffAgent) RecordOutcome(success bool) {
 
 	var reward float64
 	if success {
-		delayCost := float64(action) * 0.05
-		reward = 1.0 - delayCost
+		reward = 1.0
 	} else {
 		reward = -0.5
 	}
@@ -160,15 +159,12 @@ func (a *RLBackoffAgent) RecordOutcome(success bool) {
 	a.mu.Lock()
 	divBonus := a.diversity.Record(action)
 	reward += divBonus
-	if a.curriculum.Add(reward) {
-		a.epsilon = math.Min(boEpsilonStart, a.epsilon*2)
-	} else {
-		a.epsilon = math.Max(boEpsilonMin, a.epsilon*boEpsilonDecay)
-	}
+	a.curriculum.Add(reward)
+	a.epsilon = math.Max(boEpsilonMin, a.epsilon*boEpsilonDecay)
 	a.thompson.Update(action, reward)
 	a.prb.Add(Experience{
 		State: state, Action: action, Reward: reward,
-		NextState: state, Done: !success,
+		NextState: state, Done: true,
 	})
 	step := atomic.AddInt64(&a.stepCount, 1)
 	eps := a.epsilon

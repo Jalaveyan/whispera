@@ -85,9 +85,11 @@ type RLConnAgent struct {
 	epsilon    float64
 	stepCount  int64
 	trainCount int64
+}
 
-	pendingState  []float64
-	pendingAction int
+type ConnDecision struct {
+	state  []float64
+	action int
 }
 
 func NewRLConnAgent(modelDir string) *RLConnAgent {
@@ -104,7 +106,7 @@ func NewRLConnAgent(modelDir string) *RLConnAgent {
 	a.qNet = gnet.New([]int{connStateSize, connHidden1, connHidden2, connNumActions})
 	a.target = gnet.Clone(a.qNet)
 	a.adam = NewAdamState(a.qNet)
-	if layers, eps, steps, ok := loadRLMiniPolicy(modelDir, "rl_conn_v2.json"); ok {
+	if layers, eps, steps, ok := loadRLMiniPolicy(modelDir, "rl_conn_v2.json", connStateSize, connNumActions); ok {
 		loaded := &gnet.GorgoniaNet{Layers: layers}
 		a.qNet = loaded
 		a.target = gnet.Clone(loaded)
@@ -128,7 +130,7 @@ func (a *RLConnAgent) EncodeState(v ConnPoolView) []float64 {
 	return s
 }
 
-func (a *RLConnAgent) Decide(view ConnPoolView) ConnAction {
+func (a *RLConnAgent) Decide(view ConnPoolView) (ConnAction, *ConnDecision) {
 	state := a.EncodeState(view)
 
 	a.mu.Lock()
@@ -167,45 +169,38 @@ func (a *RLConnAgent) Decide(view ConnPoolView) ConnAction {
 		mode, action, view.Size, a.epsilon, a.temperature,
 		atomic.LoadInt64(&a.stepCount), atomic.LoadInt64(&a.trainCount))
 
-	a.pendingState = state
-	a.pendingAction = actionIdx
-	return action
+	return action, &ConnDecision{state: state, action: actionIdx}
 }
 
-func (a *RLConnAgent) RecordOutcome(quality float64) {
-	a.mu.Lock()
-	state := a.pendingState
-	action := a.pendingAction
-	a.mu.Unlock()
-
-	if state == nil {
+func (a *RLConnAgent) RecordOutcome(d *ConnDecision, quality float64) {
+	if d == nil || d.state == nil {
 		return
 	}
+	state := d.state
+	action := d.action
 
 	connCountNorm := state[0]
 	goodputNorm := state[6]
+	errNorm := state[2]
 	// Throughput dominates: the agent is rewarded for goodput, so it grows the
 	// pool while the path keeps yielding more. quality (RTT/keepalive health)
 	// keeps it from chasing throughput on a dying link. The connection-count
 	// term is a small regularizer to avoid pointless growth when goodput is
 	// flat — it must never outweigh a real throughput gain.
-	reward := 0.6*goodputNorm + 0.4*quality - 0.02*connCountNorm + GlobalFlowObserver.KLReward()
+	reward := 0.6*goodputNorm + 0.4*quality - 0.02*connCountNorm - 0.4*errNorm + GlobalFlowObserver.KLReward()
 
 	a.mu.Lock()
 	divBonus := a.diversity.Record(action)
 	reward += divBonus
-	if a.curriculum.Add(reward) {
-		a.epsilon = math.Min(connEpsilonStart, a.epsilon*2)
-	} else {
-		a.epsilon = math.Max(connEpsilonMin, a.epsilon*connEpsilonDecay)
-	}
+	a.curriculum.Add(reward)
+	a.epsilon = math.Max(connEpsilonMin, a.epsilon*connEpsilonDecay)
 	a.thompson.Update(action, reward)
 	a.prb.Add(Experience{
 		State:     state,
 		Action:    action,
 		Reward:    reward,
 		NextState: state,
-		Done:      quality < 0.1,
+		Done:      true,
 	})
 	step := atomic.AddInt64(&a.stepCount, 1)
 	eps := a.epsilon
