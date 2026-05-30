@@ -516,11 +516,15 @@ setup_sysctl() {
     log_info "Optimizing system..."
 
     cat > /etc/sysctl.d/99-whispera.conf <<'EOF'
-net.core.rmem_max = 16777216
-net.core.wmem_max = 16777216
-net.ipv4.tcp_rmem = 4096 87380 16777216
-net.ipv4.tcp_wmem = 4096 65536 16777216
+net.core.rmem_max = 67108864
+net.core.wmem_max = 67108864
+net.ipv4.tcp_rmem = 4096 87380 67108864
+net.ipv4.tcp_wmem = 4096 65536 67108864
 net.ipv4.tcp_fastopen = 3
+net.core.default_qdisc = fq
+net.ipv4.tcp_congestion_control = bbr
+net.ipv4.tcp_slow_start_after_idle = 0
+net.ipv4.tcp_mtu_probing = 1
 fs.file-max = 1000000
 EOF
 
