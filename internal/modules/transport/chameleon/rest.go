@@ -612,7 +612,7 @@ func RESTClient(ctx context.Context, cfg *Config) (net.Conn, error) {
 	remote := staticAddr{"tcp", cfg.ServerAddr}
 
 	conn := newRestClientConn(tunnelCtx, tunnelCancel, local, remote)
-	client := &http.Client{Transport: h2t}
+	client := &http.Client{Transport: h2t, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 
 	hlsGet := func(path string) (*http.Response, error) {
 		u := fmt.Sprintf("https://%s%s", cfg.ServerAddr, path)

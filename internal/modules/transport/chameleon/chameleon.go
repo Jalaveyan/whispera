@@ -236,8 +236,9 @@ func Client(ctx context.Context, cfg *Config) (net.Conn, error) {
 
 	pc := newPipelinedConn(pr, bpw, tunnelCancel, local, remote)
 
-	client := &http.Client{Transport: h2Transport}
-	decoyClient := &http.Client{Transport: decoyTransport}
+	noRedirect := func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	client := &http.Client{Transport: h2Transport, CheckRedirect: noRedirect}
+	decoyClient := &http.Client{Transport: decoyTransport, CheckRedirect: noRedirect}
 
 	fc := NewFrameConn(pc)
 
