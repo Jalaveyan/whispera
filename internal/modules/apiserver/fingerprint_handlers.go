@@ -30,6 +30,9 @@ var availableFingerprints = []FingerprintInfo{
 }
 
 func (s *Server) handleGetFingerprints(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
 	current := s.getCurrentFingerprint()
 
 	resp := map[string]interface{}{
@@ -97,6 +100,9 @@ func (s *Server) setCurrentFingerprint(fp string) {
 }
 
 func (s *Server) handleFailoverStatus(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
 	resp := map[string]interface{}{
 		"block_state":     "none",
 		"active_strategy": "direct",

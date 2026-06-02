@@ -488,6 +488,9 @@ func splitHostPort(addr string) (host, port string, err error) {
 }
 
 func (s *Server) handlePingKey(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
 	addr := r.URL.Query().Get("addr")
 	if addr == "" {
 		s.jsonError(w, http.StatusBadRequest, "addr required (host:port)")
@@ -512,6 +515,9 @@ func (s *Server) handlePingKey(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handlePingAllKeys(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
 	userStoreMu.RLock()
 	type target struct {
 		userID int

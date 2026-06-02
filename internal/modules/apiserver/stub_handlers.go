@@ -8,6 +8,9 @@ import (
 )
 
 func (s *Server) handleAdblockStats(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
 	s.jsonOK(w, map[string]interface{}{
 		"total_blocked": adblock.Global.BlockedCount(),
 		"dns_blocked":   adblock.Global.DNSBlockedCount(),
@@ -17,6 +20,9 @@ func (s *Server) handleAdblockStats(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAdblockRules(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
 	rules := adblock.Global.List()
 	s.jsonOK(w, map[string]interface{}{"success": true, "rules": rules})
 }

@@ -127,6 +127,9 @@ func generateTransportCredentials(transport string) (*TransportCredentials, erro
 }
 
 func (s *Server) handleGenerateTransportKeys(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
 	var req struct {
 		Transport string `json:"transport"`
 	}
@@ -148,6 +151,9 @@ func (s *Server) handleGenerateTransportKeys(w http.ResponseWriter, r *http.Requ
 }
 
 func (s *Server) handleGenerateMultiTransportKeys(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
 	var req struct {
 		Transports []string `json:"transports"`
 	}

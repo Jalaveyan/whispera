@@ -20,6 +20,9 @@ func (s *Server) SetProbeDetector(d *probedetector.Detector) {
 }
 
 func (s *Server) handleProbeStats(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
 	s.mu.RLock()
 	d := s.probeDetector
 	s.mu.RUnlock()
@@ -31,6 +34,9 @@ func (s *Server) handleProbeStats(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleProbeBlock(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
 	s.mu.RLock()
 	d := s.probeDetector
 	s.mu.RUnlock()
@@ -56,6 +62,9 @@ func (s *Server) handleProbeBlock(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleProbeUnblock(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
 	s.mu.RLock()
 	d := s.probeDetector
 	s.mu.RUnlock()

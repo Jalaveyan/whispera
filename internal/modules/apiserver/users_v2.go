@@ -24,7 +24,7 @@ func (s *Server) registerUserV2Routes() {
 	s.Handle("GET /api/v2/users/{id}/sessions", s.handleUserSessionsV2)
 	s.Handle("GET /api/v2/users/{id}/stats", s.handleUserStatsV2)
 	s.Handle("POST /api/v2/auth/register", s.handleUserRegisterV2)
-	s.Handle("POST /api/v2/auth/login", s.handleUserLoginV2)
+	s.Handle("POST /api/v2/users/login", s.handleUserLoginV2)
 }
 
 func (s *Server) handleListUsersV2(w http.ResponseWriter, r *http.Request) {

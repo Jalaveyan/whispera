@@ -721,6 +721,8 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 		if r.URL.Path == "/api/login" ||
 			r.URL.Path == "/api/auth/login" ||
 			r.URL.Path == "/api/v2/auth/login" ||
+			r.URL.Path == "/api/v2/auth/register" ||
+			r.URL.Path == "/api/v2/users/login" ||
 			r.URL.Path == "/api/v2/auth/refresh" ||
 			r.URL.Path == "/api/logout" ||
 			r.URL.Path == "/api/bridge-register" ||
@@ -1146,6 +1148,9 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleModules(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
 	if s.registry == nil {
 		s.jsonError(w, http.StatusInternalServerError, "Registry not available")
 		return
@@ -1169,6 +1174,9 @@ func (s *Server) handleModules(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
 	resp := map[string]interface{}{
 		"api": map[string]interface{}{
 			"listen_addr": s.config.ListenAddr,
@@ -1281,6 +1289,9 @@ func (s *Server) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleGetSessions(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
 	if s.registry == nil {
 		s.jsonError(w, http.StatusInternalServerError, "Registry not available")
 		return
@@ -1323,6 +1334,9 @@ func (s *Server) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleGetStats(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
 	stats := map[string]interface{}{
 		"timestamp": time.Now(),
 	}
@@ -1340,6 +1354,9 @@ func (s *Server) handleGetStats(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleSystemInfo(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 	externalIP, err := network.DetectServerIP(ctx)
@@ -1368,6 +1385,9 @@ func (s *Server) handleSystemInfo(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleTrafficStats(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
 	globalStats := stats.GetGlobalStats()
 
 	s.jsonOK(w, map[string]interface{}{
@@ -1383,6 +1403,9 @@ func (s *Server) handleTrafficStats(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleUserStats(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
 	userID := r.URL.Query().Get("user_id")
 
 	if userID != "" {
@@ -1409,6 +1432,9 @@ func SetDHCPManager(m *dhcp.Manager) {
 }
 
 func (s *Server) handleDHCPStatus(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
 	if globalDHCPManager == nil {
 		s.jsonError(w, http.StatusServiceUnavailable, "DHCP not initialized")
 		return
@@ -1418,6 +1444,9 @@ func (s *Server) handleDHCPStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDHCPLeases(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
 	if globalDHCPManager == nil {
 		s.jsonError(w, http.StatusServiceUnavailable, "DHCP not initialized")
 		return
@@ -2529,6 +2558,9 @@ func (s *Server) handleKillSessionAPI(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleGetStatsAPI(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
 	globalStats := stats.GetGlobalStats()
 
 	userStoreMu.RLock()
@@ -2548,6 +2580,9 @@ func (s *Server) handleGetStatsAPI(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleStatsLive(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		s.jsonError(w, http.StatusInternalServerError, "streaming not supported")
@@ -2600,6 +2635,9 @@ func (s *Server) handleStatsLive(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleTrafficStatsAPI(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
 	globalStats := stats.GetGlobalStats()
 
 	s.jsonOK(w, map[string]interface{}{
@@ -2669,6 +2707,9 @@ func (s *Server) getRouter() (interfaces.Router, error) {
 }
 
 func (s *Server) handleGetRoutingRules(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
 	router, err := s.getRouter()
 	if err != nil {
 		s.jsonError(w, http.StatusServiceUnavailable, err.Error())
@@ -2829,6 +2870,9 @@ func (s *Server) getConfigProvider() (interface{}, error) {
 }
 
 func (s *Server) handleGetOutbounds(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
 	module, err := s.getConfigProvider()
 	if err != nil {
 		s.jsonError(w, http.StatusServiceUnavailable, err.Error())
@@ -3132,6 +3176,9 @@ func (s *Server) handleAdminUpdate(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleGetEvents(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
 	limitStr := r.URL.Query().Get("limit")
 	limit := 100
 	if limitStr != "" {
@@ -3342,6 +3389,9 @@ func readMLToken(tokenFile string) string {
 }
 
 func (s *Server) handleMLConfig(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
 	mlCfg := config.MLConfig{}
 	if s.registry != nil {
 		if mod, ok := s.registry.Get("config.provider"); ok {

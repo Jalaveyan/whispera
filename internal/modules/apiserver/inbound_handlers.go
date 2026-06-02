@@ -18,6 +18,9 @@ import (
 )
 
 func (s *Server) handleGetInbounds(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAdmin(w, r) {
+		return
+	}
 	if s.registry == nil {
 		s.jsonError(w, http.StatusInternalServerError, "Registry not available")
 		return
