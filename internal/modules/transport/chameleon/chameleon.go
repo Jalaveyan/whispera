@@ -483,7 +483,7 @@ func handleClientStream(w http.ResponseWriter, r *http.Request, cfg *Config) {
 
 	local := staticAddr{"tcp", r.Host}
 	remote := staticAddr{"tcp", r.RemoteAddr}
-	conn := newHTTPStreamConn(r.Body, w, flusher.Flush, local, remote)
+	conn := newHTTPStreamConn(r.Body, w, flusher.Flush, local, remote, cfg.GANDecide)
 	fc := NewFrameConn(conn)
 
 	if cfg.OnConn != nil {

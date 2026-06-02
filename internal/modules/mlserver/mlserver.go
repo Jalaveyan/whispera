@@ -5,8 +5,8 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
-	"math"
 	"io"
+	"math"
 	"net"
 	"net/http"
 	"os"
@@ -50,6 +50,11 @@ type MLServer struct {
 	transportStats map[string]*TransportStats
 	fedDir         string
 
+	blockmapMu    sync.Mutex
+	blockmap      map[string]*ml.BlockmapEntry
+	ooniByCC      map[string]ml.OONIContext
+	ooniCountries []string
+
 	adversarial *evasion.AdversarialEngine
 
 	logLines []string
@@ -66,12 +71,13 @@ type TransportStats struct {
 }
 
 type Config struct {
-	ListenAddr string `yaml:"listen_addr" json:"listen_addr"`
-	TLSCert    string `yaml:"tls_cert" json:"tls_cert"`
-	TLSKey     string `yaml:"tls_key" json:"tls_key"`
-	Token      string `yaml:"token" json:"token"`
-	DataDir    string `yaml:"data_dir" json:"data_dir"`
-	ModelDir   string `yaml:"model_dir" json:"model_dir"`
+	ListenAddr    string   `yaml:"listen_addr" json:"listen_addr"`
+	TLSCert       string   `yaml:"tls_cert" json:"tls_cert"`
+	TLSKey        string   `yaml:"tls_key" json:"tls_key"`
+	Token         string   `yaml:"token" json:"token"`
+	DataDir       string   `yaml:"data_dir" json:"data_dir"`
+	ModelDir      string   `yaml:"model_dir" json:"model_dir"`
+	OONICountries []string `yaml:"ooni_countries" json:"ooni_countries"`
 }
 
 func New(cfg interface{}) (*MLServer, error) {
@@ -103,6 +109,8 @@ func New(cfg interface{}) (*MLServer, error) {
 		token:          conf.Token,
 		dataDir:        conf.DataDir,
 		transportStats: make(map[string]*TransportStats),
+		blockmap:       make(map[string]*ml.BlockmapEntry),
+		ooniCountries:  conf.OONICountries,
 		fedDir:         filepath.Join(conf.DataDir, "federated"),
 		adversarial:    evasion.NewAdversarialEngine(),
 		maxLogs:        1000,
@@ -232,6 +240,13 @@ func (s *MLServer) registerRoutes() {
 	s.mux.HandleFunc("GET /federated/losses", s.handleFedLosses)
 	s.mux.HandleFunc("POST /federated/upload", s.handleFedUpload)
 	s.mux.HandleFunc("GET /federated/download", s.handleFedDownload)
+	s.mux.HandleFunc("POST /federated/blockreport", s.handleBlockReport)
+	s.mux.HandleFunc("GET /federated/blockmap", s.handleBlockmap)
+	s.loadBlockmap()
+	if len(s.ooniCountries) == 0 {
+		s.ooniCountries = []string{"RU"}
+	}
+	s.startOONIWorker(s.ooniCountries)
 	s.mux.HandleFunc("GET /federated/dataset", s.handleFedDatasetExport)
 	s.mux.HandleFunc("GET /federated/dataset/stats", s.handleFedDatasetStats)
 	s.mux.HandleFunc("GET /datasets", s.handleDatasetsList)
@@ -888,8 +903,8 @@ func (s *MLServer) handleFedImport(w http.ResponseWriter, r *http.Request) {
 
 func (s *MLServer) handleFedStatus(w http.ResponseWriter, r *http.Request) {
 	s.jsonReply(w, map[string]interface{}{
-		"engine":    "native_mlp_go",
-		"stats":     s.engine.GetStats(),
+		"engine":     "native_mlp_go",
+		"stats":      s.engine.GetStats(),
 		"transports": len(s.transportStats),
 	})
 }
@@ -1024,6 +1039,109 @@ func (s *MLServer) handleFedDownload(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func bmKey(cc, asn string) string { return cc + "|" + asn }
+
+func (s *MLServer) loadBlockmap() {
+	data, err := os.ReadFile(filepath.Join(s.fedDir, "blockmap.json"))
+	if err != nil {
+		return
+	}
+	var m map[string]*ml.BlockmapEntry
+	if json.Unmarshal(data, &m) == nil && m != nil {
+		s.blockmapMu.Lock()
+		s.blockmap = m
+		s.blockmapMu.Unlock()
+	}
+}
+
+func (s *MLServer) saveBlockmapLocked() {
+	data, err := json.Marshal(s.blockmap)
+	if err != nil {
+		return
+	}
+	os.MkdirAll(s.fedDir, 0700)
+	os.WriteFile(filepath.Join(s.fedDir, "blockmap.json"), data, 0600)
+}
+
+func (s *MLServer) handleBlockReport(w http.ResponseWriter, r *http.Request) {
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1*1024*1024))
+	if err != nil {
+		http.Error(w, "read error", http.StatusBadRequest)
+		return
+	}
+	var rep ml.BlockReport
+	if err := json.Unmarshal(body, &rep); err != nil {
+		http.Error(w, "bad json", http.StatusBadRequest)
+		return
+	}
+	key := bmKey(rep.CC, rep.ASN)
+	s.blockmapMu.Lock()
+	e := s.blockmap[key]
+	if e == nil {
+		e = &ml.BlockmapEntry{CC: rep.CC, ASN: rep.ASN, Transports: make(map[string]ml.TransportRate)}
+		s.blockmap[key] = e
+	}
+	for name, rr := range rep.Reports {
+		cur := e.Transports[name]
+		cur.OK += rr.OK
+		cur.Fail += rr.Fail
+		if tot := cur.OK + cur.Fail; tot > 0 {
+			cur.Rate = float64(cur.OK) / float64(tot)
+		}
+		e.Transports[name] = cur
+	}
+	s.saveBlockmapLocked()
+	s.blockmapMu.Unlock()
+	s.addLogf("blockreport: %s — %d transports", key, len(rep.Reports))
+	s.jsonReply(w, map[string]interface{}{"ok": true})
+}
+
+func (s *MLServer) handleBlockmap(w http.ResponseWriter, r *http.Request) {
+	cc := r.URL.Query().Get("cc")
+	key := bmKey(cc, r.URL.Query().Get("asn"))
+	s.blockmapMu.Lock()
+	var out ml.BlockmapEntry
+	if e := s.blockmap[key]; e != nil {
+		out = *e
+		out.Transports = make(map[string]ml.TransportRate, len(e.Transports))
+		for k, v := range e.Transports {
+			out.Transports[k] = v
+		}
+	}
+	if oc, ok := s.ooniByCC[cc]; ok {
+		out.OONI = oc
+	}
+	s.blockmapMu.Unlock()
+	out.Pool, out.Avoid = deriveBlockmapPool(out.Transports, out.OONI)
+	s.jsonReply(w, out)
+}
+
+func deriveBlockmapPool(transports map[string]ml.TransportRate, ooni ml.OONIContext) (pool, avoid []string) {
+	const minSamples = 10
+	const goodRate = 0.3
+	avoided := map[string]bool{}
+	for name, r := range transports {
+		if tot := r.OK + r.Fail; tot >= minSamples && r.Rate < goodRate {
+			avoid = append(avoid, name)
+			avoided[name] = true
+		}
+	}
+	if ooni.TorBlocked {
+		for _, t := range []string{"obfs4", "snowflake", "meek", "torsocks"} {
+			if !avoided[t] {
+				avoid = append(avoid, t)
+				avoided[t] = true
+			}
+		}
+	}
+	for name := range transports {
+		if !avoided[name] {
+			pool = append(pool, name)
+		}
+	}
+	return pool, avoid
+}
+
 func (s *MLServer) handleFedDatasetExport(w http.ResponseWriter, r *http.Request) {
 	dsPath := filepath.Join(s.fedDir, "aggregated_dataset.jsonl")
 	info, err := os.Stat(dsPath)
@@ -1056,10 +1174,10 @@ func (s *MLServer) handleFedDatasetStats(w http.ResponseWriter, r *http.Request)
 	}
 
 	s.jsonReply(w, map[string]interface{}{
-		"samples":      s.datasetSampleCount(),
-		"size_bytes":   info.Size(),
-		"size_mb":      float64(info.Size()) / (1024 * 1024),
-		"uploads":      deltaCount,
+		"samples":       s.datasetSampleCount(),
+		"size_bytes":    info.Size(),
+		"size_mb":       float64(info.Size()) / (1024 * 1024),
+		"uploads":       deltaCount,
 		"last_modified": info.ModTime().UTC().Format(time.RFC3339),
 	})
 }
@@ -1181,9 +1299,9 @@ func (s *MLServer) handleAdversarialFeedback(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	var req struct {
-		Detected bool    `json:"detected"`
-		Data     []byte  `json:"data"`
-		Strategy int     `json:"strategy"`
+		Detected  bool    `json:"detected"`
+		Data      []byte  `json:"data"`
+		Strategy  int     `json:"strategy"`
 		Intensity float64 `json:"intensity"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {

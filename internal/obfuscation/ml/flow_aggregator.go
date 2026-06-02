@@ -1,5 +1,3 @@
-//go:build linux && cgo
-
 package ml
 
 import (
@@ -8,11 +6,6 @@ import (
 	"net"
 	"strconv"
 	"sync"
-	"time"
-
-	"github.com/google/gopacket"
-	"github.com/google/gopacket/layers"
-	"github.com/google/gopacket/pcap"
 )
 
 type FlowLabel int
@@ -22,6 +15,29 @@ const (
 	FlowTunnel
 	FlowDecoy
 )
+
+type FlowFeatures struct {
+	IATMean, IATStd, IATP90    float64
+	SizeMean, SizeStd, SizeP90 float64
+	UpRatio, BurstSize         float64
+	Duration, PacketCount      float64
+}
+
+func (f FlowFeatures) Vec() []float64 {
+	return []float64{
+		f.IATMean, f.IATStd, f.IATP90,
+		f.SizeMean, f.SizeStd, f.SizeP90,
+		f.UpRatio, f.BurstSize,
+		f.Duration, f.PacketCount,
+	}
+}
+
+const FlowFeatureSize = 10
+
+type LabeledFlow struct {
+	Features FlowFeatures
+	Label    FlowLabel
+}
 
 func pcapFlowKey(srcIP, dstIP string, srcPort, dstPort int) string {
 	a := fmt.Sprintf("%s:%d", srcIP, srcPort)
@@ -119,22 +135,19 @@ func (fa *flowAccum) features() FlowFeatures {
 		return FlowFeatures{}
 	}
 	var iats []float64
-	var upSizes, downSizes []float64
+	var upSizes []float64
 	for i := 1; i < len(fa.packets); i++ {
 		iats = append(iats, fa.packets[i].ts-fa.packets[i-1].ts)
 	}
 	for _, p := range fa.packets {
 		if p.up {
 			upSizes = append(upSizes, float64(p.size))
-		} else {
-			downSizes = append(downSizes, float64(p.size))
 		}
 	}
 	allSizes := make([]float64, len(fa.packets))
 	for i, p := range fa.packets {
 		allSizes[i] = float64(p.size)
 	}
-	_ = downSizes
 	dur := fa.packets[len(fa.packets)-1].ts - fa.firstSeen
 	upRatio := 0.0
 	if len(fa.packets) > 0 {
@@ -154,156 +167,72 @@ func (fa *flowAccum) features() FlowFeatures {
 	}
 }
 
-type FlowFeatures struct {
-	IATMean, IATStd, IATP90    float64
-	SizeMean, SizeStd, SizeP90 float64
-	UpRatio, BurstSize         float64
-	Duration, PacketCount      float64
+type flowAggregator struct {
+	port  int
+	flows map[string]*flowAccum
+	out   chan LabeledFlow
 }
 
-func (f FlowFeatures) Vec() []float64 {
-	return []float64{
-		f.IATMean, f.IATStd, f.IATP90,
-		f.SizeMean, f.SizeStd, f.SizeP90,
-		f.UpRatio, f.BurstSize,
-		f.Duration, f.PacketCount,
+func newFlowAggregator(port int, out chan LabeledFlow) *flowAggregator {
+	return &flowAggregator{
+		port:  port,
+		flows: make(map[string]*flowAccum),
+		out:   out,
 	}
 }
 
-const FlowFeatureSize = 10
-
-type LabeledFlow struct {
-	Features FlowFeatures
-	Label    FlowLabel
-}
-
-type PCAPCollector struct {
-	iface  string
-	port   int
-	out    chan LabeledFlow
-	stopCh chan struct{}
-}
-
-func NewPCAPCollector(iface string, port int) *PCAPCollector {
-	return &PCAPCollector{
-		iface:  iface,
-		port:   port,
-		out:    make(chan LabeledFlow, 256),
-		stopCh: make(chan struct{}),
+func (a *flowAggregator) emit(key string, fa *flowAccum) {
+	if fa.label == FlowUnknown || len(fa.packets) < 5 {
+		return
 	}
-}
-
-func (c *PCAPCollector) Out() <-chan LabeledFlow { return c.out }
-func (c *PCAPCollector) Stop()                   { close(c.stopCh) }
-
-func (c *PCAPCollector) Start() error {
-	handle, err := pcap.OpenLive(c.iface, 65535, true, pcap.BlockForever)
-	if err != nil {
-		return fmt.Errorf("pcap: open %s: %w", c.iface, err)
-	}
-	filter := fmt.Sprintf("tcp and (port %d or port 80)", c.port)
-	if err := handle.SetBPFFilter(filter); err != nil {
-		handle.Close()
-		return fmt.Errorf("pcap: bpf filter: %w", err)
-	}
-
-	go func() {
-		<-c.stopCh
-		handle.Close()
-	}()
-
-	go c.capture(handle)
-	return nil
-}
-
-func (c *PCAPCollector) capture(handle *pcap.Handle) {
-	src := gopacket.NewPacketSource(handle, handle.LinkType())
-	src.NoCopy = true
-
-	flows := make(map[string]*flowAccum)
-	ticker := time.NewTicker(10 * time.Second)
-	defer ticker.Stop()
-
-	emit := func(key string, fa *flowAccum) {
-		if fa.label == FlowUnknown || len(fa.packets) < 5 {
-			return
-		}
-		if fa.label == FlowDecoy {
-			for i, p := range fa.packets {
-				iatMs := -1.0
-				if i > 0 {
-					iatMs = (fa.packets[i].ts - fa.packets[i-1].ts) * 1000.0
-				}
-				GlobalFlowObserver.UpdateReference(p.size, iatMs)
+	if fa.label == FlowDecoy {
+		for i, p := range fa.packets {
+			iatMs := -1.0
+			if i > 0 {
+				iatMs = (fa.packets[i].ts - fa.packets[i-1].ts) * 1000.0
 			}
+			GlobalFlowObserver.UpdateReference(p.size, iatMs)
 		}
-		select {
-		case c.out <- LabeledFlow{Features: fa.features(), Label: fa.label}:
-		default:
-		}
-		delete(flows, key)
 	}
+	select {
+	case a.out <- LabeledFlow{Features: fa.features(), Label: fa.label}:
+	default:
+	}
+	delete(a.flows, key)
+}
 
-	for packet := range src.Packets() {
-		meta := packet.Metadata()
-		ts := float64(meta.Timestamp.UnixNano()) / 1e9
-		size := meta.CaptureLength
-
-		var srcIP, dstIP string
-		var srcPort, dstPort int
-
-		if ip4 := packet.Layer(layers.LayerTypeIPv4); ip4 != nil {
-			l := ip4.(*layers.IPv4)
-			srcIP = l.SrcIP.String()
-			dstIP = l.DstIP.String()
-		} else if ip6 := packet.Layer(layers.LayerTypeIPv6); ip6 != nil {
-			l := ip6.(*layers.IPv6)
-			srcIP = l.SrcIP.String()
-			dstIP = l.DstIP.String()
-		} else {
-			continue
+func (a *flowAggregator) observe(ts float64, srcIP, dstIP string, srcPort, dstPort, size int) {
+	if srcPort != a.port && dstPort != a.port && srcPort != 80 && dstPort != 80 {
+		return
+	}
+	key := pcapFlowKey(srcIP, dstIP, srcPort, dstPort)
+	fa, exists := a.flows[key]
+	if !exists {
+		label := FlowRegistry.Get(key)
+		if dstPort == 80 || srcPort == 80 {
+			label = FlowDecoy
 		}
+		fa = &flowAccum{key: key, label: label, firstSeen: ts}
+		a.flows[key] = fa
+	}
+	up := dstPort == a.port || dstPort == 80
+	fa.packets = append(fa.packets, struct {
+		ts   float64
+		size int
+		up   bool
+	}{ts, size, up})
+	if len(fa.packets) >= 200 {
+		a.emit(key, fa)
+	}
+}
 
-		tcp, ok := packet.Layer(layers.LayerTypeTCP).(*layers.TCP)
-		if !ok {
-			continue
-		}
-		srcPort = int(tcp.SrcPort)
-		dstPort = int(tcp.DstPort)
-
-		key := pcapFlowKey(srcIP, dstIP, srcPort, dstPort)
-		fa, exists := flows[key]
-		if !exists {
-			label := FlowRegistry.Get(key)
-			if dstPort == 80 || srcPort == 80 {
-				label = FlowDecoy
-			}
-			fa = &flowAccum{key: key, label: label, firstSeen: ts}
-			flows[key] = fa
-		}
-
-		up := dstPort == c.port || dstPort == 80
-		fa.packets = append(fa.packets, struct {
-			ts   float64
-			size int
-			up   bool
-		}{ts, size, up})
-
-		if len(fa.packets) >= 200 {
-			emit(key, fa)
-		}
-
-		select {
-		case <-ticker.C:
-			for k, f := range flows {
-				age := ts - f.firstSeen
-				if age > 30 && len(f.packets) > 0 {
-					emit(k, f)
-				} else if age > 60 {
-					delete(flows, k)
-				}
-			}
-		default:
+func (a *flowAggregator) sweep(now float64) {
+	for k, f := range a.flows {
+		age := now - f.firstSeen
+		if age > 30 && len(f.packets) > 0 {
+			a.emit(k, f)
+		} else if age > 60 {
+			delete(a.flows, k)
 		}
 	}
 }
@@ -368,4 +297,3 @@ func maxBurst(packets []struct {
 	}
 	return max
 }
-

@@ -143,6 +143,20 @@ func findListenerByAddr(addr string) net.Listener {
 
 var globalProbeDetector *probedetector.Detector
 
+func defaultRouteIface() string {
+	data, err := os.ReadFile("/proc/net/route")
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(data), "\n")[1:] {
+		f := strings.Fields(line)
+		if len(f) >= 2 && f[1] == "00000000" {
+			return f[0]
+		}
+	}
+	return ""
+}
+
 var (
 	configFile     = flag.String("config", "", "Path to configuration file")
 	listenAddr     = flag.String("listen", "", "UDP/TCP listen address (default from config)")
@@ -1653,6 +1667,9 @@ func createModules(manager *lifecycle.Manager, ctx context.Context) error {
 	if serverConfig.Chameleon.Enabled && (serverConfig.Chameleon.TLSCert != "" || serverConfig.Chameleon.Domain != "") {
 		// Start GAN traffic-fingerprint learner on the external interface.
 		ganIface := serverConfig.Chameleon.GANIface
+		if ganIface == "" {
+			ganIface = defaultRouteIface()
+		}
 		if ganIface == "" {
 			ganIface = "eth0"
 		}

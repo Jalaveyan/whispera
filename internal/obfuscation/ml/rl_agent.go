@@ -17,7 +17,7 @@ var trLog = logger.Module("rl-transport")
 
 const (
 	RLStateSize    = 16
-	RLActionSize   = 28
+	RLActionSize   = 26
 	RLHidden1      = 64
 	RLHidden2      = 32
 	RLBufferSize   = 1000
@@ -47,11 +47,11 @@ type RLTransportAgent struct {
 	adam      *AdamState
 	worldAdam *AdamState
 
-	prb        *PrioritizedReplayBuffer
-	thompson   *ThompsonSampler
-	sticky     StickyExplorer
-	curriculum CurriculumTracker
-	diversity  DiversityTracker
+	prb         *PrioritizedReplayBuffer
+	thompson    *ThompsonSampler
+	sticky      StickyExplorer
+	curriculum  CurriculumTracker
+	diversity   DiversityTracker
 	temperature float64
 
 	epsilon    float64
@@ -68,6 +68,8 @@ type RLTransportAgent struct {
 	consecutiveFails int32
 	rotateSignal     int32
 
+	outcomes map[string]*[2]int64
+
 	modelDir string
 }
 
@@ -82,14 +84,14 @@ func NewRLTransportAgent(modelDir string, _ []string) *RLTransportAgent {
 		epsilon:     RLEpsilonStart,
 		modelDir:    modelDir,
 		transportNames: []string{
-			"tcp", "udp", "h2c", "shadowtls", "ws", "wss",
-			"grpc", "quic", "kcp", "obfs4", "meek",
-			"utls", "reality", "vless", "vmess", "trojan",
-			"hysteria", "hysteria2", "tuic", "ssh", "wireguard",
-			"cdn-ws", "cdn-grpc", "fragment", "tlsfrag",
-			"vkvideo", "okhttp", "doh",
+			"tcp", "h2c", "quic", "tuic", "websocket", "grpc",
+			"httpupgrade", "splithttp", "shadowtls", "shadowsocks",
+			"obfs4", "meek", "snowflake", "torsocks", "domainfront",
+			"mtproto", "mirage", "asn_bypass", "vkwebrtc", "okwebrtc",
+			"yatelemost", "yadisk", "yacloud", "vkbot", "tgbot", "cdnworker",
 		},
 		transportIndex: make(map[string]int),
+		outcomes:       make(map[string]*[2]int64),
 	}
 	for i, name := range agent.transportNames {
 		agent.transportIndex[name] = i
@@ -124,6 +126,16 @@ func (a *RLTransportAgent) Select(state []float64) (transport string, actionIdx 
 	if len(pool) == 0 {
 		return "", -1
 	}
+	known := make([]string, 0, len(pool))
+	for _, name := range pool {
+		if _, ok := a.transportIndex[name]; ok {
+			known = append(known, name)
+		}
+	}
+	if len(known) == 0 {
+		return "", -1
+	}
+	pool = known
 	if atomic.LoadInt64(&a.stepCount) < 10 {
 		return "", -1
 	}
@@ -226,6 +238,18 @@ func (a *RLTransportAgent) RecordOutcome(success bool, latencyMs float64) {
 	reward += divBonus
 	a.curriculum.Add(reward)
 	a.thompson.Update(action, reward)
+	if action >= 0 && action < len(a.transportNames) {
+		c := a.outcomes[a.transportNames[action]]
+		if c == nil {
+			c = &[2]int64{}
+			a.outcomes[a.transportNames[action]] = c
+		}
+		if success {
+			c[0]++
+		} else {
+			c[1]++
+		}
+	}
 	a.mu.Unlock()
 
 	trLog.Info("outcome: success=%v reward=%.2f latency=%.0fms", success, reward, latencyMs)
@@ -392,12 +416,11 @@ func (a *RLTransportAgent) PreSeed() {
 	defer a.mu.Unlock()
 
 	priors := map[string]float64{
-		"tcp": 0.3, "udp": 0.2, "h2c": 0.5, "shadowtls": 0.7, "ws": 0.6, "wss": 0.65,
-		"grpc": 0.6, "quic": 0.4, "kcp": 0.3, "obfs4": 0.7, "meek": 0.5,
-		"utls": 0.6, "reality": 0.8, "vless": 0.7, "vmess": 0.65, "trojan": 0.7,
-		"hysteria": 0.6, "hysteria2": 0.65, "tuic": 0.55, "ssh": 0.5, "wireguard": 0.4,
-		"cdn-ws": 0.75, "cdn-grpc": 0.75, "fragment": 0.6, "tlsfrag": 0.6,
-		"vkvideo": 0.8, "okhttp": 0.5, "doh": 0.6,
+		"tcp": 0.3, "h2c": 0.5, "quic": 0.4, "tuic": 0.55, "websocket": 0.6, "grpc": 0.6,
+		"httpupgrade": 0.55, "splithttp": 0.6, "shadowtls": 0.7, "shadowsocks": 0.55,
+		"obfs4": 0.7, "meek": 0.55, "snowflake": 0.6, "torsocks": 0.4, "domainfront": 0.75,
+		"mtproto": 0.6, "mirage": 0.6, "asn_bypass": 0.7, "vkwebrtc": 0.8, "okwebrtc": 0.75,
+		"yatelemost": 0.7, "yadisk": 0.7, "yacloud": 0.65, "vkbot": 0.5, "tgbot": 0.5, "cdnworker": 0.75,
 	}
 
 	conditions := [][4]float64{
@@ -433,9 +456,9 @@ func (a *RLTransportAgent) PreSeed() {
 			reward := baseReward
 			if dpiDetected {
 				switch name {
-				case "reality", "shadowtls", "vkvideo", "cdn-ws", "cdn-grpc", "trojan":
+				case "shadowtls", "vkwebrtc", "okwebrtc", "domainfront", "cdnworker", "asn_bypass":
 					reward = math.Min(reward+0.2, 1.0)
-				case "tcp", "udp", "quic":
+				case "tcp", "quic", "h2c":
 					reward = math.Max(reward-0.4, -1.0)
 				}
 			}

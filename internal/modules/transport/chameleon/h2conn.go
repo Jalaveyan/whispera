@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"whispera/internal/buf"
@@ -151,15 +152,61 @@ type httpStreamConn struct {
 	remote net.Addr
 	done   chan struct{}
 	once   sync.Once
+
+	ganDecide  GANDecideFunc
+	lastWrite  time.Time
+	iatSum     float64
+	sizeSum    float64
+	writeCount float64
+	upBytes    int64
+	downBytes  int64
 }
 
-func newHTTPStreamConn(r io.Reader, w http.ResponseWriter, flush func(), local, remote net.Addr) *httpStreamConn {
-	return &httpStreamConn{r: r, w: w, flush: flush, local: local, remote: remote, done: make(chan struct{})}
+func newHTTPStreamConn(r io.Reader, w http.ResponseWriter, flush func(), local, remote net.Addr, ganDecide GANDecideFunc) *httpStreamConn {
+	return &httpStreamConn{r: r, w: w, flush: flush, local: local, remote: remote, done: make(chan struct{}), ganDecide: ganDecide}
 }
 
-func (c *httpStreamConn) Read(b []byte) (int, error) { return c.r.Read(b) }
+func (c *httpStreamConn) Read(b []byte) (int, error) {
+	n, err := c.r.Read(b)
+	if n > 0 {
+		atomic.AddInt64(&c.upBytes, int64(n))
+	}
+	return n, err
+}
+
 func (c *httpStreamConn) Write(b []byte) (int, error) {
-	return c.w.Write(b)
+	if c.ganDecide != nil && len(b) < 4096 {
+		now := time.Now()
+		if !c.lastWrite.IsZero() {
+			c.iatSum += now.Sub(c.lastWrite).Seconds()
+		}
+		c.sizeSum += float64(len(b))
+		c.writeCount++
+		iatMean := 0.0
+		if c.writeCount > 1 {
+			iatMean = c.iatSum / (c.writeCount - 1)
+		}
+		up := float64(atomic.LoadInt64(&c.upBytes))
+		down := float64(atomic.LoadInt64(&c.downBytes))
+		upRatio := 0.0
+		if up+down > 0 {
+			upRatio = up / (up + down)
+		}
+		action := c.ganDecide(iatMean, c.sizeSum/c.writeCount, upRatio)
+		if iatMean > 0.03 && action.SleepMs > 0.5 {
+			sleep := action.SleepMs
+			if sleep > 15 {
+				sleep = 15
+			}
+			time.Sleep(time.Duration(sleep * float64(time.Millisecond)))
+		}
+		c.lastWrite = now
+	}
+	n, err := c.w.Write(b)
+	if n > 0 {
+		atomic.AddInt64(&c.downBytes, int64(n))
+	}
+	return n, err
 }
 func (c *httpStreamConn) FlushWrite() {
 	c.flush()

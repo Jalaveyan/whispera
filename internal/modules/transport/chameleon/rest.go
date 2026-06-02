@@ -325,8 +325,12 @@ func (c *restServerConn) Write(b []byte) (n int, err error) {
 			upRatio = up / (up + down)
 		}
 		action := c.ganDecide(iatMean, c.sizeSum/c.writeCount, upRatio)
-		if action.SleepMs > 0.5 && action.SleepMs <= 2.0 {
-			time.Sleep(time.Duration(action.SleepMs * float64(time.Millisecond)))
+		if iatMean > 0.03 && action.SleepMs > 0.5 {
+			sleep := action.SleepMs
+			if sleep > 15 {
+				sleep = 15
+			}
+			time.Sleep(time.Duration(sleep * float64(time.Millisecond)))
 		}
 		c.lastWrite = time.Now()
 	}

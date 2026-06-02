@@ -60,6 +60,7 @@ import (
 	"whispera/internal/modules/transport/yadisk"
 	"whispera/internal/modules/transport/yatelemost"
 	"whispera/internal/mux"
+	"whispera/internal/network"
 	"whispera/internal/obfuscation/core/evasion"
 	"whispera/internal/obfuscation/marionette"
 	mlpkg "whispera/internal/obfuscation/ml"
@@ -509,6 +510,11 @@ type Manager struct {
 
 	qualityRTTEWMA int64
 	missedKAs      int32
+	netCtxOnce     sync.Once
+	pubIP          atomic.Value
+	asnVal         atomic.Value
+	ccVal          atomic.Value
+	blockAvoid     atomic.Value
 
 	chameleonSessionCache any
 }
@@ -1070,8 +1076,9 @@ func (m *Manager) dialManagedConn(ctx context.Context, id string) (*managedConn,
 	conn, err := m.dial(ctx)
 	if err != nil {
 		if m.tlsAgent != nil && isHandshakeError(err) {
-			atomic.AddInt32(&m.tlsErrStreak, 1)
+			streak := atomic.AddInt32(&m.tlsErrStreak, 1)
 			m.tlsAgent.RecordOutcome(false)
+			m.maybePreemptiveRotate(streak)
 		}
 		return nil, err
 	}
@@ -1083,8 +1090,9 @@ func (m *Manager) dialManagedConn(ctx context.Context, id string) (*managedConn,
 		if err != nil {
 			conn.Close()
 			if m.tlsAgent != nil {
-				atomic.AddInt32(&m.tlsErrStreak, 1)
+				streak := atomic.AddInt32(&m.tlsErrStreak, 1)
 				m.tlsAgent.RecordOutcome(false)
+				m.maybePreemptiveRotate(streak)
 			}
 			return nil, fmt.Errorf("handshake: %w", err)
 		}
@@ -1101,7 +1109,7 @@ func (m *Manager) dialManagedConn(ctx context.Context, id string) (*managedConn,
 	}
 
 	var muxConn net.Conn
-	if m.config.EnableChameleon || m.config.PaddingMaxSize < 0 {
+	if m.config.EnableChameleon {
 		muxConn = conn
 	} else {
 		padMax := m.config.PaddingMaxSize
@@ -1362,6 +1370,7 @@ func (m *Manager) buildCandidates() []dialCandidate {
 	}
 
 	cc = m.applyTransportPolicy(cc)
+	cc = m.filterBlockmapAvoid(cc)
 
 	if m.transportAgent != nil && len(cc) > 0 {
 		names := make([]string, len(cc))
@@ -1372,6 +1381,27 @@ func (m *Manager) buildCandidates() []dialCandidate {
 	}
 
 	return cc
+}
+
+func (m *Manager) filterBlockmapAvoid(cc []dialCandidate) []dialCandidate {
+	v := m.blockAvoid.Load()
+	if v == nil {
+		return cc
+	}
+	avoid, _ := v.(map[string]bool)
+	if len(avoid) == 0 {
+		return cc
+	}
+	filtered := cc[:0:0]
+	for _, c := range cc {
+		if !avoid[c.name] {
+			filtered = append(filtered, c)
+		}
+	}
+	if len(filtered) == 0 {
+		return cc
+	}
+	return filtered
 }
 
 func (m *Manager) applyTransportPolicy(cc []dialCandidate) []dialCandidate {
@@ -4087,21 +4117,117 @@ func (m *Manager) getReconnectDelay() time.Duration {
 	return delay + jitter
 }
 
+func (m *Manager) ensurePubIP() {
+	m.netCtxOnce.Do(func() {
+		go func() {
+			det := network.NewIPDetector(nil)
+			ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+			defer cancel()
+			ip, err := det.DetectExternalIP(ctx)
+			if err != nil || ip == "" {
+				return
+			}
+			m.pubIP.Store(ip)
+			actx, acancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer acancel()
+			if asn, cc := lookupASN(actx, ip); asn != "" {
+				m.asnVal.Store(asn)
+				if cc != "" {
+					m.ccVal.Store(cc)
+				}
+			}
+		}()
+	})
+}
+
+func (m *Manager) networkContext() float64 {
+	m.ensurePubIP()
+	ip, _ := m.pubIP.Load().(string)
+	if ip == "" {
+		return 0
+	}
+	return networkBucket(ip)
+}
+
+func (m *Manager) networkKey() (cc, asn string) {
+	m.ensurePubIP()
+	cc, _ = m.ccVal.Load().(string)
+	if a, _ := m.asnVal.Load().(string); a != "" {
+		return cc, "AS" + a
+	}
+	ip, _ := m.pubIP.Load().(string)
+	p := net.ParseIP(ip)
+	if p == nil {
+		return cc, "unknown"
+	}
+	if p4 := p.To4(); p4 != nil {
+		return cc, fmt.Sprintf("%d.%d", p4[0], p4[1])
+	}
+	return cc, fmt.Sprintf("%02x%02x", p[0], p[1])
+}
+
+func lookupASN(ctx context.Context, ip string) (asn, cc string) {
+	p := net.ParseIP(ip)
+	p4 := p.To4()
+	if p4 == nil {
+		return "", ""
+	}
+	name := fmt.Sprintf("%d.%d.%d.%d.origin.asn.cymru.com", p4[3], p4[2], p4[1], p4[0])
+	var r net.Resolver
+	txts, err := r.LookupTXT(ctx, name)
+	if err != nil || len(txts) == 0 {
+		return "", ""
+	}
+	parts := strings.Split(txts[0], "|")
+	if len(parts) >= 3 {
+		if f := strings.Fields(parts[0]); len(f) > 0 {
+			asn = f[0]
+		}
+		cc = strings.TrimSpace(parts[2])
+	}
+	return asn, cc
+}
+
+func networkBucket(ip string) float64 {
+	p := net.ParseIP(ip)
+	if p == nil {
+		return 0
+	}
+	var a, b byte
+	if p4 := p.To4(); p4 != nil {
+		a, b = p4[0], p4[1]
+	} else {
+		a, b = p[0], p[1]
+	}
+	h := (uint32(a)<<8 | uint32(b)) * 2654435761
+	v := float64(h%997) / 997.0
+	if v == 0 {
+		v = 0.001
+	}
+	return v
+}
+
 func (m *Manager) mlRecommendTransport(ctx context.Context) (transport string, confidence float64) {
 	if m.transportAgent == nil {
 		return "", 0
 	}
 	rttMs := float64(atomic.LoadInt64(&m.qualityRTTEWMA)) / 1e6
 	missed := float64(atomic.LoadInt32(&m.missedKAs))
+	tlsErr := float64(atomic.LoadInt32(&m.tlsErrStreak))
+	boFail := float64(atomic.LoadInt32(&m.boFailCount))
+	rttScore := 1.0 - math.Min(rttMs/500.0, 1.0)
+	kaScore := 1.0 - math.Min(missed/5.0, 1.0)
+	successRate := (rttScore + kaScore) / 2.0
 	state := m.transportAgent.EncodeState(
 		[4]float64{rttMs, rttMs, rttMs, rttMs},
-		0,
-		math.Min(missed/5.0, 1.0),
-		false,
-		0,
+		successRate,
+		math.Min((missed+tlsErr)/5.0, 1.0),
+		tlsErr >= 2,
+		math.Min(tlsErr/5.0, 1.0),
 		time.Now().Hour(),
-		0,
+		math.Min((tlsErr+boFail)/6.0, 1.0),
 	)
+	state[11] = m.networkContext()
 	tr, _ := m.transportAgent.Select(state)
 	if tr == "" {
 		return "", 0
@@ -4147,6 +4273,59 @@ func (m *Manager) mlStartTransportWatchdog(ctx context.Context) {
 	}()
 }
 
+func (m *Manager) mlBlockmapSync(ctx context.Context) {
+	if m.transportAgent == nil || m.config.MLServerURL == "" {
+		return
+	}
+	base := m.config.MLServerURL
+	if !strings.HasPrefix(base, "http://") && !strings.HasPrefix(base, "https://") {
+		base = "https://" + base
+	}
+	cc, asn := m.networkKey()
+
+	if outcomes := m.transportAgent.DrainOutcomes(); len(outcomes) > 0 {
+		body, _ := json.Marshal(mlpkg.BlockReport{CC: cc, ASN: asn, Reports: outcomes})
+		uCtx, uCancel := context.WithTimeout(ctx, 10*time.Second)
+		if req, err := http.NewRequestWithContext(uCtx, http.MethodPost, base+"/federated/blockreport", bytes.NewReader(body)); err == nil {
+			req.Header.Set("Content-Type", "application/json")
+			if m.config.MLToken != "" {
+				req.Header.Set("Authorization", "Bearer "+m.config.MLToken)
+			}
+			if resp, derr := mlHTTPClient.Do(req); derr == nil {
+				resp.Body.Close()
+			}
+		}
+		uCancel()
+	}
+
+	dCtx, dCancel := context.WithTimeout(ctx, 10*time.Second)
+	defer dCancel()
+	req, err := http.NewRequestWithContext(dCtx, http.MethodGet, base+"/federated/blockmap?cc="+cc+"&asn="+asn, nil)
+	if err != nil {
+		return
+	}
+	if m.config.MLToken != "" {
+		req.Header.Set("Authorization", "Bearer "+m.config.MLToken)
+	}
+	resp, err := mlHTTPClient.Do(req)
+	if err != nil {
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return
+	}
+	var e mlpkg.BlockmapEntry
+	if json.NewDecoder(resp.Body).Decode(&e) == nil {
+		m.transportAgent.ApplyBlockmapPrior(e)
+		avoid := make(map[string]bool, len(e.Avoid))
+		for _, n := range e.Avoid {
+			avoid[n] = true
+		}
+		m.blockAvoid.Store(avoid)
+	}
+}
+
 func (m *Manager) mlStartFederatedSync(ctx context.Context) {
 	if m.config.MLServerURL == "" {
 		return
@@ -4162,6 +4341,19 @@ func (m *Manager) mlStartFederatedSync(ctx context.Context) {
 					return
 				case <-ticker.C:
 					m.mlFederatedSync(ctx)
+				}
+			}
+		}()
+		go func() {
+			bt := time.NewTicker(30 * time.Minute)
+			defer bt.Stop()
+			m.mlBlockmapSync(ctx)
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-bt.C:
+					m.mlBlockmapSync(ctx)
 				}
 			}
 		}()
@@ -4216,7 +4408,7 @@ func probeLatency(ctx context.Context, addr string, timeout time.Duration) (time
 	defer cancel()
 	start := time.Now()
 	d := net.Dialer{}
-	conn, err := d.DialContext(ctx, "tcp4", addr)
+	conn, err := d.DialContext(ctx, "tcp", addr)
 	if err != nil {
 		return 0, err
 	}
@@ -4352,6 +4544,13 @@ func (m *Manager) performRekey() {
 		return
 	}
 	log.Info("[REKEY] Sent in-place rekey frame (PFS, seed=%x...)", seed[:4])
+}
+
+func (m *Manager) maybePreemptiveRotate(streak int32) {
+	if streak == 2 && m.transportAgent != nil {
+		log.Info("[preemptive] %d consecutive TLS errors — rotating transport before block", streak)
+		go m.rotateTransport()
+	}
 }
 
 func (m *Manager) rotateTransport() {
