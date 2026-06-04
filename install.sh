@@ -21,11 +21,41 @@ log_success() { echo -e "${GREEN}[OK]${PLAIN} $1"; }
 log_warn() { echo -e "${YELLOW}[WARN]${PLAIN} $1"; }
 log_err() { echo -e "${RED}[ERR]${PLAIN} $1"; }
 
+INTEGRITY_ENV_FILE="$CONF_PATH/whispera.env"
+
+ensure_integrity_key() {
+    if [[ -z "$WHISPERA_INTEGRITY_KEY" && -f "$INTEGRITY_ENV_FILE" ]]; then
+        local existing
+        existing=$(sed -n 's/^WHISPERA_INTEGRITY_KEY=//p' "$INTEGRITY_ENV_FILE" 2>/dev/null | head -n1)
+        [[ -n "$existing" ]] && export WHISPERA_INTEGRITY_KEY="$existing"
+    fi
+    if [[ -z "$WHISPERA_INTEGRITY_KEY" ]]; then
+        local k
+        k=$(openssl rand -hex 32 2>/dev/null)
+        [[ -z "$k" ]] && k=$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')
+        export WHISPERA_INTEGRITY_KEY="$k"
+        mkdir -p "$CONF_PATH"
+        printf 'WHISPERA_INTEGRITY_KEY=%s\n' "$k" > "$INTEGRITY_ENV_FILE"
+        chmod 600 "$INTEGRITY_ENV_FILE"
+        chown whispera:whispera "$INTEGRITY_ENV_FILE" 2>/dev/null || true
+        log_info "Generated persistent integrity key ($INTEGRITY_ENV_FILE)"
+    fi
+}
+
 refresh_config() {
     local cfg="${1:-$CONF_PATH/config.yaml}"
     if [[ ! -f "$cfg" ]]; then return; fi
-    if command -v whispera &>/dev/null; then
-        whispera update-checksum "$cfg" 2>/dev/null && log_info "Config checksum updated"
+    ensure_integrity_key
+    local bin
+    bin=$(command -v whispera 2>/dev/null) || bin="$BIN_PATH/whispera"
+    if [[ ! -x "$bin" ]]; then
+        log_warn "whispera binary not found ($bin) — checksum NOT updated; integrity check may fail on restart"
+        return
+    fi
+    if "$bin" update-checksum "$cfg" >/dev/null 2>&1; then
+        log_info "Config checksum updated"
+    else
+        log_warn "update-checksum failed for $cfg — integrity check may fail on restart"
     fi
 }
 
@@ -164,45 +194,37 @@ install_dependencies() {
     case $RELEASE in
         ubuntu|debian)
             apt-get update
-            apt-get remove -y libnode-dev libnode72 nodejs npm || true
-            dpkg --remove --force-all libnode-dev libnode72 || true
-            apt-get autoremove -y || true
             apt-get install -y curl git wget tar unzip openssl nano jq bc net-tools iproute2
-            curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
-            apt-get install -y nodejs
             ;;
         centos|fedora|almalinux|rocky)
             local DNF=dnf
             command -v dnf &>/dev/null || DNF=yum
             $DNF install -y epel-release || true
             $DNF install -y curl git wget tar unzip openssl nano jq bc net-tools iproute
-            curl -fsSL https://rpm.nodesource.com/setup_20.x | bash - || true
-            $DNF install -y nodejs || $DNF install -y nodejs npm || true
             ;;
         alpine)
-            apk add --no-cache curl git wget tar unzip openssl nano jq bc iproute2 nodejs npm
+            apk add --no-cache curl git wget tar unzip openssl nano jq bc iproute2
             ;;
         arch|manjaro)
-            pacman -Sy --noconfirm curl git wget tar unzip openssl nano jq bc net-tools iproute2 nodejs npm
+            pacman -Sy --noconfirm curl git wget tar unzip openssl nano jq bc net-tools iproute2
             ;;
         opensuse*|sles)
-            zypper --non-interactive install -y curl git wget tar unzip openssl nano jq bc net-tools iproute2 nodejs20 npm || \
-            zypper --non-interactive install -y curl git wget tar unzip openssl nano jq bc net-tools iproute2 nodejs npm
+            zypper --non-interactive install -y curl git wget tar unzip openssl nano jq bc net-tools iproute2
             ;;
         *)
             log_warn "Unknown OS '$RELEASE' — attempting generic install"
             if command -v apt-get &>/dev/null; then
-                apt-get update; apt-get install -y curl git wget tar unzip openssl nodejs npm jq bc
+                apt-get update; apt-get install -y curl git wget tar unzip openssl jq bc
             elif command -v dnf &>/dev/null; then
-                dnf install -y curl git wget tar unzip openssl nodejs npm jq bc
+                dnf install -y curl git wget tar unzip openssl jq bc
             elif command -v yum &>/dev/null; then
-                yum install -y curl git wget tar unzip openssl nodejs npm jq bc
+                yum install -y curl git wget tar unzip openssl jq bc
             elif command -v apk &>/dev/null; then
-                apk add --no-cache curl git wget tar unzip openssl nodejs npm jq bc
+                apk add --no-cache curl git wget tar unzip openssl jq bc
             elif command -v pacman &>/dev/null; then
-                pacman -Sy --noconfirm curl git wget tar unzip openssl nodejs npm jq bc
+                pacman -Sy --noconfirm curl git wget tar unzip openssl jq bc
             elif command -v zypper &>/dev/null; then
-                zypper --non-interactive install -y curl git wget tar unzip openssl nodejs npm jq bc
+                zypper --non-interactive install -y curl git wget tar unzip openssl jq bc
             else
                 log_err "No supported package manager found"
                 exit 1
@@ -401,15 +423,6 @@ findtime  = 1m
 bantime   = 6h
 filter    = whispera
 
-[whispera-panel]
-enabled   = true
-backend   = systemd
-journalmatch = _SYSTEMD_UNIT=whispera-panel.service
-maxretry  = 10
-findtime  = 1m
-bantime   = 1h
-filter    = whispera-panel
-
 EOF
 
     mkdir -p /etc/fail2ban/filter.d
@@ -419,14 +432,6 @@ failregex = .*handshake failed.*<HOST>
             .*auth failed.*<HOST>
             .*invalid key.*<HOST>
             .*connection rejected.*<HOST>
-ignoreregex =
-EOF
-
-    cat > /etc/fail2ban/filter.d/whispera-panel.conf <<'EOF'
-[Definition]
-failregex = .*401.*<HOST>
-            .*403.*<HOST>
-            .*login failed.*<HOST>
 ignoreregex =
 EOF
 
@@ -682,7 +687,6 @@ setup_autoupdate() {
     log_info "Setting up auto-update..."
 
     cat > /etc/cron.daily/whispera-update <<'CRONEOF'
-#!/bin/bash
 LOG="/var/log/whispera-update.log"
 exec >> "$LOG" 2>&1
 echo "=== $(date) ==="
@@ -1205,100 +1209,29 @@ setup_monitoring() {
 }
 
 install_panel() {
-    log_info "Installing Whispera Panel..."
+    log_info "Installing Whispera Panel (static — served by nginx)..."
 
-    install_nodejs
-    
-    local PANEL_SRC="$WORK_DIR/panel"
-    local PANEL_DEST="$DAT_PATH/panel"
+    local PANEL_SRC="$WORK_DIR/panel/public"
+    local PANEL_DEST="$DAT_PATH/panel/public"
 
-    log_info "Checking for pre-built Panel release..."
-    local LATEST_TAG=$(curl -s "https://api.github.com/repos/Jalaveyan/Whispera/releases/latest" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
-    
-    if [[ -n "$LATEST_TAG" ]]; then
-        local PANEL_URL="https://github.com/Jalaveyan/Whispera/releases/download/${LATEST_TAG}/whispera-panel.tar.gz"
-        
-        if curl -L -f -o "/tmp/whispera-panel.tar.gz" "$PANEL_URL"; then
-            log_info "Downloaded Panel release ${LATEST_TAG}"
-            
-            rm -rf "$PANEL_DEST"
-            mkdir -p "$PANEL_DEST"
-            
-            tar -xzf "/tmp/whispera-panel.tar.gz" -C "$PANEL_DEST"
-            rm -f "/tmp/whispera-panel.tar.gz"
-            
-            if [[ ! -f "$PANEL_DEST/.env" ]]; then
-                cat > "$PANEL_DEST/.env" <<ENVEOF
-BACKEND_URL=http://127.0.0.1:8080
-PORT=3000
-CORS_ORIGIN=*
-ENVEOF
-                log_info "Generated .env"
-            fi
-
-            if [[ ! -f "$PANEL_DEST/bundle/index.js" ]]; then
-                log_warn "bundle/index.js not found in release — panel may not start"
-            fi
-
-            log_success "Panel installed from release"
-            return
-        else
-            log_warn "Pre-built panel not found in release (will build from source)..."
-            rm -f "/tmp/whispera-panel.tar.gz"
-        fi
-    fi
-    
     if [[ ! -d "$PANEL_SRC" ]]; then
-        log_warn "Panel source directory not found! Cloning..."
-        cd /tmp
+        log_warn "Panel static source not found ($PANEL_SRC) — cloning repo..."
         rm -rf "$WORK_DIR"
         git clone -b main https://github.com/Jalaveyan/Whispera.git "$WORK_DIR"
     fi
-    
+
     if [[ ! -d "$PANEL_SRC" ]]; then
-        log_err "Failed to clone panel source!"
+        log_err "Panel static source missing — skipping panel install"
         return
     fi
-    
-    log_info "Building Panel..."
-    cd "$PANEL_SRC"
-    npm install --legacy-peer-deps
-    
-    export NODE_OPTIONS="--max-old-space-size=2048"
-    npm run build
 
-    if [[ ! -d "dist" ]]; then
-        log_err "Panel build failed!"
-        exit 1
-    fi
+    rm -rf "$PANEL_DEST"
+    mkdir -p "$(dirname "$PANEL_DEST")"
+    cp -r "$PANEL_SRC" "$PANEL_DEST"
+    mkdir -p "$PANEL_DEST/uploads"
+    chmod -R a+rX "$PANEL_DEST"
 
-    log_info "Bundling Panel..."
-    npx --yes @vercel/ncc build dist/main.js -o bundle/ --minify --no-source-map-register
-    if [[ ! -f "bundle/index.js" ]]; then
-        log_warn "Bundle step failed — falling back to dist/main.js"
-        mkdir -p bundle
-        cp dist/main.js bundle/index.js
-    fi
-    
-    mkdir -p "$PANEL_DEST"
-    rm -rf "$PANEL_DEST"/*
-    cp -r dist "$PANEL_DEST/"
-    cp -r public "$PANEL_DEST/" 2>/dev/null || true
-    cp package.json "$PANEL_DEST/"
-    cp package-lock.json "$PANEL_DEST/" 2>/dev/null || true
-    cp nest-cli.json "$PANEL_DEST/" 2>/dev/null || true
-    
-    cat > "$PANEL_DEST/.env" <<ENVEOF
-BACKEND_URL=http://127.0.0.1:8080
-PORT=3000
-CORS_ORIGIN=*
-ENVEOF
-    
-    cd "$PANEL_DEST"
-    npm install --omit=dev --force
-    
-
-    log_success "Panel installed to $PANEL_DEST"
+    log_success "Panel (static) installed to $PANEL_DEST"
 }
 
 cleanup_source() {
@@ -1547,12 +1480,24 @@ setup_nginx_proxy() {
         log_info "Installing nginx..."
         if command -v apt-get &>/dev/null; then
             apt-get install -y nginx >/dev/null 2>&1
+        elif command -v dnf &>/dev/null; then
+            dnf install -y nginx >/dev/null 2>&1
         elif command -v yum &>/dev/null; then
             yum install -y nginx >/dev/null 2>&1
+        elif command -v pacman &>/dev/null; then
+            pacman -Sy --noconfirm nginx >/dev/null 2>&1
+        elif command -v zypper &>/dev/null; then
+            zypper install -y nginx >/dev/null 2>&1
+        elif command -v apk &>/dev/null; then
+            apk add nginx >/dev/null 2>&1
         else
             log_warn "Cannot install nginx — package manager not found"
             return
         fi
+    fi
+    if ! command -v nginx &>/dev/null; then
+        log_warn "nginx install failed (no outbound? unsupported distro) — panel unreachable on :443 until nginx is installed"
+        return
     fi
 
     mkdir -p /etc/nginx/conf.d
@@ -1566,7 +1511,7 @@ RLCONF
         log_info "Added whispera-ui to /etc/hosts"
     fi
 
-    cat > /etc/nginx/sites-available/whispera-ui <<NGINX
+    cat > /etc/nginx/conf.d/whispera-ui.conf <<NGINX
 server {
     listen 80;
     server_name whispera-ui ${SERVER_IP};
@@ -1576,16 +1521,15 @@ server {
 server {
     listen 443 ssl;
     server_name whispera-ui ${SERVER_IP};
+    root ${DAT_PATH}/panel/public;
 
     ssl_certificate     ${CERT};
     ssl_certificate_key ${KEY};
     ssl_protocols       TLSv1.2 TLSv1.3;
     ssl_ciphers         HIGH:!aNULL:!MD5;
 
-    # Prevent downgrade attacks — browser will enforce HTTPS for 1 year
     add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
 
-    # /sub/ is public — VPN clients need subscription URLs without auth
     location /sub/ {
         proxy_pass         http://127.0.0.1:8080;
         proxy_set_header   Host \$host;
@@ -1604,23 +1548,18 @@ server {
     }
 
     location / {
-        limit_req  zone=panel_auth burst=20 nodelay;
-        proxy_pass         http://127.0.0.1:3000;
-        proxy_set_header   Host \$host;
-        proxy_set_header   X-Forwarded-For \$remote_addr;
-        proxy_set_header   X-Forwarded-Host \$host;
-        proxy_set_header   X-Forwarded-Proto https;
-        proxy_http_version 1.1;
-        proxy_set_header   Upgrade \$http_upgrade;
-        proxy_set_header   Connection "upgrade";
+        try_files \$uri \$uri/ /index.html;
     }
 }
 NGINX
 
-    mkdir -p /etc/nginx/sites-enabled
-    ln -sf /etc/nginx/sites-available/whispera-ui /etc/nginx/sites-enabled/whispera-ui
+    if [[ -f /etc/nginx/nginx.conf ]] && ! grep -qE 'include[[:space:]]+.*conf\.d/\*\.conf' /etc/nginx/nginx.conf; then
+        sed -i '0,/^[[:space:]]*http[[:space:]]*{/s//&\n    include \/etc\/nginx\/conf.d\/*.conf;/' /etc/nginx/nginx.conf
+        log_info "Added conf.d include to nginx.conf (Arch/minimal layouts)"
+    fi
 
-    rm -f /etc/nginx/sites-enabled/default
+    rm -f /etc/nginx/sites-enabled/default 2>/dev/null || true
+    rm -f /etc/nginx/sites-available/whispera-ui /etc/nginx/sites-enabled/whispera-ui 2>/dev/null || true
 
     fw_allow_port 80 tcp
     fw_allow_port 443 tcp
@@ -1630,7 +1569,7 @@ NGINX
         systemctl restart nginx
         log_success "Nginx reverse proxy configured"
     else
-        log_warn "Nginx config test failed — check /etc/nginx/sites-available/whispera-ui"
+        log_warn "Nginx config test failed — check /etc/nginx/conf.d/whispera-ui.conf"
     fi
 }
 
@@ -1638,6 +1577,7 @@ setup_systemd() {
     log_info "Setting up SystemD services..."
 
     make_service_user whispera
+    ensure_integrity_key
 
     if command -v ufw &>/dev/null; then
         local UFW_BIN
@@ -1673,6 +1613,7 @@ User=whispera
 Group=whispera
 WorkingDirectory=$WORK_DIR
 Environment=WHISPERA_MASK_LOGS=true
+EnvironmentFile=-$INTEGRITY_ENV_FILE
 ExecStart=$BIN_PATH/whispera -config $CONF_PATH/config.yaml -api :8080
 Restart=always
 RestartSec=5
@@ -1680,42 +1621,9 @@ LimitNOFILE=infinity
 AmbientCapabilities=CAP_NET_BIND_SERVICE CAP_NET_ADMIN CAP_NET_RAW
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=$WORK_DIR $CONF_PATH $DAT_PATH /var/log/whispera /etc/ufw /lib/ufw /var/lib/ufw /run /var/crash
+ReadWritePaths=$WORK_DIR $CONF_PATH $DAT_PATH /var/log/whispera /run -/etc/ufw -/lib/ufw -/var/lib/ufw -/var/crash
 StandardOutput=append:/var/log/whispera/whispera.log
 StandardError=append:/var/log/whispera/whispera.log
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-    local NODE_BIN=$(command -v node || echo "/usr/bin/node")
-
-    local PANEL_HTTPS_VARS=""
-
-    cat > /etc/systemd/system/whispera-panel.service <<EOF
-[Unit]
-Description=Whispera Panel (Frontend)
-After=network.target
-StartLimitIntervalSec=300
-StartLimitBurst=10
-
-[Service]
-User=whispera
-Group=whispera
-WorkingDirectory=$DAT_PATH/panel
-ExecStart=$NODE_BIN bundle/index.js
-Restart=always
-RestartSec=3
-TimeoutStopSec=10
-Environment=PORT=3000
-Environment=BACKEND_URL=http://127.0.0.1:8080
-Environment=CORS_ORIGIN=*
-AmbientCapabilities=CAP_NET_BIND_SERVICE
-NoNewPrivileges=true
-ProtectSystem=strict
-ProtectHome=true
-ReadWritePaths=$DAT_PATH
-$PANEL_HTTPS_VARS
 
 [Install]
 WantedBy=multi-user.target
@@ -1726,7 +1634,6 @@ EOF
 
     systemctl daemon-reload
     systemctl enable whispera >/dev/null 2>&1
-    systemctl enable whispera-panel >/dev/null 2>&1
 
     cat > /etc/systemd/system/whispera-watchdog.service <<WEOF
 [Unit]
@@ -1735,7 +1642,7 @@ After=whispera.service
 
 [Service]
 Type=oneshot
-ExecStart=/bin/bash -c 'for svc in whispera whispera-panel; do systemctl is-enabled \$svc &>/dev/null && ! systemctl is-active \$svc &>/dev/null && systemctl restart \$svc && echo "[\$(date)] restarted \$svc" >> /var/log/whispera/watchdog.log; done'
+ExecStart=/bin/bash -c 'for svc in whispera; do systemctl is-enabled \$svc &>/dev/null && ! systemctl is-active \$svc &>/dev/null && systemctl restart \$svc && echo "[\$(date)] restarted \$svc" >> /var/log/whispera/watchdog.log; done'
 WEOF
 
     cat > /etc/systemd/system/whispera-watchdog.timer <<WEOF
@@ -1761,11 +1668,7 @@ WEOF
         log_warn "Whispera service failed to start — check /var/log/whispera/whispera.log"
     fi
 
-    if systemctl restart whispera-panel 2>/dev/null; then
-        log_success "Panel service started"
-    else
-        log_warn "Panel service not started (panel may not be installed yet — run option 18 later)"
-    fi
+    log_success "Panel served as static files via nginx"
 
     log_success "ML engine runs inside main Whispera process (port 8000)"
 }
@@ -1796,8 +1699,8 @@ _enable_chameleon_in_config() {
     [[ -f "$cfg" ]] || return
 
     local cert="" key=""
-    cert=$(grep -hE '^[[:space:]]*ssl_certificate[[:space:]]' /etc/nginx/sites-available/* 2>/dev/null | grep -v "ssl_certificate_key" | awk '{print $2}' | tr -d ';' | head -1)
-    key=$(grep -hE '^[[:space:]]*ssl_certificate_key[[:space:]]' /etc/nginx/sites-available/* 2>/dev/null | awk '{print $2}' | tr -d ';' | head -1)
+    cert=$(grep -hE '^[[:space:]]*ssl_certificate[[:space:]]' /etc/nginx/conf.d/*.conf /etc/nginx/sites-available/* 2>/dev/null | grep -v "ssl_certificate_key" | awk '{print $2}' | tr -d ';' | head -1)
+    key=$(grep -hE '^[[:space:]]*ssl_certificate_key[[:space:]]' /etc/nginx/conf.d/*.conf /etc/nginx/sites-available/* 2>/dev/null | awk '{print $2}' | tr -d ';' | head -1)
 
     if grep -q "^chameleon:" "$cfg"; then
         sed -i '/^chameleon:/,/^[^ ]/{s/enabled: false/enabled: true/}' "$cfg"
@@ -1930,11 +1833,11 @@ show_connection_key() {
 install_cli_wrapper() {
     cat > "$BIN_PATH/whispera-mgmt" <<'EOF'
 case $1 in
-    start) systemctl start whispera && systemctl start whispera-panel ;;
-    stop) systemctl stop whispera && systemctl stop whispera-panel ;;
-    restart) systemctl restart whispera && systemctl restart whispera-panel ;;
-    status) systemctl status whispera whispera-panel ;;
-    log|logs) journalctl -u whispera -u whispera-panel -f ;;
+    start) systemctl start whispera ;;
+    stop) systemctl stop whispera ;;
+    restart) systemctl restart whispera ;;
+    status) systemctl status whispera ;;
+    log|logs) journalctl -u whispera -f ;;
     config) ${EDITOR:-nano} /etc/whispera/config.yaml ;;
     key)
         SERVER_IP=$(curl -s https://2ip.ru/api/self -m 5 2>/dev/null | grep -oE '"ip":"[^"]*"' | cut -d'"' -f4 || curl -s https://api.ipify.org -m 5 2>/dev/null || echo "YOUR_IP")
@@ -1994,6 +1897,7 @@ main() {
 
     _enable_chameleon_in_config
     _disable_phantom_in_config
+    refresh_config
     if systemctl is-active whispera &>/dev/null; then
         systemctl restart whispera >/dev/null 2>&1 || true
     fi

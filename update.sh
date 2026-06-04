@@ -19,26 +19,45 @@ log_info() { echo -e "${BLUE}[INFO]${PLAIN} $1"; }
 log_warn() { echo -e "${YELLOW}[WARN]${PLAIN} $1"; }
 log_err() { echo -e "${RED}[ERR]${PLAIN} $1"; }
 
+INTEGRITY_ENV_FILE="$CONF_PATH/whispera.env"
+
+load_integrity_key() {
+    [[ -n "$WHISPERA_INTEGRITY_KEY" ]] && return 0
+    [[ -f "$INTEGRITY_ENV_FILE" ]] || return 0
+    local existing
+    existing=$(sed -n 's/^WHISPERA_INTEGRITY_KEY=//p' "$INTEGRITY_ENV_FILE" 2>/dev/null | head -n1)
+    if [[ -n "$existing" ]]; then
+        export WHISPERA_INTEGRITY_KEY="$existing"
+    fi
+    return 0
+}
+
 refresh_config() {
     local cfg="${1:-$CONF_PATH/config.yaml}"
-    if [[ ! -f "$cfg" ]]; then return; fi
-    if command -v whispera &>/dev/null; then
-        whispera update-checksum "$cfg" 2>/dev/null && log_info "Config checksum updated" || true
+    if [[ ! -f "$cfg" ]]; then return 0; fi
+    load_integrity_key
+    local bin
+    bin=$(command -v whispera 2>/dev/null) || bin="$BIN_PATH/whispera"
+    if [[ ! -x "$bin" ]]; then
+        log_warn "whispera binary not found ($bin) — checksum NOT updated; integrity check may fail on restart"
+        return 0
     fi
+    if "$bin" update-checksum "$cfg" >/dev/null 2>&1; then
+        log_info "Config checksum updated"
+    else
+        log_warn "update-checksum failed for $cfg — integrity check may fail on restart"
+    fi
+    return 0
 }
 
 _enable_tcp8443_in_config() {
     local cfg="${CONF_PATH}/config.yaml"
     [[ -f "$cfg" ]] || return
-    # Already on :8443 and tcp block is enabled — nothing to do
     if awk '/^  tcp:/{f=1} f && /listen_addr:.*:8443/{a=1} f && /enabled: true/{b=1} /^  [a-z]/ && !/^  tcp:/{f=0} END{exit !(a&&b)}' "$cfg" 2>/dev/null; then
         return
     fi
     local changed=0
-    # Enable TCP transport and point it to :8443
     if grep -q 'listen_addr: ":8443"' "$cfg"; then
-        # Replace tcp block: enabled: false + :8443 → enabled: true + :443
-        # We use awk to only change the tcp sub-block
         awk '
             /^  tcp:/ { in_tcp=1 }
             in_tcp && /listen_addr:/ { sub(/":[0-9]+"/, "\":8443\""); changed=1 }
@@ -58,19 +77,12 @@ _enable_chameleon_in_config() {
     local cfg="${CONF_PATH}/config.yaml"
     [[ -f "$cfg" ]] || return
 
-    # Detect existing TLS cert from nginx config (used in both branches).
-    # Skip commented-out lines (otherwise awk picks the directive name as $2
-    # and we end up writing tls_cert: "ssl_certificate" into config.yaml).
     local cert="" key=""
-    cert=$(grep -hE '^[[:space:]]*ssl_certificate[[:space:]]' /etc/nginx/sites-available/* 2>/dev/null | grep -v "ssl_certificate_key" | awk '{print $2}' | tr -d ';' | head -1)
-    key=$(grep -hE '^[[:space:]]*ssl_certificate_key[[:space:]]' /etc/nginx/sites-available/* 2>/dev/null | awk '{print $2}' | tr -d ';' | head -1)
+    cert=$(grep -hE '^[[:space:]]*ssl_certificate[[:space:]]' /etc/nginx/conf.d/*.conf /etc/nginx/sites-available/* 2>/dev/null | grep -v "ssl_certificate_key" | awk '{print $2}' | tr -d ';' | head -1)
+    key=$(grep -hE '^[[:space:]]*ssl_certificate_key[[:space:]]' /etc/nginx/conf.d/*.conf /etc/nginx/sites-available/* 2>/dev/null | awk '{print $2}' | tr -d ';' | head -1)
 
     if grep -q "^chameleon:" "$cfg"; then
-        # Already present — ensure enabled: true
         sed -i '/^chameleon:/,/^[^ ]/{s/enabled: false/enabled: true/}' "$cfg"
-        # Skip cert injection entirely if the chameleon block already has a
-        # non-empty `domain:` — that means autocert (Let's Encrypt) is in use
-        # and we must NOT overwrite tls_cert with an nginx path.
         local cur_domain
         cur_domain=$(awk '/^chameleon:/{f=1} f && /^[[:space:]]+domain:/{print $2; exit}' "$cfg" | tr -d '"')
         if [[ -n "$cur_domain" ]]; then
@@ -78,17 +90,14 @@ _enable_chameleon_in_config() {
             log_success "Chameleon enabled in config.yaml (autocert domain=$cur_domain, tls_cert untouched)"
             return
         fi
-        # If tls_cert is empty ("" or absent) and we have an nginx cert, fill it in
         local cur_cert
         cur_cert=$(awk '/^chameleon:/{f=1} f && /tls_cert:/{print $2; exit}' "$cfg" | tr -d '"')
         if [[ -z "$cur_cert" && -n "$cert" ]]; then
-            # Replace tls_cert: "" and tls_key: "" inside the chameleon section
             python3 - "$cfg" "$cert" "$key" <<'PYEOF'
 import sys, re
 path, cert, key = sys.argv[1], sys.argv[2], sys.argv[3]
 with open(path) as f:
     text = f.read()
-# Only patch inside the chameleon: block (lines until next top-level key)
 def patch_block(m):
     blk = m.group(0)
     blk = re.sub(r'tls_cert:\s*""', f'tls_cert: "{cert}"', blk)
@@ -196,8 +205,6 @@ restore() {
         log_warn "Rollback restart also failed. Trying start..."
         systemctl start whispera 2>/dev/null || log_warn "Service could not be started. Run: systemctl start whispera"
     fi
-    systemctl restart whispera-panel 2>/dev/null || true
-
     exit 1
 }
 
@@ -346,15 +353,6 @@ findtime  = 1m
 bantime   = 6h
 filter    = whispera
 
-[whispera-panel]
-enabled   = true
-backend   = systemd
-journalmatch = _SYSTEMD_UNIT=whispera-panel.service
-maxretry  = 10
-findtime  = 1m
-bantime   = 1h
-filter    = whispera-panel
-
 EOF
 
     mkdir -p /etc/fail2ban/filter.d
@@ -367,20 +365,12 @@ failregex = .*handshake failed.*<HOST>
 ignoreregex =
 EOF
 
-    cat > /etc/fail2ban/filter.d/whispera-panel.conf <<'EOF'
-[Definition]
-failregex = .*401.*<HOST>
-            .*403.*<HOST>
-            .*login failed.*<HOST>
-ignoreregex =
-EOF
-
     systemctl enable fail2ban >/dev/null 2>&1
     systemctl restart fail2ban >/dev/null 2>&1
     sleep 2
 
     if systemctl is-active --quiet fail2ban 2>/dev/null; then
-        log_success "Fail2ban installed and running (sshd + whispera + panel jails)"
+        log_success "Fail2ban installed and running (sshd + whispera jails)"
         log_info "Config: /etc/fail2ban/jail.local"
     else
         log_warn "Fail2ban installed but not running. Check: journalctl -u fail2ban"
@@ -569,8 +559,15 @@ if [[ -n "$ML_PY_CHANGED" ]]; then
 fi
 
 if [[ -n "$PANEL_CHANGED" ]]; then
-    echo "Panel files updated — restarting whispera-panel"
-    systemctl restart whispera-panel 2>/dev/null && echo "whispera-panel restarted" || true
+    echo "Panel files updated — redeploying static files"
+    if [[ -d "panel/public" ]]; then
+        rm -rf "$DAT_PATH/panel/public"
+        mkdir -p "$DAT_PATH/panel"
+        cp -r panel/public "$DAT_PATH/panel/public"
+        chmod -R a+rX "$DAT_PATH/panel/public"
+        chown -R whispera:whispera "$DAT_PATH/panel" 2>/dev/null || true
+    fi
+    nginx -t 2>/dev/null && systemctl reload nginx 2>/dev/null && echo "panel redeployed" || true
 fi
 
 if [[ -n "$GO_CHANGED" ]]; then
@@ -649,12 +646,24 @@ setup_nginx_proxy() {
         log_info "Installing nginx..."
         if command -v apt-get &>/dev/null; then
             apt-get install -y nginx >/dev/null 2>&1
+        elif command -v dnf &>/dev/null; then
+            dnf install -y nginx >/dev/null 2>&1
         elif command -v yum &>/dev/null; then
             yum install -y nginx >/dev/null 2>&1
+        elif command -v pacman &>/dev/null; then
+            pacman -Sy --noconfirm nginx >/dev/null 2>&1
+        elif command -v zypper &>/dev/null; then
+            zypper install -y nginx >/dev/null 2>&1
+        elif command -v apk &>/dev/null; then
+            apk add nginx >/dev/null 2>&1
         else
             log_warn "Cannot install nginx — package manager not found"
             return
         fi
+    fi
+    if ! command -v nginx &>/dev/null; then
+        log_warn "nginx install failed (no outbound? unsupported distro) — panel unreachable on :443 until nginx is installed"
+        return
     fi
 
     mkdir -p /etc/nginx/conf.d
@@ -668,7 +677,7 @@ RLCONF
         log_info "Added whispera-ui to /etc/hosts"
     fi
 
-    cat > /etc/nginx/sites-available/whispera-ui <<NGINX
+    cat > /etc/nginx/conf.d/whispera-ui.conf <<NGINX
 server {
     listen 443 ssl default_server;
     server_name _;
@@ -678,10 +687,10 @@ server {
     ssl_protocols       TLSv1.2 TLSv1.3;
     ssl_ciphers         HIGH:!aNULL:!MD5;
 
-    # Prevent downgrade attacks — browser will enforce HTTPS for 1 year
     add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
 
-    # /sub/ is public — VPN clients need subscription URLs without auth
+    root ${DAT_PATH}/panel/public;
+
     location /sub/ {
         proxy_pass         http://127.0.0.1:8080;
         proxy_set_header   Host \$host;
@@ -700,23 +709,18 @@ server {
     }
 
     location / {
-        limit_req  zone=panel_auth burst=20 nodelay;
-        proxy_pass         http://127.0.0.1:3000;
-        proxy_set_header   Host \$host;
-        proxy_set_header   X-Forwarded-For \$remote_addr;
-        proxy_set_header   X-Forwarded-Host \$host;
-        proxy_set_header   X-Forwarded-Proto https;
-        proxy_http_version 1.1;
-        proxy_set_header   Upgrade \$http_upgrade;
-        proxy_set_header   Connection "upgrade";
+        try_files \$uri \$uri/ /index.html;
     }
 }
 NGINX
 
-    mkdir -p /etc/nginx/sites-enabled
-    ln -sf /etc/nginx/sites-available/whispera-ui /etc/nginx/sites-enabled/whispera-ui
+    if [[ -f /etc/nginx/nginx.conf ]] && ! grep -qE 'include[[:space:]]+.*conf\.d/\*\.conf' /etc/nginx/nginx.conf; then
+        sed -i '0,/^[[:space:]]*http[[:space:]]*{/s//&\n    include \/etc\/nginx\/conf.d\/*.conf;/' /etc/nginx/nginx.conf
+        log_info "Added conf.d include to nginx.conf (Arch/minimal layouts)"
+    fi
 
-    rm -f /etc/nginx/sites-enabled/default
+    rm -f /etc/nginx/sites-enabled/default 2>/dev/null || true
+    rm -f /etc/nginx/sites-available/whispera-ui /etc/nginx/sites-enabled/whispera-ui 2>/dev/null || true
 
     if command -v ufw &>/dev/null; then
         ufw allow 80/tcp >/dev/null 2>&1 || true
@@ -735,7 +739,7 @@ NGINX
             log_warn "Nginx failed to restart — port 443 may be in use. Check: journalctl -u nginx"
         fi
     else
-        log_warn "Nginx config test failed — check /etc/nginx/sites-available/whispera-ui"
+        log_warn "Nginx config test failed — check /etc/nginx/conf.d/whispera-ui.conf"
     fi
 }
 
@@ -1059,8 +1063,6 @@ show_extras_menu() {
                 ;;
             24)
                 _check_panel_integrity
-                echo ""
-                _verify_panel_bundle "$DAT_PATH/panel"
                 ;;
             0|"") log_info "Exiting menu."; break ;;
             *) log_warn "Invalid option: $choice" ;;
@@ -1074,14 +1076,12 @@ show_extras_menu() {
 }
 
 
-# Minimum acceptable size for bundle/index.js in bytes (1 MB)
 PANEL_BUNDLE_MIN_BYTES=1048576
 
 _verify_panel_archive() {
     local archive="$1"       # path to panel-release.tar.gz
     local sums_url="$2"      # URL to SHA256SUMS
 
-    # Size check — reject anything under 500 KB
     local bytes
     bytes=$(stat -c%s "$archive" 2>/dev/null || stat -f%z "$archive" 2>/dev/null || echo 0)
     if [[ "$bytes" -lt 524288 ]]; then
@@ -1089,7 +1089,6 @@ _verify_panel_archive() {
         return 1
     fi
 
-    # SHA256 verification against release checksums
     if [[ -n "$sums_url" ]]; then
         local sums_file
         sums_file=$(mktemp)
@@ -1130,7 +1129,6 @@ _verify_panel_bundle() {
         return 1
     fi
 
-    # Record hash for future integrity checks
     sha256sum "$bundle" > "$CONF_PATH/panel-bundle.sha256" 2>/dev/null
     log_info "Panel bundle OK ($(( bytes / 1024 )) KB), hash recorded"
     return 0
@@ -1301,135 +1299,33 @@ do_update() {
         log_info "Bridge install script deployed to /opt/whispera/scripts/"
     fi
 
-    local PANEL_URL=$(echo "$RELEASE_JSON" | grep "browser_download_url" | grep "whispera-panel.tar.gz" | head -n 1 | cut -d '"' -f 4)
-    local SUMS_URL=$(echo "$RELEASE_JSON" | grep "browser_download_url" | grep "SHA256SUMS" | head -n 1 | cut -d '"' -f 4)
-
-    if [[ -n "$PANEL_URL" ]]; then
-        log_info "Updating panel from release..."
-        if curl -L -o panel-release.tar.gz "$PANEL_URL"; then
-            if ! _verify_panel_archive "panel-release.tar.gz" "$SUMS_URL"; then
-                rm -f panel-release.tar.gz
-                log_err "Panel update aborted due to integrity check failure"
-            else
-            mkdir -p /tmp/panel-update
-            tar -xzf panel-release.tar.gz -C /tmp/panel-update
-            rm -f panel-release.tar.gz
-            
-            local PANEL_DEST="$DAT_PATH/panel"
-            mkdir -p "$PANEL_DEST"
-            
-            local ENV_BAK=""
-            if [[ -f "$PANEL_DEST/.env" ]]; then
-                ENV_BAK=$(cat "$PANEL_DEST/.env")
-            fi
-            
-            rm -rf "$PANEL_DEST/dist" "$PANEL_DEST/bundle" "$PANEL_DEST/public" "$PANEL_DEST/node_modules"
-            cp -r /tmp/panel-update/* "$PANEL_DEST/"
-            rm -rf /tmp/panel-update
-
-
-            if [[ -n "$ENV_BAK" ]]; then
-                echo "$ENV_BAK" > "$PANEL_DEST/.env"
-            elif [[ ! -f "$PANEL_DEST/.env" ]]; then
-                cat > "$PANEL_DEST/.env" <<ENVEOF
-BACKEND_URL=http://127.0.0.1:8080
-PORT=3000
-CORS_ORIGIN=*
-ENVEOF
-            fi
-
-
-
-            if [[ ! -f /etc/systemd/system/whispera-panel.service ]]; then
-                local NODE_BIN=$(command -v node || echo "/usr/bin/node")
-                log_info "Creating whispera-panel.service (was missing)"
-                cat > /etc/systemd/system/whispera-panel.service <<PANELEOF
-[Unit]
-Description=Whispera Panel (Frontend)
-After=network.target
-StartLimitIntervalSec=300
-StartLimitBurst=10
-
-[Service]
-User=whispera
-Group=whispera
-WorkingDirectory=$DAT_PATH/panel
-ExecStart=$NODE_BIN bundle/index.js
-Restart=always
-RestartSec=3
-TimeoutStopSec=10
-Environment=PORT=3000
-Environment=BACKEND_URL=http://127.0.0.1:8080
-Environment=CORS_ORIGIN=*
-AmbientCapabilities=CAP_NET_BIND_SERVICE
-NoNewPrivileges=true
-ProtectSystem=strict
-ProtectHome=true
-ReadWritePaths=$DAT_PATH
-
-[Install]
-WantedBy=multi-user.target
-PANELEOF
-                systemctl daemon-reload
-                systemctl enable whispera-panel >/dev/null 2>&1 || true
-            fi
-
-            if grep -q "dist/main.js" /etc/systemd/system/whispera-panel.service 2>/dev/null; then
-                local NODE_BIN=$(command -v node || echo "/usr/bin/node")
-                sed -i "s|ExecStart=.* dist/main.js|ExecStart=$NODE_BIN bundle/index.js|" /etc/systemd/system/whispera-panel.service
-                systemctl daemon-reload
-                log_info "Migrated panel service to bundle/index.js"
-            fi
-
-            if grep -q "^WatchdogSec=" /etc/systemd/system/whispera-panel.service 2>/dev/null; then
-                sed -i '/^WatchdogSec=/d' /etc/systemd/system/whispera-panel.service
-                systemctl daemon-reload
-                log_info "Removed WatchdogSec from panel service (Nest does not sd_notify)"
-            fi
-
-            generate_panel_cert
-
-            sed -i '/^Environment=TLS_CERT\|^Environment=TLS_KEY\|^Environment=HTTP_PORT/d' \
-                /etc/systemd/system/whispera-panel.service 2>/dev/null || true
-
-            if ! grep -q "AmbientCapabilities" /etc/systemd/system/whispera-panel.service 2>/dev/null; then
-                sed -i "/^NoNewPrivileges/i AmbientCapabilities=CAP_NET_BIND_SERVICE" \
-                    /etc/systemd/system/whispera-panel.service
-                log_info "Added CAP_NET_BIND_SERVICE to panel service"
-            fi
-            if ! grep -q "CAP_NET_ADMIN" /etc/systemd/system/whispera.service 2>/dev/null; then
-                sed -i 's/AmbientCapabilities=CAP_NET_BIND_SERVICE$/AmbientCapabilities=CAP_NET_BIND_SERVICE CAP_NET_ADMIN/' \
-                    /etc/systemd/system/whispera.service
-                log_info "Added CAP_NET_ADMIN to whispera service"
-            fi
-            if ! grep -q " /run" /etc/systemd/system/whispera.service 2>/dev/null; then
-                if grep -q "^ReadWritePaths=" /etc/systemd/system/whispera.service 2>/dev/null; then
-                    sed -i 's|^ReadWritePaths=\(.*\)|ReadWritePaths=\1 /run /var/crash|' /etc/systemd/system/whispera.service
-                else
-                    sed -i '/^ProtectSystem=strict/a ReadWritePaths=/run /var/crash /etc/ufw /lib/ufw /var/lib/ufw /var/log/whispera' \
-                        /etc/systemd/system/whispera.service
-                fi
-                log_info "Added /run to ReadWritePaths in whispera service"
-            fi
-            if grep -q "/run/ufw.lock" /etc/systemd/system/whispera.service 2>/dev/null; then
-                sed -i 's| /run/ufw\.lock||g' /etc/systemd/system/whispera.service
-            fi
-            systemctl daemon-reload
-
-            _repair_panel_bundle "$PANEL_DEST"
-            _verify_panel_bundle "$PANEL_DEST" || log_warn "Post-install bundle check failed — review manually"
-            systemctl daemon-reload
-            systemctl restart whispera-panel 2>/dev/null || log_warn "Panel service not configured"
-
-            setup_nginx_proxy
-            log_success "Panel updated from release"
-            fi  # end integrity check
-        else
-            log_warn "Panel download failed"
-        fi
-    else
-        log_info "No panel release found, skipping panel update"
+    if [[ -f /etc/systemd/system/whispera-panel.service ]]; then
+        log_info "Removing legacy whispera-panel (Node) service — panel is static now"
+        systemctl stop whispera-panel 2>/dev/null || true
+        systemctl disable whispera-panel 2>/dev/null || true
+        rm -f /etc/systemd/system/whispera-panel.service
+        systemctl daemon-reload
     fi
+    if [[ -d "panel/public" ]]; then
+        log_info "Updating panel static files..."
+        rm -rf "$DAT_PATH/panel/public"
+        mkdir -p "$DAT_PATH/panel"
+        cp -r panel/public "$DAT_PATH/panel/public"
+        mkdir -p "$DAT_PATH/panel/public/uploads"
+        chmod -R a+rX "$DAT_PATH/panel/public"
+        chown -R whispera:whispera "$DAT_PATH/panel" 2>/dev/null || true
+        log_success "Panel static files updated"
+    fi
+    generate_panel_cert
+    if ! grep -q "CAP_NET_ADMIN" /etc/systemd/system/whispera.service 2>/dev/null; then
+        sed -i 's/AmbientCapabilities=CAP_NET_BIND_SERVICE$/AmbientCapabilities=CAP_NET_BIND_SERVICE CAP_NET_ADMIN/' \
+            /etc/systemd/system/whispera.service
+        log_info "Added CAP_NET_ADMIN to whispera service"
+    fi
+    systemctl daemon-reload
+    setup_nginx_proxy
+    log_success "Panel updated (static)"
+
     
     mkdir -p /var/log/whispera
     chown whispera:whispera /var/log/whispera 2>/dev/null || true
@@ -1489,7 +1385,6 @@ PANELEOF
             sed -i 's| /run/ufw\.lock||g' "$SVC"
             RELOAD=true
         fi
-        # Remove all timeout/watchdog settings that cause spurious failures
         for directive in Type=notify WatchdogSec TimeoutStopSec TimeoutStartSec; do
             if grep -q "^${directive}" "$SVC"; then
                 sed -i "/^${directive}/d" "$SVC"
@@ -1497,10 +1392,24 @@ PANELEOF
                 log_info "Removed $directive from whispera.service"
             fi
         done
-        # Ensure LimitNOFILE=infinity (like xray/sing-box)
         if grep -q "^LimitNOFILE=" "$SVC"; then
             sed -i 's/^LimitNOFILE=.*/LimitNOFILE=infinity/' "$SVC"
             RELOAD=true
+        fi
+        if ! grep -q "EnvironmentFile=.*whispera.env" "$SVC"; then
+            if [[ ! -f "$INTEGRITY_ENV_FILE" ]]; then
+                local newkey
+                newkey=$(openssl rand -hex 32 2>/dev/null)
+                [[ -z "$newkey" ]] && newkey=$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')
+                printf 'WHISPERA_INTEGRITY_KEY=%s\n' "$newkey" > "$INTEGRITY_ENV_FILE"
+                chmod 600 "$INTEGRITY_ENV_FILE"
+                chown whispera:whispera "$INTEGRITY_ENV_FILE" 2>/dev/null || true
+            fi
+            export WHISPERA_INTEGRITY_KEY="$(sed -n 's/^WHISPERA_INTEGRITY_KEY=//p' "$INTEGRITY_ENV_FILE" | head -n1)"
+            sed -i "/^\[Service\]/a EnvironmentFile=-$INTEGRITY_ENV_FILE" "$SVC"
+            refresh_config
+            RELOAD=true
+            log_info "Migrated whispera.service to persistent integrity key"
         fi
         if [[ "$RELOAD" == true ]]; then
             systemctl daemon-reload
