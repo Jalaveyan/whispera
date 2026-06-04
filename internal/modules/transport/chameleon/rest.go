@@ -1,7 +1,6 @@
 package chameleon
 
 import (
-	"context"
 	"encoding/hex"
 	"fmt"
 	"io"
@@ -13,8 +12,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"whispera/internal/buf"
 )
 
 const uploadBodyMax = 700 * 1024
@@ -141,42 +138,6 @@ func (r *segmentRouter) Write(b []byte) (int, error) {
 		close(s.done)
 	}
 	return n, err
-}
-
-var restUploadPathsByMethod = map[string][]string{
-	http.MethodPost: {
-		"/api/v1/messages",
-		"/api/v2/messages",
-		"/api/v1/actions",
-		"/api/v2/data",
-		"/api/v1/events",
-		"/api/v2/upload",
-	},
-	http.MethodPut: {
-		"/api/v1/session",
-		"/api/v2/session",
-		"/api/v1/state",
-		"/api/v2/state",
-	},
-	http.MethodPatch: {
-		"/api/v1/settings",
-		"/api/v2/settings",
-		"/api/v1/config",
-		"/api/v2/preferences",
-	},
-}
-
-var restUploadMethods = []string{
-	http.MethodPost, http.MethodPost, http.MethodPost,
-	http.MethodPut,
-	http.MethodPatch,
-}
-
-var restDecoyDeletePaths = []string{
-	"/api/v1/cache",
-	"/api/v2/cache",
-	"/api/v1/temp",
-	"/api/v2/temp",
 }
 
 type GANAction struct {
@@ -324,20 +285,6 @@ func (c *restServerConn) RemoteAddr() net.Addr               { return c.remoteAd
 func (c *restServerConn) SetDeadline(t time.Time) error      { return nil }
 func (c *restServerConn) SetReadDeadline(t time.Time) error  { return nil }
 func (c *restServerConn) SetWriteDeadline(t time.Time) error { return nil }
-
-type restClientConn struct {
-	bodyCh  chan io.ReadCloser
-	curBody io.ReadCloser
-
-	uploadCh chan *buf.Buffer
-
-	ctx    context.Context
-	cancel context.CancelFunc
-	once   sync.Once
-
-	localAddr  net.Addr
-	remoteAddr net.Addr
-}
 
 func handleRESTDownload(w http.ResponseWriter, r *http.Request, cfg *Config) {
 	tokenHdr := r.Header.Get(headerToken)

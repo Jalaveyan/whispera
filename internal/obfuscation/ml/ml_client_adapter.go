@@ -17,13 +17,7 @@ import (
 var nativeEngine *NativeMLEngine
 var globalDataCollector *DataCollector
 
-var overrideMLServerURL string
-var overrideMu sync.RWMutex
-
 func SetMLServerURL(url, token string) {
-	overrideMu.Lock()
-	overrideMLServerURL = url
-	overrideMu.Unlock()
 	if url != "" {
 		os.Setenv("WHISPERA_ML_SERVER", url)
 		if globalDataCollector != nil {

@@ -66,12 +66,6 @@ const (
 	miniTransportOut   = 8
 )
 
-type mlPrediction struct {
-	ClassID    int     `json:"class_id"`
-	Confidence float64 `json:"confidence"`
-	DPIType    int     `json:"dpi_type"`
-}
-
 type mlRecommendation struct {
 	Transport  string  `json:"transport"`
 	Confidence float64 `json:"confidence"`
