@@ -1738,10 +1738,10 @@ func createModules(manager *lifecycle.Manager, ctx context.Context) error {
 					conn.Close()
 					return
 				}
-				mlpkg.FlowRegistry.Register(conn.RemoteAddr().String(), mlpkg.FlowTunnel)
+				mlpkg.FlowRegistry.RegisterConn(conn.LocalAddr(), conn.RemoteAddr(), mlpkg.FlowTunnel)
 				go func() {
 					globalRelay.ServeTunnelRaw(conn, false)
-					mlpkg.FlowRegistry.Delete(conn.RemoteAddr().String())
+					mlpkg.FlowRegistry.DeleteConn(conn.LocalAddr(), conn.RemoteAddr())
 				}()
 			},
 		}
