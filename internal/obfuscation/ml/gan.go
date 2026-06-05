@@ -3,6 +3,7 @@ package ml
 import (
 	"context"
 	"math"
+	mrand "math/rand"
 	"sync"
 	"time"
 
@@ -38,8 +39,12 @@ type TrafficGAN struct {
 
 	// smoothed discriminator confidence on tunnel flows — exposed for monitoring
 	TunnelConfidence float64 // 0=detected, 1=looks like browser
+	DecoyConfidence  float64
 
 	trainCount int64
+
+	decoyReplay [][]float64
+	decoyIdx    int
 }
 
 // GeneratorAction is the output of the generator applied to each write.
@@ -58,6 +63,17 @@ func NewTrafficGAN() *TrafficGAN {
 		genAdam:  NewAdamState(gen),
 		norm:     newGANNorm(FlowFeatureSize),
 	}
+}
+
+const decoyReplayCap = 256
+
+func (g *TrafficGAN) trainDiscOnDecoy(x []float64) {
+	dActs := g.disc.ForwardActivations(x)
+	pred := sigmoid64(dActs[len(dActs)-1][0])
+	g.DecoyConfidence = 0.95*g.DecoyConfidence + 0.05*pred
+	dLoss := pred - 1.0
+	g.disc.Layers[len(g.disc.Layers)-1] = applyOutputGrad(g.disc.Layers[len(g.disc.Layers)-1], dLoss)
+	dqnBackpropAdam(g.disc, g.discAdam, dActs, []float64{dLoss}, 0.001)
 }
 
 // Train ingests one labeled flow and runs one D step + one G step.
@@ -84,9 +100,22 @@ func (g *TrafficGAN) Train(lf LabeledFlow) {
 	g.disc.Layers[len(g.disc.Layers)-1] = applyOutputGrad(g.disc.Layers[len(g.disc.Layers)-1], dLoss)
 	dqnBackpropAdam(g.disc, g.discAdam, dActs, []float64{dLoss}, 0.001)
 
+	if lf.Label == FlowDecoy {
+		cp := append([]float64(nil), x...)
+		if len(g.decoyReplay) < decoyReplayCap {
+			g.decoyReplay = append(g.decoyReplay, cp)
+		} else {
+			g.decoyReplay[g.decoyIdx%decoyReplayCap] = cp
+			g.decoyIdx++
+		}
+	}
+
 	// Update smoothed tunnel confidence.
 	if lf.Label == FlowTunnel {
 		g.TunnelConfidence = 0.95*g.TunnelConfidence + 0.05*pred
+		if n := len(g.decoyReplay); n > 0 {
+			g.trainDiscOnDecoy(g.decoyReplay[mrand.Intn(n)])
+		}
 	}
 
 	// ── Generator step (only for tunnel flows) ───────────────────────────────
@@ -249,8 +278,8 @@ func (r *GANRunner) loop() {
 			}
 			r.gan.Train(lf)
 		case <-logTicker.C:
-			log.Info("GAN: tunnel_conf=%.3f trained=%d flows[tun=%d dec=%d unk=%d]",
-				r.gan.TunnelConfidence, r.gan.trainCount, tun, dec, unk)
+			log.Info("GAN: tunnel_conf=%.3f decoy_conf=%.3f trained=%d flows[tun=%d dec=%d unk=%d]",
+				r.gan.TunnelConfidence, r.gan.DecoyConfidence, r.gan.trainCount, tun, dec, unk)
 		}
 	}
 }
