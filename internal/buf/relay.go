@@ -18,21 +18,12 @@ func Relay(a, b net.Conn, aReader, bReader io.Reader) {
 	done := make(chan struct{}, 2)
 	pump := func(dst net.Conn, src io.Reader) {
 		_, _ = Copy(NewReader(src), NewWriter(dst))
-		closeWrite(dst)
 		done <- struct{}{}
 	}
 	go pump(b, aReader)
 	go pump(a, bReader)
 	<-done
-	<-done
 	a.Close()
 	b.Close()
-}
-
-func closeWrite(c net.Conn) {
-	if cw, ok := c.(interface{ CloseWrite() error }); ok {
-		_ = cw.CloseWrite()
-		return
-	}
-	c.Close()
+	<-done
 }
