@@ -55,7 +55,7 @@ func NewAdamState(net *gnet.GorgoniaNet) *AdamState {
 }
 
 // dqnBackpropAdam runs one backward pass through net using Adam optimizer.
-func dqnBackpropAdam(net *gnet.GorgoniaNet, s *AdamState, acts [][]float64, dOut []float64, lr float64) {
+func dqnBackpropAdam(net *gnet.GorgoniaNet, s *AdamState, acts [][]float64, dOut []float64, lr float64) []float64 {
 	s.T++
 	t := float64(s.T)
 	bc1 := 1 - math.Pow(adamBeta1, t)
@@ -75,13 +75,10 @@ func dqnBackpropAdam(net *gnet.GorgoniaNet, s *AdamState, acts [][]float64, dOut
 			}
 		}
 
-		var prev []float64
-		if i > 0 {
-			prev = make([]float64, ld.InSize)
-			for k := 0; k < ld.InSize; k++ {
-				for j := 0; j < ld.OutSize; j++ {
-					prev[k] += ld.W[k*ld.OutSize+j] * delta[j]
-				}
+		prev := make([]float64, ld.InSize)
+		for k := 0; k < ld.InSize; k++ {
+			for j := 0; j < ld.OutSize; j++ {
+				prev[k] += ld.W[k*ld.OutSize+j] * delta[j]
 			}
 		}
 
@@ -118,6 +115,7 @@ func dqnBackpropAdam(net *gnet.GorgoniaNet, s *AdamState, acts [][]float64, dOut
 
 		delta = prev
 	}
+	return delta
 }
 
 // ── Prioritized Experience Replay ─────────────────────────────────────────────
