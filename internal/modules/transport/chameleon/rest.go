@@ -106,7 +106,12 @@ func (r *segmentRouter) acquireSlot() (*segSlot, error) {
 		r.mu.Lock()
 		r.curSlot = &s
 		r.bytesInSeg = 0
-		r.segSize = DeriveSegmentSize(r.behaviorKey, r.segIdx)
+		base := DeriveSegmentSize(r.behaviorKey, r.segIdx)
+		shrink := float64(atomic.LoadInt64(&r.sess.segShrinkPerMille)) / 1000.0
+		r.segSize = base - int(float64(base)*shrink)
+		if r.segSize < base/4 {
+			r.segSize = base / 4
+		}
 		r.mu.Unlock()
 		return &s, nil
 	case <-r.connDone:
@@ -141,19 +146,21 @@ func (r *segmentRouter) Write(b []byte) (int, error) {
 }
 
 type GANAction struct {
-	SleepMs  float64
-	PaddingN int
+	SleepMs   float64
+	PaddingN  int
+	SegShrink float64
 }
 
 type GANDecideFunc func(iatMean, sizeMean, upRatio float64) GANAction
 
 type restSession struct {
-	uploadCh      chan *uploadBody
-	segCh         chan segSlot
-	closed        chan struct{}
-	secret        []byte
-	uploadBytes   int64
-	downloadBytes int64
+	uploadCh          chan *uploadBody
+	segCh             chan segSlot
+	closed            chan struct{}
+	secret            []byte
+	uploadBytes       int64
+	downloadBytes     int64
+	segShrinkPerMille int64
 }
 
 type restServerConn struct {
@@ -246,6 +253,7 @@ func (c *restServerConn) Write(b []byte) (n int, err error) {
 			upRatio = up / (up + down)
 		}
 		action := c.ganDecide(iatMean, c.sizeSum/c.writeCount, upRatio)
+		atomic.StoreInt64(&c.sess.segShrinkPerMille, int64(action.SegShrink*1000))
 		if iatMean > 0.03 && action.SleepMs > 0.5 {
 			sleep := action.SleepMs
 			if sleep > 15 {

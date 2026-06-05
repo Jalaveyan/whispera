@@ -51,11 +51,12 @@ type TrafficGAN struct {
 type GeneratorAction struct {
 	PaddingFrac float64 // fraction of write size to pad (0–0.5)
 	SleepMs     float64 // milliseconds to sleep before write (0–50)
+	SegShrink   float64
 }
 
 func NewTrafficGAN() *TrafficGAN {
 	disc := gnet.New([]int{FlowFeatureSize, 64, 32, 1})
-	gen := gnet.New([]int{FlowFeatureSize, 32, 2})
+	gen := gnet.New([]int{FlowFeatureSize, 32, 3})
 	return &TrafficGAN{
 		disc:     disc,
 		discAdam: NewAdamState(disc),
@@ -135,7 +136,7 @@ func (g *TrafficGAN) Train(lf LabeledFlow) {
 
 	// Generator loss: -log(D(xAdv)), gradient = -(1-predAdv)
 	gLossGrad := -(1.0 - predAdv)
-	dqnBackpropAdam(g.gen, g.genAdam, gActs, []float64{gLossGrad, gLossGrad}, 0.0005)
+	dqnBackpropAdam(g.gen, g.genAdam, gActs, []float64{gLossGrad, gLossGrad, gLossGrad}, 0.0005)
 
 	g.trainCount++
 }
@@ -160,7 +161,19 @@ func (g *TrafficGAN) genAction(out []float64) GeneratorAction {
 	// out[1] → SleepMs    ∈ [0, 50]
 	pad := math.Max(0, math.Min(0.5, sigmoid64(out[0])*0.5))
 	slp := math.Max(0, math.Min(50, sigmoid64(out[1])*50))
-	return GeneratorAction{PaddingFrac: pad, SleepMs: slp}
+	seg := math.Max(0, math.Min(0.7, sigmoid64(out[2])*0.7))
+	return GeneratorAction{PaddingFrac: pad, SleepMs: slp, SegShrink: seg}
+}
+
+func GANLambda(threatLevel int) float64 {
+	t := float64(threatLevel)
+	if t < 0 {
+		t = 0
+	}
+	if t > 10 {
+		t = 10
+	}
+	return (t / 10.0) * (t / 10.0)
 }
 
 // applyAction simulates how the generator action would transform flow features.
@@ -180,6 +193,11 @@ func (g *TrafficGAN) applyAction(x []float64, a GeneratorAction) []float64 {
 	out[0] += sleepSec
 	out[1] += sleepSec * 0.3
 	out[2] += sleepSec * 0.5
+
+	segEffect := 1.0 - a.SegShrink
+	out[3] *= segEffect
+	out[4] *= segEffect
+	out[5] *= segEffect
 
 	return out
 }

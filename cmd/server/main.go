@@ -1703,9 +1703,11 @@ func createModules(manager *lifecycle.Manager, ctx context.Context) error {
 					SizeMean: sizeMean,
 					UpRatio:  upRatio,
 				})
+				lambda := mlpkg.GANLambda(serverConfig.Obfuscation.ThreatLevel)
 				return chameleon.GANAction{
-					SleepMs:  a.SleepMs,
-					PaddingN: int(a.PaddingFrac * float64(ganMaxPadding)),
+					SleepMs:   a.SleepMs * lambda,
+					PaddingN:  int(a.PaddingFrac * float64(ganMaxPadding) * lambda),
+					SegShrink: a.SegShrink * lambda,
 				}
 			},
 			ListenAddr:  serverConfig.Chameleon.ListenAddr,
