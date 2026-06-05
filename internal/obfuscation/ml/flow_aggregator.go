@@ -211,6 +211,8 @@ func (a *flowAggregator) observe(ts float64, srcIP, dstIP string, srcPort, dstPo
 		label := FlowRegistry.Get(key)
 		if dstPort == 80 || srcPort == 80 {
 			label = FlowDecoy
+		} else if label == FlowUnknown && (dstPort == a.port || srcPort == a.port) {
+			label = FlowTunnel
 		}
 		fa = &flowAccum{key: key, label: label, firstSeen: ts}
 		a.flows[key] = fa
