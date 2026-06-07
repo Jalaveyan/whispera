@@ -17,7 +17,7 @@ bash menu
 Select item 18
 ```
 
-### Build from source
+## Build from source
 
 Requires Go 1.25+. Pure-Go cross-compile:
 
@@ -35,7 +35,7 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
 ```
 ---
 
-### Configuration example
+## Configuration example
 
 ```yaml
 server:
@@ -256,6 +256,7 @@ ml:
     listen_addr: ""
     token_file: ""
 ```
+## Supported platforms - windows, android, linux
 ---
 Self-Hosting и
 почему это база?
