@@ -22,7 +22,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"whispera/internal/bond"
 	"whispera/internal/buf"
 	"whispera/internal/core/base"
 	"whispera/internal/core/events"
@@ -245,9 +244,6 @@ type Config struct {
 	ChameleonSecret      []byte
 	ChameleonCertPin     string
 	ChameleonMux         int
-	ChameleonStripe      bool
-	ChameleonStripeN     int
-	ChameleonStripeStart int
 
 	EnableChatFSM        bool
 	ChatFSMCoverInterval time.Duration
@@ -471,7 +467,6 @@ type Manager struct {
 	scaleLastEval  time.Time
 	scaleMu        sync.Mutex
 	chScaleOpening int32
-	stripe         atomic.Pointer[stripeState]
 	gameLn         gameLane
 	transportAgent *mlpkg.RLTransportAgent
 	kaAgent        *mlpkg.RLKeepaliveAgent
@@ -874,11 +869,7 @@ func (m *Manager) connectInternal(ctx context.Context, isRotation bool) error {
 
 	targetPoolSize := 2
 	if m.config.EnableChameleon {
-		if m.config.ChameleonStripe {
-			targetPoolSize = 1
-		} else {
-			targetPoolSize = m.poolConnCap()
-		}
+		targetPoolSize = 1
 	}
 	var connectedPool []*managedConn
 	var poolMu sync.Mutex
@@ -1163,38 +1154,12 @@ func (m *Manager) dial(ctx context.Context) (net.Conn, error) {
 	}
 
 	if dialOne, ok := m.chameleonDial(); ok {
-		if m.config.ChameleonStripe {
-			bulkMax := m.bulkConnCap()
-			start := m.config.ChameleonStripeStart
-			if start <= 0 {
-				start = 4
-			}
-			if start > bulkMax {
-				start = bulkMax
-			}
-			b, err := bond.DialN(ctx, start, dialOne)
-			if err == nil {
-				m.stripe.Store(&stripeState{bond: b, dial: dialOne})
-				m.isTransportSecure = true
-				bond.StartScaler(context.Background(), b, dialOne, bond.ScalerOpts{
-					MinMembers:  start,
-					MaxMembers:  bulkMax,
-					DialTimeout: m.config.ConnectionTimeout,
-					Logf: func(f string, a ...interface{}) {
-						log.Info("[CH-STRIPE] "+f, a...)
-					},
-				})
-				return b, nil
-			}
-			log.Warn("chameleon stripe dial failed (%v), falling back to standard transports", err)
-		} else {
-			conn, err := dialOne(ctx)
-			if err == nil {
-				m.isTransportSecure = true
-				return conn, nil
-			}
-			log.Warn("chameleon dial failed (%v), falling back to standard transports", err)
+		conn, err := dialOne(ctx)
+		if err == nil {
+			m.isTransportSecure = true
+			return conn, nil
 		}
+		log.Warn("chameleon dial failed (%v), falling back to standard transports", err)
 	}
 
 	m.preparePhantomASN()
@@ -3436,14 +3401,6 @@ const (
 	protoUDP             = 0x11
 )
 
-func (m *Manager) bulkConnCap() int {
-	lim := browserConnBudget - chGameLaneReserve
-	if n := m.config.ChameleonStripeN; n > 0 && n < lim {
-		lim = n
-	}
-	return lim
-}
-
 func (m *Manager) poolConnCap() int {
 	lim := browserConnBudget - chGameLaneReserve
 	if n := m.config.ChameleonMux; n > 0 && n < lim {
@@ -3452,7 +3409,7 @@ func (m *Manager) poolConnCap() int {
 	return lim
 }
 
-func (m *Manager) chameleonDial() (bond.DialFunc, bool) {
+func (m *Manager) chameleonDial() (func(context.Context) (net.Conn, error), bool) {
 	if !m.config.EnableChameleon || len(m.config.ChameleonSecret) == 0 {
 		return nil, false
 	}
@@ -3480,10 +3437,7 @@ func (m *Manager) chameleonDial() (bond.DialFunc, bool) {
 	}, true
 }
 
-func (m *Manager) gameDial() bond.DialFunc {
-	if st := m.stripe.Load(); st != nil && st.dial != nil {
-		return st.dial
-	}
+func (m *Manager) gameDial() func(context.Context) (net.Conn, error) {
 	if d, ok := m.chameleonDial(); ok {
 		return d
 	}
@@ -3493,7 +3447,7 @@ func (m *Manager) gameDial() bond.DialFunc {
 type gameLane struct {
 	mu   sync.Mutex
 	sess *mux.Session
-	bond *bond.Conn
+	conn net.Conn
 	refs int
 	idle *time.Timer
 }
@@ -3514,16 +3468,16 @@ func (m *Manager) gameSession(ctx context.Context) (*mux.Session, error) {
 		g.refs++
 		return g.sess, nil
 	}
-	b, err := bond.DialN(ctx, 1, dial)
+	conn, err := dial(ctx)
 	if err != nil {
 		return nil, err
 	}
-	sess, err := mux.Client(b, m.getMuxConfig())
+	sess, err := mux.Client(conn, m.getMuxConfig())
 	if err != nil {
-		b.Close()
+		conn.Close()
 		return nil, err
 	}
-	g.bond = b
+	g.conn = conn
 	g.sess = sess
 	g.refs = 1
 	return sess, nil
@@ -3550,19 +3504,14 @@ func (m *Manager) gameStreamClosed() {
 			g.idle = nil
 			if g.refs == 0 && g.sess != nil {
 				g.sess.Close()
-				if g.bond != nil {
-					g.bond.Close()
+				if g.conn != nil {
+					g.conn.Close()
 				}
 				g.sess = nil
-				g.bond = nil
+				g.conn = nil
 			}
 		})
 	}
-}
-
-type stripeState struct {
-	bond *bond.Conn
-	dial func(context.Context) (net.Conn, error)
 }
 
 func (m *Manager) feedScale(n int) {
@@ -3589,11 +3538,6 @@ func (m *Manager) evalScale() {
 		return
 	}
 	rate := float64(scaleEvalBytes) / dt
-
-	if m.config.ChameleonStripe {
-		m.evalStripe(rate)
-		return
-	}
 
 	m.connMu.RLock()
 	poolSize := len(m.activePool)
@@ -3644,52 +3588,6 @@ func (m *Manager) evalScale() {
 			log.Info("[CH-SCALE] underutilized → shrink pool")
 		}
 	}
-}
-
-func (m *Manager) evalStripe(rate float64) {
-	st := m.stripe.Load()
-	if st == nil || st.bond == nil {
-		return
-	}
-	w := st.bond.Width()
-	if w < 1 {
-		return
-	}
-	maxW := m.bulkConnCap()
-	perMember := rate / float64(w)
-	if perMember < chScaleGrowPerConn || w >= maxW {
-		return
-	}
-	if !atomic.CompareAndSwapInt32(&m.chScaleOpening, 0, 1) {
-		return
-	}
-	batch := w / 2
-	if batch < 1 {
-		batch = 1
-	}
-	if w+batch > maxW {
-		batch = maxW - w
-	}
-	b, dial := st.bond, st.dial
-	safeGo("stripeGrow", func() {
-		defer atomic.StoreInt32(&m.chScaleOpening, 0)
-		ctx, cancel := context.WithTimeout(context.Background(), m.config.ConnectionTimeout)
-		defer cancel()
-		var wg sync.WaitGroup
-		var failed int32
-		for i := 0; i < batch; i++ {
-			wg.Add(1)
-			safeGo("stripeGrowOne", func() {
-				defer wg.Done()
-				if err := b.Grow(ctx, dial); err != nil {
-					atomic.AddInt32(&failed, 1)
-				}
-			})
-		}
-		wg.Wait()
-		log.Info("[CH-STRIPE] widened bond to %d members (rate=%.0f Mbit/s, %.0f/member, batch=%d, failed=%d)",
-			b.Width(), rate*8/1e6, perMember*8/1e6, batch, failed)
-	})
 }
 
 func (m *Manager) closeIdlePoolConn(base int) bool {
@@ -3877,39 +3775,24 @@ func (s *StreamConn) Read(b []byte) (n int, err error) {
 	}
 }
 
-const maxStreamChunk = 1300
-
 func (s *StreamConn) Write(b []byte) (n int, err error) {
 	if len(b) == 0 {
 		return 0, nil
 	}
-
-	total := 0
-	for total < len(b) {
-		end := total + maxStreamChunk
-		if end > len(b) {
-			end = len(b)
-		}
-		chunk := b[total:end]
-
-		frameLen := FrameHeaderSize + len(chunk)
-		fb := buf.NewSize(frameLen)
-		frame := fb.Extend(frameLen)
-
-		binary.BigEndian.PutUint16(frame[0:2], s.streamID)
-		frame[2] = 0x02
-		frame[3] = 0x00
-		binary.BigEndian.PutUint32(frame[4:8], uint32(len(chunk)))
-		copy(frame[8:], chunk)
-
-		sendErr := s.manager.Send(frame)
-		fb.Release()
-		if sendErr != nil {
-			return total, sendErr
-		}
-		total = end
+	frameLen := FrameHeaderSize + len(b)
+	fb := buf.NewSize(frameLen)
+	frame := fb.Extend(frameLen)
+	binary.BigEndian.PutUint16(frame[0:2], s.streamID)
+	frame[2] = 0x02
+	frame[3] = 0x00
+	binary.BigEndian.PutUint32(frame[4:8], uint32(len(b)))
+	copy(frame[8:], b)
+	sendErr := s.manager.Send(frame)
+	fb.Release()
+	if sendErr != nil {
+		return 0, sendErr
 	}
-	return total, nil
+	return len(b), nil
 }
 
 func (s *StreamConn) Close() error {
