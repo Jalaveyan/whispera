@@ -1,6 +1,6 @@
 # Whispera
 
-This is a fast proxy that is easy to use and install, designed to bypass censorship, disguised as a regular HTTPS connection and has built-in self-learning neural networks written in Go to bypass blocks.
+It is a fast, easy-to-use and easy-to-install censorship-bypassing proxy server disguised as a regular HTTPS connection and powered by built-in neural networks written in Go.
 
 ## Installation
 
