@@ -2,7 +2,7 @@
 
 It is a fast, easy-to-use and easy-to-install censorship-bypassing proxy server disguised as a regular HTTPS connection and powered by built-in neural networks written in Go.
 
-## Installation
+## Install and Update
 
 ### How to install? (Ubuntu/Debian/Arch)
 
