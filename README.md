@@ -3,32 +3,9 @@
 **Stealth-transport** protocol & VPN server designed to bypass DPI censorship.
 Masquerades as legitimate HTTPS traffic with ML-driven obfuscation, multi-transport architecture, and bridge network.
 
----
-
-## Features
-
-- **15+ transport protocols** — TCP, UDP, QUIC, WebSocket, HTTP Upgrade, Split HTTP, Snowflake, TUIC, WireGuard-like, VK WebRTC, Telegram Bot, Yandex Cloud/Disk/Telemost, TOR SOCKS, ASN Bypass, SNI Bypass
-- **Marionette obfuscation** — behavioral mimicry of real messengers (Telegram, VK, WhatsApp, WeChat, Facebook, Instagram) with full chat protocol state machine (typing, sending, read receipts, feed scrolling, media viewing)
-- **ML-driven DPI evasion** — neural network that analyzes traffic patterns, detects DPI probes, and auto-switches obfuscation profiles
-- **Bridge network** — distributed bridge pool with health monitoring, per-user bridge discovery, automatic rotation, white/community bridge types
-- **16KB SNI bypass** — TLS ClientHello fragmentation to bypass SNI-based filtering
-- **TLS fingerprint protection** — uTLS with Chrome/Firefox/Safari/iOS/Android fingerprints, JA3/JA4 spoofing
-- **Correlation attack protection** — constant-rate padding, delay jitter, cover traffic generation
-- **JWT auth with roles** — admin/operator/user/bridge roles, refresh tokens, MFA/TOTP
-- **mTLS bridge authentication** — mutual TLS with auto-generated CA, certificate pinning
-- **Bridge agent** — heartbeat, system metrics (CPU/RAM/bandwidth), config polling, update delivery
-- **Signed updates** — ed25519 binary signing, checksum verification, atomic replace with rollback
-- **NATS message bus** — distributed event architecture (drop-in replacement for in-process EventBus)
-- **Disaster recovery** — automatic snapshots, restore, health checks
-- **Chaos testing** — fault injection engine for bridge resilience testing
-- **Admin panel** — web UI for user management, bridge registry, traffic stats, routing rules, firewall, backups
-- **Whisp desktop client** — Tauri 2.0 app with interactive bridge map, click-to-connect
-
----
-
 ## Installation
 
-### Quick install (Ubuntu/Debian)
+### Quick install (Ubuntu/Debian/Arch)
 
 ```bash
 sudo bash <(curl -sL https://raw.githubusercontent.com/Jalaveyan/Whispera/main/install.sh)
