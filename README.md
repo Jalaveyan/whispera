@@ -199,7 +199,7 @@ bridge:
     type: ""
     provider: ""
     region: ""
-    registration_token: zupOrz5gVbcPEaqSK4xJs6muXPDiim
+    registration_token: YOUR_REG_TOKEN
 vk_relay:
     enabled: false
     mode: ""
