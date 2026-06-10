@@ -260,7 +260,7 @@ ml:
 Install a whisper on each relay
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/Jalaveyan/Whispera/main/install.sh | bash
+curl -sSL https://raw.githubusercontent.com/Jalaveyan/Whispera/main/install.sh | bash -s -- relay
 ```
 
 Generate a secret on each relay
