@@ -7,28 +7,60 @@ import (
 	"time"
 )
 
-
-type Module interface {
-	
-	Name() string
-
-	
-	Version() string
-
-	
-	Init(ctx context.Context, cfg ModuleConfig) error
-
-	
+// Lifecycle manages start/stop of a component.
+type Lifecycle interface {
 	Start() error
-
-	
 	Stop() error
-
-	
 	HealthCheck() HealthStatus
+}
 
-	
+// Descriptor provides identity metadata for a component.
+type Descriptor interface {
+	Name() string
+	Version() string
 	Dependencies() []string
+}
+
+// Module is the full module contract (Lifecycle + Descriptor + Init).
+// Prefer Lifecycle or Descriptor when only a subset is needed.
+type Module interface {
+	Descriptor
+	Init(ctx context.Context, cfg ModuleConfig) error
+	Lifecycle
+}
+
+// TunnelConnector manages connection lifecycle.
+type TunnelConnector interface {
+	Connect(ctx context.Context) error
+	Disconnect()
+	Reconnect(ctx context.Context) error
+}
+
+// TunnelDataPlane sends and receives raw bytes over the tunnel.
+type TunnelDataPlane interface {
+	Send(data []byte) error
+	Receive(buf []byte) (int, error)
+}
+
+// TunnelMonitor observes tunnel state without modifying it.
+type TunnelMonitor interface {
+	GetState() TunnelState
+	IsConnected() bool
+	GetSessionID() uint32
+	OnStateChange(callback func(TunnelState))
+}
+
+// ObfuscationProcessor applies or removes obfuscation from raw bytes.
+type ObfuscationProcessor interface {
+	Process(data []byte, direction Direction) ([]byte, time.Duration, error)
+}
+
+// ObfuscationControl adjusts obfuscation behavior at runtime.
+type ObfuscationControl interface {
+	SetProfile(name string) error
+	GetProfile() string
+	SetThreatLevel(level int)
+	SetRealityKey(key string)
 }
 
 
@@ -289,26 +321,14 @@ type RuleCondition struct {
 }
 
 
+// Obfuscator is the full obfuscation contract.
+// Use ObfuscationProcessor when only processing is needed (e.g. GAN, ML obfuscators).
+// Use ObfuscationControl when only runtime tuning is needed.
 type Obfuscator interface {
 	Module
-
-	
-	Process(data []byte, direction Direction) ([]byte, time.Duration, error)
-
-	
-	SetProfile(name string) error
-
-	
-	GetProfile() string
-
-	
+	ObfuscationProcessor
+	ObfuscationControl
 	GetStats() ObfuscationStats
-
-	
-	SetThreatLevel(level int)
-
-	
-	SetRealityKey(key string)
 }
 type ObfuscationStats struct {
 	PacketsProcessed uint64
@@ -471,34 +491,13 @@ const (
 )
 
 
+// TunnelManager is the full tunnel contract.
+// Prefer TunnelConnector, TunnelDataPlane or TunnelMonitor where only a subset is needed.
 type TunnelManager interface {
 	Module
-
-	
-	Connect(ctx context.Context) error
-
-	
-	Disconnect()
-
-	
-	Reconnect(ctx context.Context) error
-
-	
-	Send(data []byte) error
-
-	
-	Receive(buf []byte) (int, error)
-
-	GetState() TunnelState
-
-	
-	IsConnected() bool
-
-	
-	GetSessionID() uint32
-
-	
-	OnStateChange(callback func(TunnelState))
+	TunnelConnector
+	TunnelDataPlane
+	TunnelMonitor
 }
 type DNSResolver interface {
 	Module

@@ -406,10 +406,9 @@ type Manager struct {
 	*base.Module
 	config *Config
 
-	state         TunnelState
-	stateMu       sync.RWMutex
-	lastError     error
-	activeConn    *managedConn
+	sm        *tunnelStateMachine
+	cb        *circuitBreaker
+	activeConn *managedConn
 	activePool    []*managedConn
 	drainingConns []*managedConn
 	streamConns   map[uint16]*managedConn
@@ -484,11 +483,6 @@ type Manager struct {
 
 	russianTunneler *russian.RussianTunneler
 
-	cbMu          sync.Mutex
-	cbFailures    int
-	cbLastFailure time.Time
-	cbState       string
-
 	goroutineLimiter *base.GoroutineLimiter
 
 	rateLimitKB     int32
@@ -556,7 +550,6 @@ func New(cfg *Config) (*Manager, error) {
 	m := &Manager{
 		Module:                base.NewModule(ModuleName, ModuleVersion, []string{"handshake.handler"}),
 		config:                cfg,
-		state:                 StateDisconnected,
 		streamConns:           make(map[uint16]*managedConn),
 		readCh:                make(chan *buf.Buffer, 4096),
 		goroutineLimiter:      base.NewGoroutineLimiter(1024),
@@ -564,6 +557,8 @@ func New(cfg *Config) (*Manager, error) {
 		forceObfuscation:      forceObfs,
 		chameleonSessionCache: chameleon.NewSessionCache(128),
 	}
+	m.cb = newCircuitBreaker()
+	m.sm = newTunnelStateMachine(m.onStateTransition)
 	m.initStreamShards()
 	close(m.reconnectDone)
 
@@ -819,18 +814,14 @@ func (m *Manager) SetObfuscator(o interfaces.Obfuscator) {
 }
 
 func (m *Manager) Connect(ctx context.Context) error {
-	m.stateMu.Lock()
-	if m.state == StateConnecting || m.state == StateConnected {
-		currentState := m.state
-		m.stateMu.Unlock()
-		if currentState == StateConnected {
+	if current, blocked := m.sm.CompareAndSet(StateConnecting, StateConnecting, StateConnected); blocked {
+		if current == StateConnected {
 			log.Warn("[Connect] Already connected, ignoring duplicate Connect call")
 		} else {
 			log.Warn("[Connect] Connection already in progress, ignoring duplicate call")
 		}
 		return nil
 	}
-	m.stateMu.Unlock()
 
 	m.Disconnect()
 
@@ -2253,55 +2244,9 @@ func (m *Manager) Reconnect(ctx context.Context) error {
 	}
 }
 
-const (
-	cbThreshold = 5
-	cbResetTime = 30 * time.Second
-)
-
-func (m *Manager) circuitBreakerAllow() bool {
-	m.cbMu.Lock()
-	defer m.cbMu.Unlock()
-
-	if m.cbState == "" {
-		m.cbState = "closed"
-	}
-
-	switch m.cbState {
-	case "open":
-		if time.Since(m.cbLastFailure) > cbResetTime {
-			m.cbState = "half-open"
-			log.Info("Circuit breaker: HALF-OPEN (allowing one attempt)")
-			return true
-		}
-		return false
-	case "half-open":
-		return true
-	default:
-		return true
-	}
-}
-
-func (m *Manager) circuitBreakerFail() {
-	m.cbMu.Lock()
-	defer m.cbMu.Unlock()
-
-	m.cbFailures++
-	m.cbLastFailure = time.Now()
-
-	if m.cbState == "half-open" || m.cbFailures >= cbThreshold {
-		m.cbState = "open"
-		log.Warn("Circuit breaker: OPEN (failures: %d, will retry in %v)", m.cbFailures, cbResetTime)
-	}
-}
-
-func (m *Manager) circuitBreakerSuccess() {
-	m.cbMu.Lock()
-	defer m.cbMu.Unlock()
-
-	m.cbFailures = 0
-	m.cbState = "closed"
-	log.Info("Circuit breaker: CLOSED (connection successful)")
-}
+func (m *Manager) circuitBreakerAllow() bool   { return m.cb.Allow() }
+func (m *Manager) circuitBreakerFail()          { m.cb.Fail() }
+func (m *Manager) circuitBreakerSuccess()        { m.cb.Success() }
 
 func (m *Manager) RotateSNI() {
 	oldSNI := m.currentSNI
@@ -2659,8 +2604,7 @@ func (m *Manager) handleReadError(mc *managedConn, err error) {
 
 	if isActive && m.GetState() == StateConnected {
 		log.Warn("Active connection read error: %v. Triggering Reconnect...", err)
-		m.lastError = err
-
+		m.sm.SetError(err)
 		if m.GetState() == StateConnected {
 			go m.Reconnect(m.Context())
 		}
@@ -3251,9 +3195,7 @@ func (m *Manager) connAgentTick() {
 	rttMs := float64(rttNs) / 1e6
 	missedKAs := int(atomic.LoadInt32(&m.missedKAs))
 
-	m.cbMu.Lock()
-	cbFail := m.cbFailures
-	m.cbMu.Unlock()
+	cbFail := m.cb.Failures()
 
 	errorRate := 0.0
 	if cbFail > 0 {
@@ -3425,7 +3367,7 @@ func (m *Manager) chameleonDial() (func(context.Context) (net.Conn, error), bool
 		}
 		sni = host
 	}
-	cCfg := &chameleon.Config{
+	cCfg := &chameleon.ClientConfig{
 		ServerAddr:    addr,
 		ServerName:    sni,
 		SharedSecret:  m.config.ChameleonSecret,
@@ -3613,58 +3555,36 @@ func (m *Manager) closeIdlePoolConn(base int) bool {
 	return false
 }
 
-func (m *Manager) GetState() TunnelState {
-	m.stateMu.RLock()
-	defer m.stateMu.RUnlock()
-	return m.state
-}
+func (m *Manager) GetState() TunnelState { return m.sm.Get() }
 
-func (m *Manager) IsConnected() bool {
-	s := m.GetState()
-	return s == StateConnected || s == StateRotating
-}
+func (m *Manager) IsConnected() bool { return m.sm.IsConnected() }
 
-func (m *Manager) GetSessionID() uint32 {
-	return m.sessionID
-}
+func (m *Manager) GetSessionID() uint32 { return m.sessionID }
 
-func (m *Manager) OnStateChange(callback func(TunnelState)) {
-	m.onStateChange = callback
-}
+func (m *Manager) OnStateChange(callback func(TunnelState)) { m.onStateChange = callback }
 
-func (m *Manager) setState(state TunnelState) {
-	log.Debug("[setState] %v", state)
-	m.stateMu.Lock()
-	oldState := m.state
-	m.state = state
-	if state != StateError {
-		m.lastError = nil
-	}
-	m.stateMu.Unlock()
-
-	if oldState != state {
-		if m.onStateChange != nil {
-			m.onStateChange(state)
-		}
-		m.PublishEvent("tunnel.state_changed", map[string]interface{}{
-			"old_state": oldState.String(),
-			"new_state": state.String(),
-		})
-		if m.obfuscator != nil {
-			type connActiveSet interface{ SetConnectionActive(bool) }
-			if setter, ok := m.obfuscator.(connActiveSet); ok {
-				setter.SetConnectionActive(state == StateConnected)
-			}
-		}
-	}
-}
+func (m *Manager) setState(state TunnelState) { m.sm.Set(state) }
 
 func (m *Manager) setError(err error) {
-	m.stateMu.Lock()
-	m.state = StateError
-	m.lastError = err
-	m.stateMu.Unlock()
+	m.sm.SetError(err)
 	m.SetHealthy(false, err.Error())
+}
+
+func (m *Manager) onStateTransition(old, new TunnelState) {
+	log.Debug("[setState] %v", new)
+	if m.onStateChange != nil {
+		m.onStateChange(new)
+	}
+	m.PublishEvent("tunnel.state_changed", map[string]interface{}{
+		"old_state": old.String(),
+		"new_state": new.String(),
+	})
+	if m.obfuscator != nil {
+		type connActiveSet interface{ SetConnectionActive(bool) }
+		if setter, ok := m.obfuscator.(connActiveSet); ok {
+			setter.SetConnectionActive(new == StateConnected)
+		}
+	}
 }
 
 func (m *Manager) DialStream(ctx context.Context, network, addr string) (net.Conn, error) {
@@ -3948,12 +3868,10 @@ func (m *Manager) GetQualityMetrics() (avgRTT time.Duration, missedKeepalives in
 
 func (m *Manager) HealthCheck() interfaces.HealthStatus {
 	status := m.Module.HealthCheck()
-	m.stateMu.RLock()
-	status.Details["state"] = m.state.String()
-	if m.lastError != nil {
-		status.Details["last_error"] = m.lastError.Error()
+	status.Details["state"] = m.sm.Get().String()
+	if lastErr := m.sm.LastError(); lastErr != nil {
+		status.Details["last_error"] = lastErr.Error()
 	}
-	m.stateMu.RUnlock()
 	status.Details["server"] = m.config.ServerAddr
 	status.Details["active_streams"] = len(m.streamConns)
 	m.connMu.RLock()

@@ -79,65 +79,6 @@ type UserEntry struct {
 	PSK    []byte
 }
 
-type Config struct {
-	ListenAddr string
-	TLSCert    string
-	TLSKey     string
-	Domain     string
-	ACMEDir    string
-
-	GetUsers func() []UserEntry
-
-	ServerAddr string
-	ServerName string
-
-	ServerNames []string
-
-	SharedSecret []byte
-
-	ServerCertPin string
-
-	SessionCache any
-
-	DecoyOrigin string
-
-	OnConn func(conn net.Conn, userID string)
-
-	GANDecide GANDecideFunc
-
-	AsymBiasRatio float64
-
-	proxy       *decoyProxy
-	sessions    sync.Map
-	sessionMu   sync.Mutex
-	sessionCond *sync.Cond
-}
-
-func (cfg *Config) initCond() {
-	if cfg.sessionCond == nil {
-		cfg.sessionCond = sync.NewCond(&cfg.sessionMu)
-	}
-}
-
-func (cfg *Config) storeSession(key string, sess *restSession) {
-	cfg.sessions.Store(key, sess)
-	cfg.sessionCond.Broadcast()
-}
-
-func (cfg *Config) waitSession(key string, timeout time.Duration) (*restSession, bool) {
-	deadline := time.Now().Add(timeout)
-	cfg.sessionMu.Lock()
-	defer cfg.sessionMu.Unlock()
-	for {
-		if v, ok := cfg.sessions.Load(key); ok {
-			return v.(*restSession), true
-		}
-		if time.Now().After(deadline) {
-			return nil, false
-		}
-		cfg.sessionCond.Wait()
-	}
-}
 
 func encodeSession(sessionID []byte, anchor time.Time) string {
 	buf := make([]byte, 24)
@@ -156,7 +97,7 @@ func decodeSession(s string) (sessionID []byte, anchor time.Time, err error) {
 	return
 }
 
-func pickSNI(cfg *Config) string {
+func pickSNI(cfg *ClientConfig) string {
 	if len(cfg.ServerNames) > 0 {
 		return cfg.ServerNames[mrand.Intn(len(cfg.ServerNames))]
 	}
@@ -184,7 +125,7 @@ func pinVerifier(pin string) func([][]byte, [][]*x509.Certificate) error {
 	}
 }
 
-func Client(ctx context.Context, cfg *Config) (net.Conn, error) {
+func Client(ctx context.Context, cfg *ClientConfig) (net.Conn, error) {
 	sessionID := make([]byte, 16)
 	if _, err := crand.Read(sessionID); err != nil {
 		return nil, fmt.Errorf("chameleon: session id: %w", err)
@@ -295,7 +236,7 @@ func Client(ctx context.Context, cfg *Config) (net.Conn, error) {
 	return fc, nil
 }
 
-func ListenAndServe(ctx context.Context, cfg *Config) error {
+func ListenAndServe(ctx context.Context, cfg *ServerConfig) error {
 	cfg.initCond()
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -420,7 +361,7 @@ func (l *noDelayListener) Accept() (net.Conn, error) {
 	return tc, nil
 }
 
-func handleRequest(w http.ResponseWriter, r *http.Request, cfg *Config) {
+func handleRequest(w http.ResponseWriter, r *http.Request, cfg *ServerConfig) {
 	_, cookieErr := r.Cookie(sessionCookie)
 	hasSess := func() bool { return cookieErr == nil }
 
@@ -464,7 +405,7 @@ func handleRequest(w http.ResponseWriter, r *http.Request, cfg *Config) {
 	}
 }
 
-func handleClientStream(w http.ResponseWriter, r *http.Request, cfg *Config) {
+func handleClientStream(w http.ResponseWriter, r *http.Request, cfg *ServerConfig) {
 	tokenHdr := r.Header.Get(headerToken)
 	if len(tokenHdr) < 8 || tokenHdr[:7] != "Bearer " {
 		serveDecoy(w, r, cfg)
@@ -517,7 +458,7 @@ func handleClientStream(w http.ResponseWriter, r *http.Request, cfg *Config) {
 	}
 }
 
-func resolveSecret(cfg *Config, token string, sessionID []byte) ([]byte, string) {
+func resolveSecret(cfg *ServerConfig, token string, sessionID []byte) ([]byte, string) {
 	if cfg.GetUsers == nil {
 		k := DeriveKeys(cfg.SharedSecret)
 		if VerifyAuthToken(k.Auth, token, sessionID) {
@@ -537,7 +478,7 @@ func resolveSecret(cfg *Config, token string, sessionID []byte) ([]byte, string)
 	return nil, ""
 }
 
-func serveDecoy(w http.ResponseWriter, r *http.Request, cfg *Config) {
+func serveDecoy(w http.ResponseWriter, r *http.Request, cfg *ServerConfig) {
 	if cfg != nil && cfg.proxy != nil {
 		cfg.proxy.serve(w, r)
 		return

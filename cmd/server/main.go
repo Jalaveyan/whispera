@@ -1702,7 +1702,7 @@ func createModules(manager *lifecycle.Manager, ctx context.Context) error {
 
 		bondCoord := bond.NewCoordinator()
 
-		cCfg := &chameleon.Config{
+		cCfg := &chameleon.ServerConfig{
 			GANDecide: func(iatMean, sizeMean, upRatio float64) chameleon.GANAction {
 				a := ganRunner.GAN().Decide(mlpkg.FlowFeatures{
 					IATMean:  iatMean,

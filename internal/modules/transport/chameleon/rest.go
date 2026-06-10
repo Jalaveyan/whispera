@@ -320,7 +320,7 @@ func (c *restServerConn) SetDeadline(t time.Time) error      { return nil }
 func (c *restServerConn) SetReadDeadline(t time.Time) error  { return nil }
 func (c *restServerConn) SetWriteDeadline(t time.Time) error { return nil }
 
-func handleRESTDownload(w http.ResponseWriter, r *http.Request, cfg *Config) {
+func handleRESTDownload(w http.ResponseWriter, r *http.Request, cfg *ServerConfig) {
 	tokenHdr := r.Header.Get(headerToken)
 	sessCookie, cookieErr := r.Cookie(sessionCookie)
 
@@ -436,7 +436,7 @@ func handleRESTDownload(w http.ResponseWriter, r *http.Request, cfg *Config) {
 	<-done
 }
 
-func handleHLSPlaylist(w http.ResponseWriter, r *http.Request, cfg *Config) {
+func handleHLSPlaylist(w http.ResponseWriter, r *http.Request, cfg *ServerConfig) {
 	tokenHdr := r.Header.Get(headerToken)
 	sessCookie, cookieErr := r.Cookie(sessionCookie)
 
@@ -545,7 +545,7 @@ func handleHLSPlaylist(w http.ResponseWriter, r *http.Request, cfg *Config) {
 	}()
 }
 
-func handleHLSSegment(w http.ResponseWriter, r *http.Request, cfg *Config) {
+func handleHLSSegment(w http.ResponseWriter, r *http.Request, cfg *ServerConfig) {
 	sessionKey := hlsKeyFromPath(r.URL.Path)
 	if sessionKey == "" {
 		serveDecoy(w, r, cfg)
@@ -587,7 +587,7 @@ func handleHLSSegment(w http.ResponseWriter, r *http.Request, cfg *Config) {
 	}
 }
 
-func handleRESTUpload(w http.ResponseWriter, r *http.Request, cfg *Config) {
+func handleRESTUpload(w http.ResponseWriter, r *http.Request, cfg *ServerConfig) {
 	sessCookie, err := r.Cookie(sessionCookie)
 	if err != nil {
 		log.Printf("chameleon: upload from %s: no session cookie (400)", r.RemoteAddr)
