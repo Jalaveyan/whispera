@@ -3,6 +3,7 @@ package dataplane
 import (
 	"context"
 	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"net"
 	"sync"
@@ -91,7 +92,7 @@ func (om *OutboundManager) AddOutbound(cfg config.OutboundConfig) error {
 	}
 
 	if secret, ok := cfg.Settings["chameleon_secret"].(string); ok && secret != "" {
-		if decoded, err := base64.StdEncoding.DecodeString(secret); err == nil && len(decoded) == 32 {
+		if decoded, err := decodePSK(secret); err == nil && len(decoded) == 32 {
 			tCfg.EnableChameleon = true
 			tCfg.ChameleonAddr = cfg.Address
 			tCfg.ChameleonSecret = decoded
@@ -279,7 +280,7 @@ func (om *OutboundManager) newHopTunnel(ctx context.Context, cfg config.Outbound
 	}
 
 	if secret, ok := cfg.Settings["chameleon_secret"].(string); ok && secret != "" {
-		if decoded, err := base64.StdEncoding.DecodeString(secret); err == nil && len(decoded) == 32 {
+		if decoded, err := decodePSK(secret); err == nil && len(decoded) == 32 {
 			tCfg.EnableChameleon = true
 			tCfg.ChameleonAddr = cfg.Address
 			tCfg.ChameleonSecret = decoded
@@ -444,4 +445,11 @@ func validateChainGraph(configs []config.OutboundConfig) error {
 		}
 	}
 	return nil
+}
+
+func decodePSK(s string) ([]byte, error) {
+	if b, err := base64.StdEncoding.DecodeString(s); err == nil {
+		return b, nil
+	}
+	return hex.DecodeString(s)
 }

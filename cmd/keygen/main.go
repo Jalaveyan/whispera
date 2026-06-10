@@ -2,6 +2,7 @@ package main
 
 import (
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"flag"
 	"fmt"
@@ -20,7 +21,7 @@ func main() {
 		if _, err := rand.Read(key); err != nil {
 			log.Fatal(err)
 		}
-		fmt.Println(hex.EncodeToString(key))
+		fmt.Println(base64.StdEncoding.EncodeToString(key))
 	case "x25519":
 		if *fromPriv != "" {
 			priv, err := hex.DecodeString(*fromPriv)
