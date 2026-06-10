@@ -420,6 +420,7 @@ type Manager struct {
 	sniAgent       *mlpkg.RLSNIAgent
 	connAgent      *mlpkg.RLConnAgent
 	connAgentStop  chan struct{}
+	rateSamplerStop chan struct{}
 	gpLastDn       uint64
 	gpLastUp       uint64
 	gpLastSample   time.Time
@@ -1020,6 +1021,7 @@ func (m *Manager) Disconnect() {
 	m.stopKeepalive()
 	m.stopRotation()
 	m.stopConnAgent()
+	m.stopConnRateSampler()
 
 	m.connMu.Lock()
 
@@ -1894,18 +1896,32 @@ func (m *Manager) startConnRateSampler() {
 	if !m.config.EnableChameleon {
 		return
 	}
+	m.stopConnRateSampler()
+	stop := make(chan struct{})
+	m.rateSamplerStop = stop
 	go func() {
 		ticker := time.NewTicker(3 * time.Second)
 		defer ticker.Stop()
 		for {
 			select {
-			case <-m.Module.Context().Done():
+			case <-stop:
 				return
 			case <-ticker.C:
 			}
 			m.sampleConnRates()
 		}
 	}()
+}
+
+func (m *Manager) stopConnRateSampler() {
+	if m.rateSamplerStop != nil {
+		select {
+		case <-m.rateSamplerStop:
+		default:
+			close(m.rateSamplerStop)
+		}
+		m.rateSamplerStop = nil
+	}
 }
 
 func (m *Manager) sampleConnRates() {
