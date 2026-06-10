@@ -1229,6 +1229,25 @@ install_panel() {
     mkdir -p "$(dirname "$PANEL_DEST")"
     cp -r "$PANEL_SRC" "$PANEL_DEST"
     mkdir -p "$PANEL_DEST/uploads"
+
+    local FA_DIR="$PANEL_DEST/vendor/fa"
+    local FA_VER="6.5.1"
+    local FA_BASE="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/${FA_VER}"
+    if [[ ! -f "$FA_DIR/all.min.css" ]]; then
+        log_info "Downloading Font Awesome ${FA_VER} for offline panel..."
+        mkdir -p "$FA_DIR/webfonts"
+        if curl -fsSL "${FA_BASE}/css/all.min.css" -o "$FA_DIR/all.min.css" 2>/dev/null; then
+            for wf in fa-solid-900 fa-regular-400 fa-brands-400; do
+                curl -fsSL "${FA_BASE}/webfonts/${wf}.woff2" -o "$FA_DIR/webfonts/${wf}.woff2" 2>/dev/null || true
+                curl -fsSL "${FA_BASE}/webfonts/${wf}.ttf"   -o "$FA_DIR/webfonts/${wf}.ttf"   2>/dev/null || true
+            done
+            sed -i "s|../webfonts/|/vendor/fa/webfonts/|g" "$FA_DIR/all.min.css"
+            log_success "Font Awesome cached at $FA_DIR"
+        else
+            log_warn "Font Awesome download failed — panel icons may not render"
+        fi
+    fi
+
     chmod -R a+rX "$PANEL_DEST"
 
     log_success "Panel (static) installed to $PANEL_DEST"

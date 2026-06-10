@@ -2,55 +2,48 @@ package ml
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"math"
 	mrand "math/rand"
+	"os"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
 	"whispera/internal/obfuscation/ml/gnet"
 )
 
-// TrafficGAN implements a minimax GAN for traffic obfuscation.
-//
-// Discriminator D: FlowFeatures → [0,1]
-//
-//	D(x)=1 means "looks like real browser traffic"
-//	D(x)=0 means "looks like VPN tunnel"
-//
-// Generator G: current tunnel flow stats → GeneratorAction
-//
-//	G learns to produce actions that push D(transformed features) → 1
-//
-// Training loop:
-//  1. Server receives LabeledFlow from PCAPCollector
-//  2. D is trained with BCE loss
-//  3. G is trained to maximize D(G(tunnel_features))
+type scoredDecoy struct {
+	features []float64
+	score    float64
+}
+
 type TrafficGAN struct {
 	mu sync.RWMutex
 
-	disc     *gnet.GorgoniaNet // discriminator: 10 → 64 → 32 → 1
+	disc     *gnet.GorgoniaNet
 	discAdam *AdamState
 
-	gen     *gnet.GorgoniaNet // generator:     10 → 32 → 2  (padding_frac, sleep_ms)
+	gen     *gnet.GorgoniaNet
 	genAdam *AdamState
 
-	// running statistics for feature normalisation
 	norm ganNorm
 
-	// smoothed discriminator confidence on tunnel flows — exposed for monitoring
-	TunnelConfidence float64 // 0=detected, 1=looks like browser
+	TunnelConfidence float64
 	DecoyConfidence  float64
 
 	trainCount int64
 
-	decoyReplay [][]float64
-	decoyIdx    int
+	decoyReplay []scoredDecoy
+	smoothed    GeneratorAction
+	lastTunnelX []float64
 }
 
-// GeneratorAction is the output of the generator applied to each write.
 type GeneratorAction struct {
-	PaddingFrac float64 // fraction of write size to pad (0–0.5)
-	SleepMs     float64 // milliseconds to sleep before write (0–50)
+	PaddingFrac float64
+	SleepMs     float64
 	SegShrink   float64
 }
 
@@ -66,7 +59,112 @@ func NewTrafficGAN() *TrafficGAN {
 	}
 }
 
-const decoyReplayCap = 256
+const decoyReplayCap = 4096
+
+type ganState struct {
+	DiscLayers    []gnet.LayerDef `json:"disc_layers"`
+	GenLayers     []gnet.LayerDef `json:"gen_layers"`
+	DiscAdam      *AdamState      `json:"disc_adam"`
+	GenAdam       *AdamState      `json:"gen_adam"`
+	NormMean      []float64       `json:"norm_mean"`
+	NormM2        []float64       `json:"norm_m2"`
+	NormN         float64         `json:"norm_n"`
+	TunnelConf    float64         `json:"tunnel_conf"`
+	DecoyConf     float64         `json:"decoy_conf"`
+	TrainCount    int64           `json:"train_count"`
+	DecoyFeatures [][]float64     `json:"decoy_features,omitempty"`
+	DecoyScores   []float64       `json:"decoy_scores,omitempty"`
+	DecoyReplay   [][]float64     `json:"decoy_replay,omitempty"` // legacy
+}
+
+func (g *TrafficGAN) Save(path string) error {
+	g.mu.RLock()
+	feats := make([][]float64, len(g.decoyReplay))
+	scores := make([]float64, len(g.decoyReplay))
+	for i, d := range g.decoyReplay {
+		feats[i] = d.features
+		scores[i] = d.score
+	}
+	state := ganState{
+		DiscLayers:    g.disc.Layers,
+		GenLayers:     g.gen.Layers,
+		DiscAdam:      g.discAdam,
+		GenAdam:       g.genAdam,
+		NormMean:      g.norm.mean,
+		NormM2:        g.norm.m2,
+		NormN:         g.norm.n,
+		TunnelConf:    g.TunnelConfidence,
+		DecoyConf:     g.DecoyConfidence,
+		TrainCount:    g.trainCount,
+		DecoyFeatures: feats,
+		DecoyScores:   scores,
+	}
+	g.mu.RUnlock()
+	data, err := json.Marshal(state)
+	if err != nil {
+		return err
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+
+func (g *TrafficGAN) Load(path string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	var state ganState
+	if err := json.Unmarshal(data, &state); err != nil {
+		return err
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if len(state.DiscLayers) > 0 {
+		g.disc = &gnet.GorgoniaNet{Layers: state.DiscLayers}
+		if state.DiscAdam != nil {
+			g.discAdam = state.DiscAdam
+		}
+	}
+	if len(state.GenLayers) > 0 {
+		g.gen = &gnet.GorgoniaNet{Layers: state.GenLayers}
+		if state.GenAdam != nil {
+			g.genAdam = state.GenAdam
+		}
+	}
+	if len(state.NormMean) > 0 {
+		g.norm.mean = state.NormMean
+		g.norm.m2 = state.NormM2
+		g.norm.n = state.NormN
+	}
+	g.TunnelConfidence = state.TunnelConf
+	g.DecoyConfidence = state.DecoyConf
+	g.trainCount = state.TrainCount
+
+	feats := state.DecoyFeatures
+	if len(feats) == 0 {
+		feats = state.DecoyReplay
+	}
+	if len(feats) > 0 {
+		scrs := state.DecoyScores
+		if len(scrs) != len(feats) {
+			scrs = make([]float64, len(feats))
+			for i := range scrs {
+				scrs[i] = 0.5
+			}
+		}
+		g.decoyReplay = make([]scoredDecoy, len(feats))
+		for i := range feats {
+			g.decoyReplay[i] = scoredDecoy{feats[i], scrs[i]}
+		}
+		sort.Slice(g.decoyReplay, func(a, b int) bool {
+			return g.decoyReplay[a].score < g.decoyReplay[b].score
+		})
+	}
+	return nil
+}
 
 func (g *TrafficGAN) trainDiscOnDecoy(x []float64) {
 	dActs := g.disc.ForwardActivations(x)
@@ -77,7 +175,25 @@ func (g *TrafficGAN) trainDiscOnDecoy(x []float64) {
 	dqnBackpropAdam(g.disc, g.discAdam, dActs, []float64{dLoss}, 0.001)
 }
 
-// Train ingests one labeled flow and runs one D step + one G step.
+func (g *TrafficGAN) addDecoy(features []float64, score float64) {
+	d := scoredDecoy{append([]float64(nil), features...), score}
+	if len(g.decoyReplay) < decoyReplayCap {
+		g.decoyReplay = append(g.decoyReplay, d)
+		return
+	}
+	// Вытесняем худший элемент (индекс 0 — минимальный score после sort)
+	if score > g.decoyReplay[0].score {
+		g.decoyReplay[0] = d
+		for i := 0; i < len(g.decoyReplay)-1; i++ {
+			if g.decoyReplay[i].score > g.decoyReplay[i+1].score {
+				g.decoyReplay[i], g.decoyReplay[i+1] = g.decoyReplay[i+1], g.decoyReplay[i]
+			} else {
+				break
+			}
+		}
+	}
+}
+
 func (g *TrafficGAN) Train(lf LabeledFlow) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -86,8 +202,6 @@ func (g *TrafficGAN) Train(lf LabeledFlow) {
 	g.norm.update(vec)
 	x := g.norm.normalise(vec)
 
-	// ── Discriminator step (BCE loss) ────────────────────────────────────────
-	// target: 1 for real browser (decoy), 0 for tunnel
 	target := 0.0
 	if lf.Label == FlowDecoy {
 		target = 1.0
@@ -96,31 +210,26 @@ func (g *TrafficGAN) Train(lf LabeledFlow) {
 	dActs := g.disc.ForwardActivations(x)
 	raw := dActs[len(dActs)-1][0]
 	pred := sigmoid64(raw)
-	dLoss := pred - target // dBCE/d(raw)
+	dLoss := pred - target
 
 	g.disc.Layers[len(g.disc.Layers)-1] = applyOutputGrad(g.disc.Layers[len(g.disc.Layers)-1], dLoss)
 	dqnBackpropAdam(g.disc, g.discAdam, dActs, []float64{dLoss}, 0.001)
 
 	if lf.Label == FlowDecoy {
-		cp := append([]float64(nil), x...)
-		if len(g.decoyReplay) < decoyReplayCap {
-			g.decoyReplay = append(g.decoyReplay, cp)
-		} else {
-			g.decoyReplay[g.decoyIdx%decoyReplayCap] = cp
-			g.decoyIdx++
-		}
+		g.addDecoy(x, pred)
 	}
 
-	// Update smoothed tunnel confidence.
 	if lf.Label == FlowTunnel {
+		g.lastTunnelX = append([]float64(nil), x...)
 		g.TunnelConfidence = 0.95*g.TunnelConfidence + 0.05*pred
 		if n := len(g.decoyReplay); n > 0 {
-			g.trainDiscOnDecoy(g.decoyReplay[mrand.Intn(n)])
+			// Выбираем из верхней половины (лучшие декои)
+			topStart := n / 2
+			idx := topStart + mrand.Intn(n-topStart)
+			g.trainDiscOnDecoy(g.decoyReplay[idx].features)
 		}
 	}
 
-	// ── Generator step (only for tunnel flows) ───────────────────────────────
-	// Generator loss: maximize D(x) → minimize -log(D(x)) → gradient = -dD/dx
 	if lf.Label != FlowTunnel {
 		g.trainCount++
 		return
@@ -129,14 +238,22 @@ func (g *TrafficGAN) Train(lf LabeledFlow) {
 	gActs := g.gen.ForwardActivations(x)
 	action := g.genAction(gActs[len(gActs)-1])
 
-	// Simulate transformed features and compute D on them.
 	xAdv := g.applyAction(x, action)
 	dAdvActs := g.disc.ForwardActivations(xAdv)
 	predAdv := sigmoid64(dAdvActs[len(dAdvActs)-1][0])
 
-	// Generator loss: -log(D(xAdv)), gradient = -(1-predAdv)
 	gLossGrad := -(1.0 - predAdv)
 	dqnBackpropAdam(g.gen, g.genAdam, gActs, []float64{gLossGrad, gLossGrad, gLossGrad}, 0.0005)
+
+	// Не шейпить мелкие пакеты — это порождало петлю дросселирования
+	if lf.Features.SizeMean < 200 {
+		action.SegShrink = 0
+	}
+	// EMA-сглаживание: исключает резкие скачки действий генератора
+	const alpha = 0.15
+	g.smoothed.PaddingFrac = alpha*action.PaddingFrac + (1-alpha)*g.smoothed.PaddingFrac
+	g.smoothed.SleepMs = alpha*action.SleepMs + (1-alpha)*g.smoothed.SleepMs
+	g.smoothed.SegShrink = alpha*action.SegShrink + (1-alpha)*g.smoothed.SegShrink
 
 	g.trainCount++
 }
@@ -146,19 +263,13 @@ const GANDecideThreshold int64 = 500
 func (g *TrafficGAN) Decide(f FlowFeatures) GeneratorAction {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
-
 	if g.trainCount < GANDecideThreshold {
 		return GeneratorAction{}
 	}
-
-	x := g.norm.normalise(f.Vec())
-	out := g.gen.Forward(x)
-	return g.genAction(out)
+	return g.smoothed
 }
 
 func (g *TrafficGAN) genAction(out []float64) GeneratorAction {
-	// out[0] → PaddingFrac ∈ [0, 0.5]
-	// out[1] → SleepMs    ∈ [0, 50]
 	pad := math.Max(0, math.Min(0.5, sigmoid64(out[0])*0.5))
 	slp := math.Max(0, math.Min(50, sigmoid64(out[1])*50))
 	seg := math.Max(0, math.Min(0.7, sigmoid64(out[2])*0.7))
@@ -176,19 +287,15 @@ func GANLambda(threatLevel int) float64 {
 	return (t / 10.0) * (t / 10.0)
 }
 
-// applyAction simulates how the generator action would transform flow features.
-// This lets G learn through D without requiring a full trajectory.
 func (g *TrafficGAN) applyAction(x []float64, a GeneratorAction) []float64 {
 	out := make([]float64, len(x))
 	copy(out, x)
 
-	// Padding increases mean and variance of sizes (indices 3,4,5).
 	padEffect := 1.0 + a.PaddingFrac
 	out[3] *= padEffect
 	out[4] *= padEffect * 0.5
 	out[5] *= padEffect
 
-	// Sleep increases IAT (indices 0,1,2).
 	sleepSec := a.SleepMs / 1000.0
 	out[0] += sleepSec
 	out[1] += sleepSec * 0.3
@@ -200,6 +307,69 @@ func (g *TrafficGAN) applyAction(x []float64, a GeneratorAction) []float64 {
 	out[5] *= segEffect
 
 	return out
+}
+
+var featureNames = [FlowFeatureSize]string{
+	"iat_mean", "iat_std", "iat_p90",
+	"pkt_size_mean", "pkt_size_std", "pkt_size_p90",
+	"up_ratio", "burst_size", "duration", "pkt_count",
+}
+
+func (g *TrafficGAN) diagnoseFeatures() string {
+	if len(g.decoyReplay) < 10 || len(g.lastTunnelX) == 0 {
+		return ""
+	}
+	mean := make([]float64, FlowFeatureSize)
+	variance := make([]float64, FlowFeatureSize)
+	n := float64(len(g.decoyReplay))
+	for _, d := range g.decoyReplay {
+		for i, v := range d.features {
+			mean[i] += v
+		}
+	}
+	for i := range mean {
+		mean[i] /= n
+	}
+	for _, d := range g.decoyReplay {
+		for i, v := range d.features {
+			diff := v - mean[i]
+			variance[i] += diff * diff
+		}
+	}
+	for i := range variance {
+		variance[i] /= n
+	}
+	type zs struct {
+		name string
+		z    float64
+	}
+	zscores := make([]zs, FlowFeatureSize)
+	for i, v := range g.lastTunnelX {
+		std := 1.0
+		if variance[i] > 1e-12 {
+			std = math.Sqrt(variance[i])
+		}
+		zscores[i] = zs{featureNames[i], math.Abs(v-mean[i]) / std}
+	}
+	sort.Slice(zscores, func(a, b int) bool { return zscores[a].z > zscores[b].z })
+	parts := make([]string, 0, 3)
+	for i := 0; i < 3 && i < len(zscores); i++ {
+		parts = append(parts, fmt.Sprintf("%s(z=%.1f)", zscores[i].name, zscores[i].z))
+	}
+	return strings.Join(parts, ", ")
+}
+
+func (g *TrafficGAN) Diagnostics() (tunnelConf, decoyConf float64, trainCount int64, poolSize int, detect string) {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	tunnelConf = g.TunnelConfidence
+	decoyConf = g.DecoyConfidence
+	trainCount = g.trainCount
+	poolSize = len(g.decoyReplay)
+	if tunnelConf > 0.5 && len(g.lastTunnelX) > 0 {
+		detect = g.diagnoseFeatures()
+	}
+	return
 }
 
 // ── Feature normalizer ────────────────────────────────────────────────────────
@@ -244,8 +414,6 @@ func sigmoid64(x float64) float64 {
 	return 1.0 / (1.0 + math.Exp(-x))
 }
 
-// applyOutputGrad is a no-op helper to make the grad flow explicit.
-// dqnBackpropAdam handles the actual weight update.
 func applyOutputGrad(l gnet.LayerDef, _ float64) gnet.LayerDef { return l }
 
 // GANRunner runs the training loop and browser simulator on background goroutines.
@@ -254,19 +422,26 @@ type GANRunner struct {
 	collector *PCAPCollector
 	stopCh    chan struct{}
 	simCancel context.CancelFunc
+	savePath  string
 }
 
-func NewGANRunner(iface string, port int) *GANRunner {
+func NewGANRunner(iface string, port int, savePath string) *GANRunner {
 	return &GANRunner{
-		gan:       NewTrafficGAN(),
+		gan:      NewTrafficGAN(),
 		collector: NewPCAPCollector(iface, port),
-		stopCh:    make(chan struct{}),
+		stopCh:   make(chan struct{}),
+		savePath: savePath,
 	}
 }
 
 func (r *GANRunner) GAN() *TrafficGAN { return r.gan }
 
 func (r *GANRunner) Start() error {
+	if r.savePath != "" {
+		if err := r.gan.Load(r.savePath); err == nil {
+			log.Info("GAN: loaded saved state from %s (trained=%d)", r.savePath, r.gan.trainCount)
+		}
+	}
 	if err := r.collector.Start(); err != nil {
 		return err
 	}
@@ -277,9 +452,25 @@ func (r *GANRunner) Start() error {
 	return nil
 }
 
+func (r *GANRunner) Stop() {
+	close(r.stopCh)
+	if r.savePath != "" {
+		if err := r.gan.Save(r.savePath); err != nil {
+			log.Error("GAN: save state failed: %v", err)
+		} else {
+			log.Info("GAN: state saved to %s", r.savePath)
+		}
+	}
+	if r.simCancel != nil {
+		r.simCancel()
+	}
+}
+
 func (r *GANRunner) loop() {
 	logTicker := time.NewTicker(60 * time.Second)
 	defer logTicker.Stop()
+	saveTicker := time.NewTicker(5 * time.Minute)
+	defer saveTicker.Stop()
 	var tun, dec, unk int
 	for {
 		select {
@@ -296,8 +487,18 @@ func (r *GANRunner) loop() {
 			}
 			r.gan.Train(lf)
 		case <-logTicker.C:
-			log.Info("GAN: tunnel_conf=%.3f decoy_conf=%.3f trained=%d flows[tun=%d dec=%d unk=%d]",
-				r.gan.TunnelConfidence, r.gan.DecoyConfidence, r.gan.trainCount, tun, dec, unk)
+			tc, dc, trained, pool, detect := r.gan.Diagnostics()
+			if detect != "" {
+				log.Warn("GAN: tunnel_conf=%.3f decoy_conf=%.3f trained=%d flows[tun=%d dec=%d unk=%d] pool=%d | DETECTED: %s",
+					tc, dc, trained, tun, dec, unk, pool, detect)
+			} else {
+				log.Info("GAN: tunnel_conf=%.3f decoy_conf=%.3f trained=%d flows[tun=%d dec=%d unk=%d] pool=%d",
+					tc, dc, trained, tun, dec, unk, pool)
+			}
+		case <-saveTicker.C:
+			if r.savePath != "" {
+				r.gan.Save(r.savePath)
+			}
 		}
 	}
 }
