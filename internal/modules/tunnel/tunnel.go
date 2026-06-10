@@ -307,8 +307,8 @@ type Config struct {
 func DefaultConfig() *Config {
 	return &Config{
 		KeepaliveInterval:    15 * time.Second,
-		ReconnectInterval:    5 * time.Second,
-		ReconnectMaxDelay:    60 * time.Second,
+		ReconnectInterval:    2 * time.Second,
+		ReconnectMaxDelay:    30 * time.Second,
 		MaxReconnectAttempts: 0,
 		ConnectionTimeout:    90 * time.Second,
 		EnableRotation:       true,
@@ -323,10 +323,10 @@ func (c *Config) Validate() error {
 		c.KeepaliveInterval = 10 * time.Second
 	}
 	if c.ReconnectInterval <= 0 {
-		c.ReconnectInterval = 5 * time.Second
+		c.ReconnectInterval = 2 * time.Second
 	}
 	if c.ReconnectMaxDelay <= 0 {
-		c.ReconnectMaxDelay = 60 * time.Second
+		c.ReconnectMaxDelay = 30 * time.Second
 	}
 	if c.ConnectionTimeout <= 0 {
 		c.ConnectionTimeout = 90 * time.Second

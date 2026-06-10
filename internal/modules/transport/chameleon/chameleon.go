@@ -65,7 +65,8 @@ func newH2Transport(dial func(context.Context, string, string, *tls.Config) (net
 	}
 	h2t.ConnPool = nil
 	h2t.MaxReadFrameSize = 1 << 20
-	h2t.ReadIdleTimeout = 0
+	h2t.ReadIdleTimeout = 30 * time.Second
+	h2t.PingTimeout = 15 * time.Second
 	h2t.MaxDecoderHeaderTableSize = 65536
 	h2t.MaxHeaderListSize = 262144
 	h2t.DisableCompression = true

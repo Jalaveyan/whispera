@@ -14,6 +14,7 @@ import (
 	_ "net/http/pprof"
 	"net/url"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -1687,7 +1688,12 @@ func createModules(manager *lifecycle.Manager, ctx context.Context) error {
 		if ganMaxPadding == 0 {
 			ganMaxPadding = 4096
 		}
-		ganRunner := mlpkg.NewGANRunner(ganIface, ganPort)
+		ganModelDir := os.Getenv("WHISPERA_ML_MODEL_DIR")
+		if ganModelDir == "" {
+			ganModelDir = "./ml_models"
+		}
+		ganSavePath := filepath.Join(ganModelDir, "gan_state.json")
+		ganRunner := mlpkg.NewGANRunner(ganIface, ganPort, ganSavePath)
 		if err := ganRunner.Start(); err != nil {
 			log.Printf("[GAN] pcap collector unavailable: %v (continuing without)", err)
 		} else {
