@@ -311,9 +311,9 @@ outbounds:
       chameleon_secret: "SECRET_EXIT"
     chain: ["relay1", "relay2"]
 
-/// update checksum and restart
-whispera update-checksum /etc/whispera/config.yaml
-systemctl restart whispera
+# update checksum and restart
+# whispera update-checksum /etc/whispera/config.yaml
+# systemctl restart whispera
 ```
 
 Check
