@@ -1298,8 +1298,7 @@ func (m *Manager) readLoop(mc *managedConn) {
 	consecutiveGarbage := 0
 	const maxTLSDrain = 50
 
-	lastDeadlineUpdate := time.Now()
-	mc.SetReadDeadline(lastDeadlineUpdate.Add(m.config.KeepaliveInterval * 2))
+	mc.SetReadDeadline(time.Now().Add(m.config.KeepaliveInterval * 2))
 
 	for {
 		select {
@@ -1312,8 +1311,7 @@ func (m *Manager) readLoop(mc *managedConn) {
 			peek, err := reader.Peek(5)
 			if err != nil {
 				if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-					lastDeadlineUpdate = time.Now()
-					mc.SetReadDeadline(lastDeadlineUpdate.Add(m.config.KeepaliveInterval * 2))
+					mc.SetReadDeadline(time.Now().Add(m.config.KeepaliveInterval * 2))
 					continue
 				}
 				m.handleReadError(mc, err)
@@ -1444,15 +1442,9 @@ func (m *Manager) readLoop(mc *managedConn) {
 		consecutiveGarbage = 0
 		tlsDrainCount = 0
 
-		if time.Since(lastDeadlineUpdate) > 5*time.Second {
-			lastDeadlineUpdate = time.Now()
-			mc.SetReadDeadline(lastDeadlineUpdate.Add(m.config.KeepaliveInterval * 2))
-		}
-
 		if _, err := io.ReadFull(reader, header); err != nil {
 			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-				lastDeadlineUpdate = time.Now()
-				mc.SetReadDeadline(lastDeadlineUpdate.Add(m.config.KeepaliveInterval * 2))
+				mc.SetReadDeadline(time.Now().Add(m.config.KeepaliveInterval * 2))
 				continue
 			}
 			m.handleReadError(mc, err)
@@ -1790,34 +1782,40 @@ func (m *Manager) Send(data []byte) error {
 	for attempt := 0; attempt < maxRetries; attempt++ {
 		var targetConn *managedConn
 
-		m.connMu.Lock()
-		targetConn = m.activeConn
-		if len(data) >= 8 {
+		var conn *managedConn
+		if frameType == FrameTypeConnect || frameType == FrameTypeClose {
+			m.connMu.Lock()
+			targetConn = m.activeConn
 			if frameType == FrameTypeConnect {
 				if len(m.activePool) > 0 {
 					idx := streamID % uint16(len(m.activePool))
-					selectedConn := m.activePool[idx]
-					m.streamConns[streamID] = selectedConn
-					targetConn = selectedConn
-
-					if targetConn == nil {
-						targetConn = m.activeConn
+					selected := m.activePool[idx]
+					if selected != nil {
+						m.streamConns[streamID] = selected
+						targetConn = selected
+					} else {
+						m.streamConns[streamID] = m.activeConn
 					}
 				} else if m.activeConn != nil {
 					m.streamConns[streamID] = m.activeConn
-					targetConn = m.activeConn
 				}
 			} else {
 				if c, ok := m.streamConns[streamID]; ok {
 					targetConn = c
 				}
-				if frameType == FrameTypeClose {
-					delete(m.streamConns, streamID)
-				}
+				delete(m.streamConns, streamID)
 			}
+			conn = targetConn
+			m.connMu.Unlock()
+		} else {
+			m.connMu.RLock()
+			if c, ok := m.streamConns[streamID]; ok {
+				conn = c
+			} else {
+				conn = m.activeConn
+			}
+			m.connMu.RUnlock()
 		}
-		conn := targetConn
-		m.connMu.Unlock()
 
 		if conn == nil {
 			state := m.GetState()
@@ -1833,65 +1831,7 @@ func (m *Manager) Send(data []byte) error {
 			return fmt.Errorf("not connected")
 		}
 
-		total := len(data)
-		n := 0
-		var writeErr error
-		var err error
-
-		currentChunkSize := 65536
-		const minChunkSize = 16384
-		const maxChunkSize = 131072
-
-		if total > currentChunkSize {
-			start := 0
-			chunkIdx := 0
-			for start < total {
-				end := start + currentChunkSize
-				if end > total {
-					end = total
-				}
-
-				chunk := data[start:end]
-
-				measure := chunkIdx&3 == 0
-				var tStart time.Time
-				if measure {
-					tStart = time.Now()
-				}
-				wn, wErr := conn.Write(chunk)
-
-				n += wn
-				if wErr != nil {
-					writeErr = wErr
-					break
-				}
-
-				if measure {
-					duration := time.Since(tStart)
-					if duration < 2*time.Millisecond {
-						if currentChunkSize < maxChunkSize {
-							currentChunkSize = currentChunkSize * 3 / 2
-							if currentChunkSize > maxChunkSize {
-								currentChunkSize = maxChunkSize
-							}
-						}
-					} else if duration > 100*time.Millisecond {
-						if currentChunkSize > minChunkSize {
-							currentChunkSize = currentChunkSize * 2 / 3
-							if currentChunkSize < minChunkSize {
-								currentChunkSize = minChunkSize
-							}
-						}
-					}
-				}
-
-				start += wn
-				chunkIdx++
-			}
-			err = writeErr
-		} else {
-			n, err = conn.Write(data)
-		}
+		n, err := conn.Write(data)
 		if err != nil {
 			lastErr = err
 
