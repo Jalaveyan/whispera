@@ -448,6 +448,31 @@ func handleClientStream(w http.ResponseWriter, r *http.Request, cfg *ServerConfi
 	conn := newHTTPStreamConn(r.Body, w, flusher.Flush, local, remote, cfg.GANDecide)
 	fc := NewFrameConn(conn)
 
+	if cfg.GANDecide != nil {
+		decide := cfg.GANDecide
+		go func() {
+			for {
+				jitter := time.Duration(mrand.Intn(100)-50) * time.Millisecond
+				t := time.NewTimer(200*time.Millisecond + jitter)
+				select {
+				case <-conn.done:
+					t.Stop()
+					return
+				case <-r.Context().Done():
+					t.Stop()
+					return
+				case <-t.C:
+				}
+				action := decide(conn.smoothedIAT, conn.smoothedSize, 0)
+				if action.PaddingN > 0 {
+					if err := fc.WritePad(action.PaddingN); err != nil {
+						return
+					}
+				}
+			}
+		}()
+	}
+
 	if cfg.OnConn != nil {
 		cfg.OnConn(fc, userID)
 	}
