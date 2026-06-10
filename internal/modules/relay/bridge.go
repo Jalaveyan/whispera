@@ -10,14 +10,12 @@ import (
 
 	"whispera/internal/buf"
 	"whispera/internal/logger"
-	"whispera/internal/modules/phantom"
 )
 
 type Bridge struct {
-	listener       net.Listener
-	upstreamAddr   string
-	phantomHandler *phantom.Handler
-	log            *logger.Logger
+	listener     net.Listener
+	upstreamAddr string
+	log          *logger.Logger
 
 	running    int32
 	activeConn int32
@@ -33,19 +31,12 @@ type Bridge struct {
 type BridgeConfig struct {
 	ListenAddr      string
 	UpstreamServer  string
-	PhantomConfig   *phantom.Config
 	FailoverHandler func(conn net.Conn)
 }
 
 func NewBridge(cfg *BridgeConfig) (*Bridge, error) {
-	ph, err := phantom.New(cfg.PhantomConfig)
-	if err != nil {
-		return nil, err
-	}
-
 	b := &Bridge{
 		upstreamAddr:    cfg.UpstreamServer,
-		phantomHandler:  ph,
 		log:             logger.Module("bridge"),
 		failoverHandler: cfg.FailoverHandler,
 	}

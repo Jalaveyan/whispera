@@ -35,7 +35,7 @@ func (m *Manager) selectNewSNILocked() string {
 		pool = defaultSNIPool
 	}
 	if len(pool) == 0 {
-		m.currentSNI = m.config.PhantomSNI
+		m.currentSNI = ""
 		return m.currentSNI
 	}
 

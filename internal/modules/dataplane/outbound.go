@@ -82,15 +82,6 @@ func (om *OutboundManager) AddOutbound(cfg config.OutboundConfig) error {
 		tCfg.Transport = "vkwebrtc,yatelemost,okwebrtc,vkbot,cdnworker,russian,asn_bypass"
 	}
 
-	if pubKey, ok := cfg.Settings["server_pub_key"].(string); ok && pubKey != "" {
-		tCfg.EnablePhantom = true
-		tCfg.PhantomServerPubKey = pubKey
-		tCfg.PhantomSNI = "google.com"
-		if sni, ok := cfg.Settings["sni"].(string); ok {
-			tCfg.PhantomSNI = sni
-		}
-	}
-
 	if secret, ok := cfg.Settings["chameleon_secret"].(string); ok && secret != "" {
 		if decoded, err := decodePSK(secret); err == nil && len(decoded) == 32 {
 			tCfg.EnableChameleon = true
@@ -267,16 +258,6 @@ func (om *OutboundManager) newHopTunnel(ctx context.Context, cfg config.Outbound
 	tCfg.KeepaliveInterval = 30 * time.Second
 	tCfg.CustomDialFn = func(_ context.Context) (net.Conn, error) {
 		return transport, nil
-	}
-
-	if pubKey, ok := cfg.Settings["server_pub_key"].(string); ok && pubKey != "" {
-		tCfg.EnablePhantom = true
-		tCfg.PhantomServerPubKey = pubKey
-		if sni, ok := cfg.Settings["sni"].(string); ok && sni != "" {
-			tCfg.PhantomSNI = sni
-		} else {
-			tCfg.PhantomSNI = "google.com"
-		}
 	}
 
 	if secret, ok := cfg.Settings["chameleon_secret"].(string); ok && secret != "" {

@@ -50,27 +50,15 @@ import (
 	"whispera/internal/modules/metricscollector"
 	"whispera/internal/modules/mlserver"
 	"whispera/internal/modules/obfuscator"
-	"whispera/internal/modules/phantom"
 	"whispera/internal/modules/probedetector"
 	"whispera/internal/modules/relay"
 	"whispera/internal/modules/router"
 	"whispera/internal/modules/session"
 	"whispera/internal/modules/transport/chameleon"
-	_ "whispera/internal/modules/transport/domainfront"
 	_ "whispera/internal/modules/transport/grpc"
-	h2c_transport "whispera/internal/modules/transport/h2c"
-	_ "whispera/internal/modules/transport/httpupgrade"
-	_ "whispera/internal/modules/transport/meek"
-	obfs4_transport "whispera/internal/modules/transport/obfs4"
 	_ "whispera/internal/modules/transport/okwebrtc"
-	shadowsocks_transport "whispera/internal/modules/transport/shadowsocks"
 	shadowtls_transport "whispera/internal/modules/transport/shadowtls"
-	_ "whispera/internal/modules/transport/snowflake"
-	_ "whispera/internal/modules/transport/splithttp"
 	"whispera/internal/modules/transport/tcp"
-	_ "whispera/internal/modules/transport/tgbot"
-	_ "whispera/internal/modules/transport/torsocks"
-	_ "whispera/internal/modules/transport/tuic"
 	"whispera/internal/modules/transport/udp"
 	_ "whispera/internal/modules/transport/vkbot"
 	_ "whispera/internal/modules/transport/vkwebrtc"
@@ -202,9 +190,6 @@ var (
 	activeListeners = make(map[string]net.Listener)
 	listenersMutex  sync.RWMutex
 
-	phantomHandlers   = make(map[string]*phantom.Handler)
-	phantomHandlersMu sync.RWMutex
-
 	// portH2CChans maps listenAddr → channel used to hand off H2C connections
 	// detected by the TCP mux (first 3 bytes == "PRI").
 	portH2CChans   = make(map[string]chan net.Conn)
@@ -314,9 +299,6 @@ func StartInbound(inbound modconfig.InboundConfig, serverConfig *modconfig.Serve
 	}
 
 	var hsHandler *handshake.Handler
-	var phantomHandler *phantom.Handler
-
-	isPhantom := inbound.StreamSettings.Security == "phantom" || inbound.StreamSettings.Security == "reality"
 
 	if network == "ws" {
 		path := inbound.StreamSettings.WS.Path
@@ -326,141 +308,8 @@ func StartInbound(inbound modconfig.InboundConfig, serverConfig *modconfig.Serve
 		_ = path
 	}
 
-	if isPhantom {
-		pPrivKey := inbound.StreamSettings.Phantom.PrivateKey
-		if pPrivKey == "" {
-			pPrivKey = serverConfig.Server.PrivateKey
-		}
-		inboundServerNames := inbound.StreamSettings.Phantom.ServerNames
-		if len(inboundServerNames) == 0 {
-			inboundServerNames = serverConfig.Phantom.ServerNames
-		}
-		inboundShortIds := inbound.StreamSettings.Phantom.ShortIds
-		if len(inboundShortIds) == 0 {
-			inboundShortIds = serverConfig.Phantom.ShortIds
-		}
-		inboundMaxTimeDiff := inbound.StreamSettings.Phantom.MaxTimeDiff
-		if inboundMaxTimeDiff == 0 {
-			inboundMaxTimeDiff = serverConfig.Phantom.MaxTimeDiff
-		}
-
-		pCfg := &phantom.Config{
-			Enabled:              true,
-			ListenAddr:           listenAddr,
-			Dest:                 inbound.StreamSettings.Phantom.Dest,
-			PrivateKey:           pPrivKey,
-			ServerNames:          inboundServerNames,
-			ShortIds:             inboundShortIds,
-			MaxTimeDiff:          inboundMaxTimeDiff,
-			Fingerprint:          serverConfig.Phantom.Fingerprint,
-			EnableObfuscation:    false,
-			ObfuscationProfile:   "",
-			EnableChatFSM:        serverConfig.Phantom.EnableChatFSM,
-			ChatFSMCoverInterval: time.Duration(serverConfig.Phantom.ChatFSMCoverInterval) * time.Second,
-			GetUsers: func() []phantom.UserEntry {
-				registered := apiserver.GetRegisteredUsers()
-				entries := make([]phantom.UserEntry, 0, len(registered))
-				for _, u := range registered {
-					privBytes, err := base64.StdEncoding.DecodeString(u.PrivateKey)
-					if err != nil || len(privBytes) != 32 {
-						continue
-					}
-					pub, err := curve25519.X25519(privBytes, curve25519.Basepoint)
-					if err != nil || len(pub) != 32 {
-						continue
-					}
-					var pubKey [32]byte
-					copy(pubKey[:], pub)
-					entries = append(entries, phantom.UserEntry{UserID: u.UserID, PublicKey: pubKey})
-				}
-				return entries
-			},
-			AdmitSession: func(clientID, sessionID, remoteIP string) (func(), string) {
-				reason, msg := globalKeyLimits.Admit(clientID, sessionID, remoteIP)
-				switch reason {
-				case keylimits.ReasonActiveCap:
-					// Evict this client's 5 oldest stuck connections, then retry.
-					// Only this client's sessions are evicted — other clients unaffected.
-					globalKeyLimits.EvictOldest(clientID, 5)
-					reason, msg = globalKeyLimits.Admit(clientID, sessionID, remoteIP)
-				case keylimits.ReasonGlobalCap:
-					// Server-wide cap hit — evict 20 oldest sessions across all clients.
-					globalKeyLimits.EvictOldestGlobal(20)
-					reason, msg = globalKeyLimits.Admit(clientID, sessionID, remoteIP)
-				case keylimits.ReasonNone, keylimits.ReasonSoftIPCap, keylimits.ReasonRateLimit:
-					// no eviction action for these reasons
-				}
-				if reason != keylimits.ReasonNone {
-					return nil, msg
-				}
-				return func() { globalKeyLimits.Release(clientID, sessionID) }, ""
-			},
-			OnConnReady: func(clientID, sessionID string, conn net.Conn) {
-				globalKeyLimits.RegisterCloser(clientID, sessionID, func() { conn.Close() })
-			},
-			OnAuthenticated: func(conn net.Conn, clientID string) {
-				log.Printf("[Dynamic-Phantom] Authenticated: %s on inbound %s", clientID, inbound.Tag)
-				stats.RegisterConn(clientID, conn)
-				defer stats.DeregisterConn(clientID, conn)
-				if globalRelay != nil {
-					var session interfaces.Session
-					if globalSessionMgr != nil {
-						params := interfaces.SessionParams{
-							ClientAddr: conn.RemoteAddr(),
-							UserID:     clientID,
-							Metadata: map[string]interface{}{
-								"user_id":       clientID,
-								"inbound_tag":   inbound.Tag,
-								"protocol":      "phantom",
-								"authenticated": true,
-								"created_at":    time.Now(),
-							},
-						}
-
-						sess, err := globalSessionMgr.CreateSession(params)
-						if err != nil {
-							log.Printf("⚠ Failed to create session for phantom client %s: %v", clientID, err)
-						} else {
-							session = sess
-							log.Printf("  + Session created: %d (User: %s)", session.ID(), clientID)
-							defer session.Close()
-						}
-					}
-					globalRelay.ServeTunnel(conn, true)
-				} else {
-					conn.Close()
-				}
-			},
-		}
-
-		if pCfg.Dest == "" {
-			pCfg.Dest = serverConfig.Phantom.Dest
-		}
-
-		var err error
-		phantomHandler, err = phantom.New(pCfg)
-		if err != nil {
-			if listener != nil {
-				listener.Close()
-			}
-			return fmt.Errorf("failed to create phantom handler: %w", err)
-		}
-		if globalProbeDetector != nil {
-			phantomHandler.SetProbeDetector(globalProbeDetector)
-			phantomHandler.SetConnGuard(globalProbeDetector.Guard)
-		}
-		phantomHandlersMu.Lock()
-		phantomHandlers[inbound.Tag] = phantomHandler
-		phantomHandlersMu.Unlock()
-		log.Printf("  ✨ [Dynamic] Enabled Phantom/Reality on inbound %s", inbound.Tag)
-	} else {
-		privKey := ""
-		if inbound.StreamSettings.Phantom.PrivateKey != "" {
-			privKey = inbound.StreamSettings.Phantom.PrivateKey
-		} else if serverConfig.Server.PrivateKey != "" {
-			privKey = serverConfig.Server.PrivateKey
-		}
-
+	{
+		privKey := serverConfig.Server.PrivateKey
 		if privKey != "" {
 			hsHandler = createHandshakeHandler(privKey, serverConfig)
 			if hsHandler == nil {
@@ -527,169 +376,6 @@ func StartInbound(inbound modconfig.InboundConfig, serverConfig *modconfig.Serve
 		return nil
 	}
 
-	if network == "shadowsocks" {
-		password := paramStr("password", "")
-		if password == "" {
-			if listener != nil {
-				listener.Close()
-			}
-			return fmt.Errorf("shadowsocks inbound %s: 'password' required in params", inbound.Tag)
-		}
-		method := shadowsocks_transport.Method(paramStr("method", "aes-256-gcm"))
-		ssCfg := &shadowsocks_transport.Config{
-			Password: password,
-			Method:   method,
-		}
-		ssTrans, err := shadowsocks_transport.New(ssCfg)
-		if err != nil {
-			if listener != nil {
-				listener.Close()
-			}
-			return fmt.Errorf("failed to create shadowsocks transport: %w", err)
-		}
-		if listener != nil {
-			listener.Close()
-		}
-		if err := ssTrans.Listen(listenAddr); err != nil {
-			return fmt.Errorf("failed to listen shadowsocks on %s: %w", listenAddr, err)
-		}
-		log.Printf("✅ [Dynamic] Inbound %s listening on %s (Shadowsocks method=%s)", inbound.Tag, listenAddr, method)
-		go func() {
-			defer func() {
-				ssTrans.Close()
-				log.Printf("⏹ [Dynamic] Stopped inbound %s (Shadowsocks)", inbound.Tag)
-			}()
-			backoffSS := 10 * time.Millisecond
-			for {
-				conn, err := ssTrans.Accept()
-				if err != nil {
-					log.Printf("⚠ [Dynamic] Shadowsocks Accept error on %s: %v", inbound.Tag, err)
-					acceptBackoff(&backoffSS)
-					continue
-				}
-				backoffSS = 10 * time.Millisecond
-				if globalRelay != nil {
-					go globalRelay.ServeTunnel(conn, false)
-				} else {
-					conn.Close()
-				}
-			}
-		}()
-		return nil
-	}
-
-	if network == "obfs4" {
-		obfsCfg := &obfs4_transport.Config{
-			ListenAddr: listenAddr,
-			NodeID:     paramStr("node_id", ""),
-			PublicKey:  paramStr("public_key", ""),
-			PrivateKey: paramStr("private_key", ""),
-		}
-		obfsTrans, err := obfs4_transport.New(obfsCfg)
-		if err != nil {
-			if listener != nil {
-				listener.Close()
-			}
-			return fmt.Errorf("failed to create obfs4 transport: %w", err)
-		}
-		if listener != nil {
-			listener.Close()
-		}
-		if err := obfsTrans.Listen(listenAddr); err != nil {
-			return fmt.Errorf("failed to listen obfs4 on %s: %w", listenAddr, err)
-		}
-		log.Printf("✅ [Dynamic] Inbound %s listening on %s (obfs4)", inbound.Tag, listenAddr)
-		go func() {
-			defer func() {
-				obfsTrans.Close()
-				log.Printf("⏹ [Dynamic] Stopped inbound %s (obfs4)", inbound.Tag)
-			}()
-			backoffObfs := 10 * time.Millisecond
-			for {
-				conn, err := obfsTrans.Accept()
-				if err != nil {
-					log.Printf("⚠ [Dynamic] obfs4 Accept error on %s: %v", inbound.Tag, err)
-					acceptBackoff(&backoffObfs)
-					continue
-				}
-				backoffObfs = 10 * time.Millisecond
-				if globalRelay != nil {
-					go globalRelay.ServeTunnel(conn, false)
-				} else {
-					conn.Close()
-				}
-			}
-		}()
-		return nil
-	}
-
-	if network == "h2c" {
-		h2cConfig := &h2c_transport.Config{
-			ListenAddr:           listenAddr,
-			Path:                 "/",
-			MaxConcurrentStreams: 1000,
-		}
-
-		h2cTrans, err := h2c_transport.New(h2cConfig)
-		if err != nil {
-			if listener != nil {
-				listener.Close()
-			}
-			return fmt.Errorf("failed to create h2c transport: %w", err)
-		}
-
-		if sharedL := findListenerByAddr(listenAddr); sharedL != nil {
-			// Port already owned by a TCP inbound — share it via protocol mux.
-			if listener != nil {
-				listener.Close()
-			}
-			ch := make(chan net.Conn, 64)
-			portH2CChansMu.Lock()
-			portH2CChans[listenAddr] = ch
-			portH2CChansMu.Unlock()
-			cL := &chanListener{ch: ch, addr: sharedL.Addr(), done: make(chan struct{})}
-			if err := h2cTrans.ServeOn(cL); err != nil {
-				return fmt.Errorf("failed to serve h2c on shared port %s: %w", listenAddr, err)
-			}
-			log.Printf("✅ [Dynamic] Inbound %s muxed on %s (H2C+TCP shared port)", inbound.Tag, listenAddr)
-		} else {
-			if listener != nil {
-				listener.Close()
-			}
-			if err := h2cTrans.Listen(listenAddr); err != nil {
-				return fmt.Errorf("failed to listen h2c on %s: %w", listenAddr, err)
-			}
-			log.Printf("✅ [Dynamic] Inbound %s listening on %s (H2C)", inbound.Tag, listenAddr)
-		}
-
-		go func() {
-			defer func() {
-				portH2CChansMu.Lock()
-				delete(portH2CChans, listenAddr)
-				portH2CChansMu.Unlock()
-				h2cTrans.Close()
-				log.Printf("⏹ [Dynamic] Stopped inbound %s (H2C)", inbound.Tag)
-			}()
-
-			backoffH2C := 10 * time.Millisecond
-			for {
-				conn, err := h2cTrans.Accept()
-				if err != nil {
-					log.Printf("⚠ [Dynamic] H2C Accept error on %s: %v", inbound.Tag, err)
-					acceptBackoff(&backoffH2C)
-					continue
-				}
-				backoffH2C = 10 * time.Millisecond
-				if globalRelay != nil {
-					go globalRelay.ServeTunnel(conn, false)
-				} else {
-					conn.Close()
-				}
-			}
-		}()
-		return nil
-	}
-
 	if network == "shadowtls" {
 		password := paramStr("password", "")
 		if password == "" {
@@ -744,9 +430,6 @@ func StartInbound(inbound modconfig.InboundConfig, serverConfig *modconfig.Serve
 			listenersMutex.Lock()
 			delete(activeListeners, inbound.Tag)
 			listenersMutex.Unlock()
-			phantomHandlersMu.Lock()
-			delete(phantomHandlers, inbound.Tag)
-			phantomHandlersMu.Unlock()
 			log.Printf("⏹ [Dynamic] Stopped inbound %s", inbound.Tag)
 		}()
 
@@ -783,11 +466,7 @@ func StartInbound(inbound modconfig.InboundConfig, serverConfig *modconfig.Serve
 				continue
 			}
 
-			if phantomHandler != nil {
-				go phantomHandler.HandleConnection(pConn)
-			} else {
-				go handleTCPConnection(pConn, hsHandler)
-			}
+			go handleTCPConnection(pConn, hsHandler)
 		}
 	}()
 
@@ -881,7 +560,12 @@ func main() {
 		cmd := strings.TrimSpace(os.Args[1])
 		switch cmd {
 		case "x25519":
-			priv, pub, err := phantom.GenerateKeyPair()
+			priv := make([]byte, 32)
+			if _, err := rand.Read(priv); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			pub, err := curve25519.X25519(priv, curve25519.Basepoint)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 				os.Exit(1)
@@ -1173,19 +857,9 @@ func createModules(manager *lifecycle.Manager, ctx context.Context) error {
 		log.Printf("╚══════════════════════════════════════════════════════════════╝")
 		log.Printf("  Upstream: %s", serverConfig.UpstreamServer)
 
-		phantomCfg := &phantom.Config{
-			Enabled:            true,
-			ServerNames:        serverConfig.Phantom.ServerNames,
-			PrivateKey:         serverConfig.Phantom.PrivateKey,
-			MaxTimeDiff:        serverConfig.Phantom.MaxTimeDiff,
-			UseRussianService:  serverConfig.Phantom.UseRussianService,
-			RussianServiceName: serverConfig.Phantom.RussianService,
-		}
-
 		bridgeCfg := &relay.BridgeConfig{
 			ListenAddr:     serverConfig.Server.ListenAddr,
 			UpstreamServer: serverConfig.UpstreamServer,
-			PhantomConfig:  phantomCfg,
 		}
 
 		bridge, err := relay.NewBridge(bridgeCfg)
@@ -1657,13 +1331,6 @@ func createModules(manager *lifecycle.Manager, ctx context.Context) error {
 		globalProbeDetector.Start()
 		apiServer.SetProbeDetector(globalProbeDetector)
 
-		phantomHandlersMu.RLock()
-		for _, ph := range phantomHandlers {
-			ph.SetProbeDetector(globalProbeDetector)
-			ph.SetConnGuard(globalProbeDetector.Guard)
-		}
-		phantomHandlersMu.RUnlock()
-		log.Printf("[Server] ProbeDetector propagated to %d phantom handler(s)", len(phantomHandlers))
 	}
 
 	if serverConfig.Chameleon.Enabled && (serverConfig.Chameleon.TLSCert != "" || serverConfig.Chameleon.Domain != "") {

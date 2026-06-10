@@ -24,8 +24,6 @@ import (
 	whisperdns "whispera/internal/dns"
 	"whispera/internal/logger"
 	"whispera/internal/modules/killswitch"
-	"whispera/internal/modules/phantom"
-	"whispera/internal/modules/transport"
 	asnbypass "whispera/internal/modules/transport/asn_bypass"
 	"whispera/internal/modules/transport/chameleon"
 	"whispera/internal/mux"
@@ -172,16 +170,6 @@ func (s TunnelState) String() string {
 	}
 }
 
-type PhantomOptions struct {
-	EnablePhantom       bool
-	PhantomSNI          string
-	PhantomShortId      string
-	PhantomServerPubKey string
-	PhantomPSK          []byte
-	EnableChatFSM        bool
-	ChatFSMCoverInterval time.Duration
-}
-
 type ChameleonOptions struct {
 	EnableChameleon  bool
 	ChameleonAddr    string
@@ -235,7 +223,8 @@ type Config struct {
 	ResidentialProxies []string
 	EnableJA3Randomize bool
 
-	PhantomOptions
+	EnableChatFSM        bool
+	ChatFSMCoverInterval time.Duration
 	ChameleonOptions
 	MLOptions
 	SocialOptions
@@ -419,7 +408,6 @@ type Manager struct {
 
 	obfuscator        interfaces.Obfuscator
 	asnBypassDialer   *asnbypass.Dialer
-	phantomAuth       *phantom.ClientAuth
 	isTransportSecure bool
 
 	transportSecureOverride int32
@@ -535,14 +523,10 @@ func New(cfg *Config) (*Manager, error) {
 	m.initStreamShards()
 	close(m.reconnectDone)
 
-	if cfg.EnableASNBypass || cfg.EnablePhantom || cfg.ForceSNI != "" {
+	if cfg.EnableASNBypass || cfg.ForceSNI != "" {
 		frontDomain := cfg.DomainFrontHost
 		enableSNIMask := false
 
-		if cfg.EnablePhantom && cfg.PhantomSNI != "" {
-			frontDomain = cfg.PhantomSNI
-			enableSNIMask = true
-		}
 		if cfg.ForceSNI != "" {
 			frontDomain = cfg.ForceSNI
 			enableSNIMask = true
@@ -568,17 +552,8 @@ func New(cfg *Config) (*Manager, error) {
 			FallbackStrategies:   []asnbypass.Strategy{asnbypass.StrategyTLSMasquerade, asnbypass.StrategyDomainFronting},
 		}
 
-		if cfg.EnablePhantom {
-			asnConfig.Strategy = asnbypass.StrategyTLSMasquerade
-			asnConfig.FallbackStrategies = nil
-		}
-
 		m.asnBypassDialer = asnbypass.NewDialer(asnConfig)
-		if cfg.EnablePhantom {
-			log.Info("ASN Bypass initialized for Phantom (Forced Strategy: TLSMasquerade)")
-		} else {
-			log.Info("ASN Bypass initialized (Strategy: %v)", cfg.ASNBypassStrategy)
-		}
+		log.Info("ASN Bypass initialized (Strategy: %v)", cfg.ASNBypassStrategy)
 	}
 
 	if cfg.KillSwitchEnabled {
@@ -600,26 +575,6 @@ func New(cfg *Config) (*Manager, error) {
 				})
 			})
 		}
-	}
-
-	if cfg.EnablePhantom {
-		shortId := cfg.PhantomShortId
-		if shortId == "" {
-			shortId = generateRandomShortId()
-			log.Info("Phantom: Auto-generated shortId: %s", shortId)
-		}
-
-		m.phantomAuth = phantom.NewClientAuth(&phantom.ClientConfig{
-			ServerPublicKey: cfg.PhantomServerPubKey,
-			ShortId:         shortId,
-			PrivateKey:      cfg.PhantomPSK,
-		})
-
-		if m.asnBypassDialer != nil {
-			m.asnBypassDialer.SetPhantomAuth(m.phantomAuth)
-		}
-
-		log.Info("Phantom protocol enabled (SNI: %s)", cfg.PhantomSNI)
 	}
 
 	rt := russian.NewRussianTunneler()
@@ -1695,9 +1650,6 @@ func (m *Manager) OpenStream(ctx context.Context, proto byte, addr string, port 
 	m.lastPong = time.Now()
 
 	var proxyStream net.Conn = stream
-	if m.config.EnablePhantom && !m.config.EnableChameleon {
-		proxyStream = transport.WrapStreamTLS(stream)
-	}
 
 	addrBytes := []byte(addr)
 	header := make([]byte, 1+2+len(addrBytes)+2)

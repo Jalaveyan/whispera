@@ -11,24 +11,10 @@ import (
 	"sync/atomic"
 	"time"
 
-	"whispera/internal/modules/transport"
-	"whispera/internal/modules/transport/domainfront"
 	grpc_transport "whispera/internal/modules/transport/grpc"
-	h2c_transport "whispera/internal/modules/transport/h2c"
-	"whispera/internal/modules/transport/httpupgrade"
-	"whispera/internal/modules/transport/meek"
-	"whispera/internal/modules/transport/mirage"
-	"whispera/internal/modules/transport/mtproto"
-	"whispera/internal/modules/transport/obfs4"
 	"whispera/internal/modules/transport/okwebrtc"
 	quic_transport "whispera/internal/modules/transport/quic"
-	"whispera/internal/modules/transport/shadowsocks"
 	shadowtls_transport "whispera/internal/modules/transport/shadowtls"
-	"whispera/internal/modules/transport/snowflake"
-	splithttp_transport "whispera/internal/modules/transport/splithttp"
-	"whispera/internal/modules/transport/tgbot"
-	"whispera/internal/modules/transport/torsocks"
-	tuic_transport "whispera/internal/modules/transport/tuic"
 	"whispera/internal/modules/transport/vkbot"
 	"whispera/internal/modules/transport/vkwebrtc"
 	ws_transport "whispera/internal/modules/transport/websocket"
@@ -96,13 +82,6 @@ var transportEntries = []transportEntry{
 		dial: func(m *Manager) dialFn { return m.dialVKBot },
 	},
 	{
-		name: "tgbot", secure: true,
-		cond: func(only func(string) bool, m *Manager) bool {
-			return only("tgbot") && m.config.TGBotToken != "" && m.config.TGGroupChatID != 0
-		},
-		dial: func(m *Manager) dialFn { return m.dialTGBot },
-	},
-	{
 		name: "cdnworker", secure: true,
 		cond: func(only func(string) bool, m *Manager) bool {
 			return only("cdnworker") && m.config.CDNWorkerURL != ""
@@ -110,58 +89,9 @@ var transportEntries = []transportEntry{
 		dial: func(m *Manager) dialFn { return m.dialCDNWorker },
 	},
 	{
-		name: "meek", secure: true,
-		cond: func(only func(string) bool, m *Manager) bool {
-			return m.config.Transport == "meek" && m.tcfg("url") != ""
-		},
-		dial: func(m *Manager) dialFn { return m.dialMeek },
-	},
-	{
-		name: "torsocks", secure: true,
-		cond: func(only func(string) bool, m *Manager) bool {
-			return m.config.Transport == "torsocks"
-		},
-		dial: func(m *Manager) dialFn { return m.dialTorSOCKS },
-	},
-	{
-		name: "domainfront", secure: true,
-		cond: func(only func(string) bool, m *Manager) bool {
-			return m.config.Transport == "domainfront" && m.tcfg("front_domain") != ""
-		},
-		dial: func(m *Manager) dialFn { return m.dialDomainFront },
-	},
-	{
-		name: "mirage", secure: true,
-		cond: func(only func(string) bool, m *Manager) bool {
-			return only("mirage") && m.tcfg("secret") != ""
-		},
-		dial: func(m *Manager) dialFn { return m.dialMirage },
-	},
-	{
-		name: "mtproto", secure: true,
-		cond: func(only func(string) bool, m *Manager) bool {
-			return only("mtproto") && m.tcfg("mtproto_secret") != ""
-		},
-		dial: func(m *Manager) dialFn { return m.dialMTProto },
-	},
-	{
-		name: "snowflake", secure: true,
-		cond: func(only func(string) bool, m *Manager) bool {
-			return only("snowflake")
-		},
-		dial: func(m *Manager) dialFn { return m.dialSnowflake },
-	},
-	{
-		name: "obfs4", secure: true,
-		cond: func(only func(string) bool, m *Manager) bool {
-			return only("obfs4") && m.tcfg("obfs4_node_id") != "" && m.tcfg("obfs4_public_key") != ""
-		},
-		dial: func(m *Manager) dialFn { return m.dialObfs4 },
-	},
-	{
 		name: "asn_bypass", secure: true,
 		cond: func(only func(string) bool, m *Manager) bool {
-			return m.asnBypassDialer != nil && (m.config.EnableASNBypass || m.config.EnablePhantom)
+			return m.asnBypassDialer != nil && m.config.EnableASNBypass
 		},
 		dial: func(m *Manager) dialFn { return m.dialASNBypass },
 	},
@@ -173,24 +103,10 @@ var transportEntries = []transportEntry{
 		dial: func(m *Manager) dialFn { return m.dialShadowTLS },
 	},
 	{
-		name: "shadowsocks", secure: true,
-		cond: func(only func(string) bool, m *Manager) bool {
-			return m.config.Transport == "shadowsocks" && m.tcfg("password") != "" && m.config.ServerAddrTCP != ""
-		},
-		dial: func(m *Manager) dialFn { return m.dialShadowsocks },
-	},
-	{
-		name: "tuic", secure: true,
-		cond: func(only func(string) bool, m *Manager) bool {
-			return only("tuic")
-		},
-		dial: func(m *Manager) dialFn { return m.dialTUIC },
-	},
-	{
 		name: "quic", secure: true,
 		cond: func(only func(string) bool, m *Manager) bool {
 			auto := m.config.Transport == "auto" || m.config.Transport == ""
-			return only("quic") || (auto && m.config.Transport != "tuic")
+			return only("quic") || auto
 		},
 		dial: func(m *Manager) dialFn { return m.dialQUIC },
 	},
@@ -209,36 +125,13 @@ var transportEntries = []transportEntry{
 		dial: func(m *Manager) dialFn { return m.dialGRPC },
 	},
 	{
-		name: "httpupgrade", secure: false,
-		cond: func(only func(string) bool, m *Manager) bool {
-			return m.config.ServerAddrTCP != "" && only("httpupgrade")
-		},
-		dial: func(m *Manager) dialFn { return m.dialHTTPUpgrade },
-	},
-	{
-		name: "splithttp", secure: false,
-		cond: func(only func(string) bool, m *Manager) bool {
-			return m.config.ServerAddrTCP != "" && only("splithttp")
-		},
-		dial: func(m *Manager) dialFn { return m.dialSplitHTTP },
-	},
-	{
-		name: "h2c", secure: false,
-		cond: func(only func(string) bool, m *Manager) bool {
-			auto := m.config.Transport == "auto" || m.config.Transport == ""
-			return m.config.ServerAddrTCP != "" && (only("h2c") || auto)
-		},
-		dial: func(m *Manager) dialFn { return m.dialH2C },
-	},
-	{
 		name: "tcp", secure: true,
 		cond: func(only func(string) bool, m *Manager) bool {
 			if m.config.ServerAddrTCP == "" {
 				return false
 			}
 			auto := m.config.Transport == "auto" || m.config.Transport == ""
-			phantomViaASN := m.asnBypassDialer != nil && m.config.EnablePhantom
-			return only("tcp") || auto || (m.config.EnablePhantom && !phantomViaASN)
+			return only("tcp") || auto
 		},
 		dial: func(m *Manager) dialFn { return m.dialTCP },
 	},
@@ -270,7 +163,6 @@ func (m *Manager) dialManagedConn(ctx context.Context, id string) (*managedConn,
 		profile := m.tlsAgent.Decide(mlpkg.TLSView{
 			ConsecutiveTLSErrors: tlsErrors,
 			TransportName:        m.config.Transport,
-			IsPhantom:            m.config.EnablePhantom,
 		})
 		if profile != "" {
 			m.config.TLSFingerprint = profile
@@ -289,7 +181,7 @@ func (m *Manager) dialManagedConn(ctx context.Context, id string) (*managedConn,
 
 	conn = evasion.NewDesyncConn(conn, m.config.DesyncConfig)
 
-	if m.handshake != nil && !m.config.EnablePhantom && !m.config.EnableChameleon {
+	if m.handshake != nil && !m.config.EnableChameleon {
 		sess, err := m.handshake.InitiateHandshake(ctx, conn, conn.RemoteAddr())
 		if err != nil {
 			conn.Close()
@@ -303,8 +195,6 @@ func (m *Manager) dialManagedConn(ctx context.Context, id string) (*managedConn,
 		if sess != nil {
 			atomic.StoreUint32(&m.sessionID, sess.ID())
 		}
-	} else if m.config.EnablePhantom {
-		atomic.StoreUint32(&m.sessionID, uint32(time.Now().Unix()&0xFFFFFFFF))
 	}
 
 	if m.tlsAgent != nil {
@@ -338,9 +228,6 @@ func (m *Manager) dialManagedConn(ctx context.Context, id string) (*managedConn,
 	log.Debug("[dialManagedConn:%s] control stream opened, managedConn ready", id)
 
 	var controlStream net.Conn = stream
-	if m.config.EnablePhantom && !m.config.EnableChameleon {
-		controlStream = transport.WrapStreamTLS(stream)
-	}
 
 	var maxAge time.Duration
 	var maxUploadB int64
@@ -374,7 +261,6 @@ func (m *Manager) dial(ctx context.Context) (net.Conn, error) {
 		log.Warn("chameleon dial failed (%v), falling back to standard transports", err)
 	}
 
-	m.preparePhantomASN()
 	candidates := m.buildCandidates()
 	if len(candidates) == 0 {
 		return nil, fmt.Errorf("no transport candidates configured")
@@ -389,23 +275,6 @@ func (m *Manager) dial(ctx context.Context) (net.Conn, error) {
 	}
 
 	return dialer(ctx)
-}
-
-func (m *Manager) preparePhantomASN() {
-	targetSNI := m.getRotationSNI()
-	if m.config.EnablePhantom && m.phantomAuth != nil {
-		log.Info("Phantom protocol active - using SNI: %s", targetSNI)
-		if m.asnBypassDialer != nil {
-			m.asnBypassDialer.SetPhantomConfig(targetSNI, m.phantomAuth)
-		}
-		if m.obfuscator != nil {
-			m.obfuscator.SetRealityKey(m.config.PhantomServerPubKey)
-		}
-	} else {
-		if m.obfuscator != nil {
-			m.obfuscator.SetRealityKey("")
-		}
-	}
 }
 
 func (m *Manager) tcfg(key string) string {
@@ -449,8 +318,7 @@ func (m *Manager) buildCandidates() []dialCandidate {
 		}
 	}
 
-	circumvention := !auto && explicit == nil && (t == "meek" || t == "torsocks" || t == "domainfront")
-	if m.russianTunneler != nil && !circumvention {
+	if m.russianTunneler != nil {
 		svc := m.config.RussianService
 		if svc == "" && auto {
 			services := m.russianTunneler.GetAvailableServices()
@@ -627,27 +495,6 @@ func (m *Manager) dialVKBot(ctx context.Context) (net.Conn, error) {
 	return conn, nil
 }
 
-func (m *Manager) dialTGBot(ctx context.Context) (net.Conn, error) {
-	tr, err := tgbot.New(&tgbot.Config{
-		MyBotToken:  m.config.TGBotToken,
-		GroupChatID: m.config.TGGroupChatID,
-		SessionID:   m.config.TGSessionID,
-		ServerMode:  false,
-	})
-	if err != nil {
-		return nil, err
-	}
-	if err := tr.Start(); err != nil {
-		return nil, err
-	}
-	conn, err := tr.Dial(ctx, m.config.ServerAddr)
-	if err != nil {
-		tr.Stop()
-		return nil, err
-	}
-	return conn, nil
-}
-
 func (m *Manager) dialCDNWorker(ctx context.Context) (net.Conn, error) {
 	wsConn, _, err := websocket.Dial(ctx, m.config.CDNWorkerURL, &websocket.DialOptions{
 		Subprotocols: []string{"whispera"},
@@ -702,28 +549,6 @@ func (m *Manager) dialQUIC(ctx context.Context) (net.Conn, error) {
 	return qTrans.Dial(ctx, udpAddr.String())
 }
 
-func (m *Manager) dialH2C(ctx context.Context) (net.Conn, error) {
-	h2cTrans, err := h2c_transport.New(&h2c_transport.Config{
-		ListenAddr: ":0",
-		Path:       "/",
-	})
-	if err != nil {
-		return nil, err
-	}
-	conn, err := h2cTrans.Dial(ctx, m.config.ServerAddrTCP)
-	if err != nil {
-		return nil, err
-	}
-	if m.config.EnablePhantom && m.phantomAuth != nil {
-		sni := m.getRotationSNI()
-		if err := m.phantomAuth.WrapConn(conn, sni); err != nil {
-			conn.Close()
-			return nil, fmt.Errorf("phantom wrap h2c: %w", err)
-		}
-	}
-	return m.wrapChatFSM(conn), nil
-}
-
 func (m *Manager) dialTCP(ctx context.Context) (net.Conn, error) {
 	conn, err := m.spoofDialer().DialContext(ctx, "tcp4", m.config.ServerAddrTCP)
 	if err != nil {
@@ -733,13 +558,6 @@ func (m *Manager) dialTCP(ctx context.Context) (net.Conn, error) {
 		tcpConn.SetNoDelay(true)
 		tcpConn.SetKeepAlive(true)
 		tcpConn.SetKeepAlivePeriod(20 * time.Second)
-	}
-	if m.config.EnablePhantom && m.phantomAuth != nil {
-		sni := m.getRotationSNI()
-		if err := m.phantomAuth.WrapConn(conn, sni); err != nil {
-			conn.Close()
-			return nil, fmt.Errorf("phantom wrap: %w", err)
-		}
 	}
 	return m.wrapChatFSM(conn), nil
 }
@@ -755,30 +573,6 @@ func (m *Manager) wrapChatFSM(conn net.Conn) net.Conn {
 	var chatID [4]byte
 	_, _ = rand.Read(chatID[:])
 	return marionette.NewChatFSMConn(conn, binary.BigEndian.Uint32(chatID[:]), interval)
-}
-
-func (m *Manager) dialSplitHTTP(ctx context.Context) (net.Conn, error) {
-	baseURL := "http://" + m.config.ServerAddrTCP
-	tr, err := splithttp_transport.New(&splithttp_transport.Config{
-		BaseURL: baseURL,
-	})
-	if err != nil {
-		return nil, err
-	}
-	return tr.Dial(ctx, m.config.ServerAddrTCP)
-}
-
-func (m *Manager) dialTUIC(ctx context.Context) (net.Conn, error) {
-	tr, err := tuic_transport.New(&tuic_transport.Config{
-		ServerAddr:        m.config.ServerAddr,
-		SNI:               m.config.PhantomSNI,
-		UUID:              "00000000000000000000000000000000",
-		CongestionControl: "bbr",
-	})
-	if err != nil {
-		return nil, err
-	}
-	return tr.Dial(ctx, m.config.ServerAddr)
 }
 
 func (m *Manager) dialWebSocket(ctx context.Context) (net.Conn, error) {
@@ -825,16 +619,6 @@ func (m *Manager) dialGRPC(ctx context.Context) (net.Conn, error) {
 	return tr.Dial(ctx, m.config.ServerAddrTCP)
 }
 
-func (m *Manager) dialHTTPUpgrade(ctx context.Context) (net.Conn, error) {
-	tr, err := httpupgrade.New(&httpupgrade.Config{
-		Path: "/",
-	})
-	if err != nil {
-		return nil, err
-	}
-	return tr.Dial(ctx, m.config.ServerAddrTCP)
-}
-
 func (m *Manager) dialShadowTLS(ctx context.Context) (net.Conn, error) {
 	tr, err := shadowtls_transport.New(&shadowtls_transport.Config{
 		Password:     m.tcfg("password"),
@@ -845,66 +629,6 @@ func (m *Manager) dialShadowTLS(ctx context.Context) (net.Conn, error) {
 		return nil, err
 	}
 	return tr.Dial(ctx, m.config.ServerAddrTCP)
-}
-
-func (m *Manager) dialShadowsocks(ctx context.Context) (net.Conn, error) {
-	method := m.tcfg("method")
-	if method == "" {
-		method = "aes-256-gcm"
-	}
-	tr, err := shadowsocks.New(&shadowsocks.Config{
-		Password: m.tcfg("password"),
-		Method:   shadowsocks.Method(method),
-		Server:   m.config.ServerAddrTCP,
-	})
-	if err != nil {
-		return nil, err
-	}
-	return tr.Dial(ctx, m.config.ServerAddrTCP)
-}
-
-func (m *Manager) dialMeek(ctx context.Context) (net.Conn, error) {
-	tr, err := meek.New(&meek.Config{
-		URL:         m.tcfg("url"),
-		FrontDomain: m.tcfg("front"),
-	})
-	if err != nil {
-		return nil, err
-	}
-	return tr.Dial(ctx, m.config.ServerAddr)
-}
-
-func (m *Manager) dialTorSOCKS(ctx context.Context) (net.Conn, error) {
-	torAddr := m.tcfg("tor_addr")
-	if torAddr == "" {
-		torAddr = "127.0.0.1:9050"
-	}
-	tr, err := torsocks.New(&torsocks.Config{TorAddr: torAddr})
-	if err != nil {
-		return nil, err
-	}
-	return tr.Dial(ctx, m.config.ServerAddr)
-}
-
-func (m *Manager) dialDomainFront(ctx context.Context) (net.Conn, error) {
-	mode := m.tcfg("front_mode")
-	if mode == "" {
-		mode = "websocket"
-	}
-	wsPath := m.tcfg("front_ws_path")
-	if wsPath == "" {
-		wsPath = "/ws"
-	}
-	tr, err := domainfront.New(&domainfront.Config{
-		FrontDomain:  m.tcfg("front_domain"),
-		TargetDomain: m.tcfg("target_domain"),
-		Mode:         mode,
-		WSPath:       wsPath,
-	})
-	if err != nil {
-		return nil, err
-	}
-	return tr.Dial(ctx, m.config.ServerAddr)
 }
 
 func (m *Manager) dialYaCloud(ctx context.Context) (net.Conn, error) {
@@ -951,62 +675,4 @@ func (m *Manager) dialOKWebRTC(ctx context.Context) (net.Conn, error) {
 	return tr.Dial(ctx, m.config.ServerAddr)
 }
 
-func (m *Manager) dialMirage(ctx context.Context) (net.Conn, error) {
-	host, portStr, _ := net.SplitHostPort(m.config.ServerAddr)
-	port := 443
-	if portStr != "" {
-		fmt.Sscanf(portStr, "%d", &port)
-	}
-	tr, err := mirage.New(&mirage.Config{
-		Secret:       m.tcfg("secret"),
-		TargetServer: host,
-		TargetPort:   port,
-		SNI:          m.tcfg("mirage_sni"),
-		Fingerprint:  m.tcfg("mirage_fingerprint"),
-	})
-	if err != nil {
-		return nil, err
-	}
-	return tr.Dial(ctx, m.config.ServerAddr)
-}
-
-func (m *Manager) dialMTProto(ctx context.Context) (net.Conn, error) {
-	tr, err := mtproto.New(&mtproto.Config{
-		Secret:        m.tcfg("mtproto_secret"),
-		EnableFakeTLS: m.tcfg("mtproto_faketls") != "false",
-	})
-	if err != nil {
-		return nil, err
-	}
-	return tr.Dial(ctx, m.config.ServerAddr)
-}
-
-func (m *Manager) dialSnowflake(ctx context.Context) (net.Conn, error) {
-	cfg := snowflake.DefaultConfig()
-	if v := m.tcfg("snowflake_broker"); v != "" {
-		cfg.BrokerURL = v
-	}
-	if v := m.tcfg("snowflake_stun"); v != "" {
-		cfg.STUNServer = v
-	}
-	if v := m.tcfg("snowflake_front"); v != "" {
-		cfg.FrontDomain = v
-	}
-	tr, err := snowflake.New(cfg)
-	if err != nil {
-		return nil, err
-	}
-	return tr.Dial(ctx, m.config.ServerAddr)
-}
-
-func (m *Manager) dialObfs4(ctx context.Context) (net.Conn, error) {
-	tr, err := obfs4.New(&obfs4.Config{
-		NodeID:    m.tcfg("obfs4_node_id"),
-		PublicKey: m.tcfg("obfs4_public_key"),
-	})
-	if err != nil {
-		return nil, err
-	}
-	return tr.Dial(ctx, m.config.ServerAddr)
-}
 

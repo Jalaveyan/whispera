@@ -59,7 +59,6 @@ var (
 	tlsFingerprint   = flag.String("tls-fingerprint", "chrome", "TLS fingerprint for ASN bypass: chrome, firefox, safari, ios, android")
 	enableKillSwitch = flag.Bool("kill-switch", false, "Enable kill switch to prevent traffic leaks")
 	allowLAN         = flag.Bool("allow-lan", true, "Allow LAN traffic when kill switch is enabled")
-	phantomKey       = flag.String("phantom-key", "", "Phantom Server Public Key (hex) for REALITY authentication")
 	userKey          = flag.String("user-key", "", "User private key (base64) for ML-mode auth — sets PSK without a full connection key")
 	noInternalTun    = flag.Bool("no-tun", true, "Disable internal TUN (use external like Mihomo)")
 	russianService   = flag.String("russian-service", "", "Enable Russian Service masquerading (e.g. vk_video)")
@@ -143,20 +142,6 @@ func resolveMLToken(cfg *config.ClientConfig) string {
 	}
 	candidates = append(candidates, mlDefaultDataDir()+string(os.PathSeparator)+"api_token")
 
-	for _, p := range candidates {
-		f, err := os.Open(p)
-		if err != nil {
-			continue
-		}
-		b, err := io.ReadAll(f)
-		f.Close()
-		if err == nil {
-			if tok := strings.TrimSpace(string(b)); tok != "" {
-				stdlog.Printf("ML API token loaded from %s", p)
-				return tok
-			}
-		}
-	}
 	stdlog.Printf("WARNING: MLServerURL set but no API token found — requests may be rejected (401)")
 	return ""
 }
@@ -272,14 +257,8 @@ func main() {
 	ctx := lc.Context()
 
 	cryptoMod, _ := crypto.New(nil)
-	lc.Register(cryptoMod)
 
-	obfsProfile := cfg.ObfsPreset
-	if obfsProfile == "" {
-		obfsProfile = "default"
-	}
 	obfsMod, _ := obfuscator.New(&obfuscator.Config{
-		DefaultProfile:           obfsProfile,
 		ThreatLevel:              *obfsLevel,
 		EnableML:                 true,
 		EnableFTE:                true,
@@ -289,10 +268,8 @@ func main() {
 		JitterMinMs:              30,
 		JitterMaxMs:              200,
 	})
-	lc.Register(obfsMod)
 
 	sessMod, _ := session.New(&session.Config{MaxSessions: 10})
-	lc.Register(sessMod)
 
 	hsMod, _ := handshake.New(&handshake.Config{
 		RateLimit: 100,
@@ -306,7 +283,6 @@ func main() {
 	} else {
 		stdlog.Printf("WARNING: Could not load/create device ID: %v", devErr)
 	}
-	lc.Register(hsMod)
 
 	dnsUpstreamAddr := ""
 	if *dnsUpstream != "" && !strings.EqualFold(*dnsUpstream, "system") {
@@ -377,7 +353,6 @@ func main() {
 	socksMod.SetAuthHandler(socksUser, socksPass)
 	stdlog.Printf("SOCKS5 auth enabled (user=%s)", socksUser)
 	socks5.HarvestHook = func(b []byte) { _ = chameleon.HarvestRawClientHello(b) }
-	lc.Register(socksMod)
 
 	dnsMod, _ := dnsmodule.New(&dnsmodule.Config{
 		Upstream:       dnsUpstreamAddr,
@@ -385,7 +360,6 @@ func main() {
 		BypassFunc:     stm.ShouldBypassByHostname,
 		BypassResolver: bypassDNS, // fixed Russian DNS, never goes through VPN tunnel
 	})
-	lc.Register(dnsMod)
 
 	// Determine active transport (key overrides flag).
 	resolvedTransport := cfg.Transport
@@ -432,14 +406,7 @@ func main() {
 		}
 	}
 
-	phantomEnabled := false
-	phantomSNI := "cloudflare.com"
-	phantomShortId := ""
-	phantomServerPubKey := ""
-	var phantomPSK []byte
 	var chameleonSecret []byte
-	chatFSMEnabled := false
-	var chatFSMInterval time.Duration
 
 	if cfg.Phantom != nil && cfg.Phantom.PSK != "" {
 		if pskBytes, err := base64.StdEncoding.DecodeString(cfg.Phantom.PSK); err == nil && len(pskBytes) == 32 {
@@ -450,37 +417,6 @@ func main() {
 	if len(chameleonSecret) == 0 && cfg.ChameleonAddr != "" && cfg.PSK != "" {
 		if pskBytes, err := base64.StdEncoding.DecodeString(cfg.PSK); err == nil && len(pskBytes) == 32 {
 			chameleonSecret = pskBytes
-		}
-	}
-
-	if cfg.Phantom != nil && cfg.Phantom.Enabled {
-		phantomEnabled = true
-		if cfg.Phantom.SNI != "" {
-			phantomSNI = cfg.Phantom.SNI
-		}
-		phantomShortId = cfg.Phantom.ShortId
-		if cfg.Phantom.ServerPublicKey != "" {
-			phantomServerPubKey = cfg.Phantom.ServerPublicKey
-		}
-		if cfg.Phantom.PSK != "" {
-			if pskBytes, err := base64.StdEncoding.DecodeString(cfg.Phantom.PSK); err == nil && len(pskBytes) == 32 {
-				phantomPSK = pskBytes
-			}
-		}
-		chatFSMEnabled = cfg.Phantom.EnableChatFSM
-		if cfg.Phantom.ChatFSMCoverInterval > 0 {
-			chatFSMInterval = time.Duration(cfg.Phantom.ChatFSMCoverInterval) * time.Second
-		}
-	} else if asnBypassEnabled {
-		phantomEnabled = true
-		stdlog.Printf("Auto-enabling Phantom protocol for enhanced DPI evasion")
-	}
-
-	if *phantomKey != "" {
-		phantomServerPubKey = *phantomKey
-		if !phantomEnabled {
-			phantomEnabled = true
-			stdlog.Printf("Force-enabling Phantom protocol due to -phantom-key flag")
 		}
 	}
 
@@ -495,7 +431,6 @@ func main() {
 		activeForceSNI = cfg.ForceSNI
 	}
 	if activeForceSNI != "" {
-		phantomSNI = activeForceSNI
 		globalForceSNI.Store(activeForceSNI)
 		stdlog.Printf("SNI override active: all connections will use SNI=%q", activeForceSNI)
 	}
@@ -565,15 +500,6 @@ func main() {
 			EnableASNBypass:         asnBypassEnabled,
 			TLSFingerprint:          asnBypassFingerprint,
 			EnableJA3Randomize:      true,
-			PhantomOptions: tunnel.PhantomOptions{
-				EnablePhantom:        phantomEnabled,
-				PhantomSNI:           phantomSNI,
-				PhantomShortId:       phantomShortId,
-				PhantomServerPubKey:  phantomServerPubKey,
-				PhantomPSK:           phantomPSK,
-				EnableChatFSM:        chatFSMEnabled,
-				ChatFSMCoverInterval: chatFSMInterval,
-			},
 			ChameleonOptions: tunnel.ChameleonOptions{
 				EnableChameleon:  len(chameleonSecret) == 32,
 				ChameleonSecret:  chameleonSecret,
@@ -634,15 +560,6 @@ func main() {
 			EnableASNBypass:         asnBypassEnabled,
 			TLSFingerprint:          asnBypassFingerprint,
 			EnableJA3Randomize:      true,
-			PhantomOptions: tunnel.PhantomOptions{
-				EnablePhantom:        phantomEnabled,
-				PhantomSNI:           phantomSNI,
-				PhantomShortId:       phantomShortId,
-				PhantomServerPubKey:  phantomServerPubKey,
-				PhantomPSK:           phantomPSK,
-				EnableChatFSM:        chatFSMEnabled,
-				ChatFSMCoverInterval: chatFSMInterval,
-			},
 			ChameleonOptions: tunnel.ChameleonOptions{
 				EnableChameleon:  len(chameleonSecret) == 32,
 				ChameleonSecret:  chameleonSecret,
@@ -773,13 +690,9 @@ func main() {
 	if asnBypassEnabled {
 		stdlog.Printf("ASN bypass enabled (fingerprint: %s)", asnBypassFingerprint)
 	}
-	if phantomEnabled {
-		stdlog.Printf("Phantom protocol enabled (SNI: %s)", phantomSNI)
-	}
 
 	tunnelMod := newTunnelMod(transports[0])
 	tunnelMod.SetDependencies(nil, hsMod, nil, cryptoMod)
-	lc.Register(tunnelMod)
 	tunnelMod.SetObfuscator(obfsMod)
 
 	multiRouter := socks5.NewMultiRouter(tunnelMod)
@@ -804,7 +717,6 @@ func main() {
 		tr := transports[i]
 		m := newTunnelMod(tr)
 		m.SetDependencies(nil, hsMod, nil, cryptoMod)
-		lc.Register(m)
 		m.SetObfuscator(obfsMod)
 
 		_, connCancel := context.WithCancel(ctx)
@@ -905,15 +817,6 @@ func main() {
 			EnableASNBypass:         asnBypassEnabled,
 			TLSFingerprint:          asnBypassFingerprint,
 			EnableJA3Randomize:      true,
-			PhantomOptions: tunnel.PhantomOptions{
-				EnablePhantom:        phantomEnabled,
-				PhantomSNI:           phantomSNI,
-				PhantomShortId:       phantomShortId,
-				PhantomServerPubKey:  phantomServerPubKey,
-				PhantomPSK:           phantomPSK,
-				EnableChatFSM:        chatFSMEnabled,
-				ChatFSMCoverInterval: chatFSMInterval,
-			},
 			ChameleonOptions: tunnel.ChameleonOptions{
 				EnableChameleon:  len(chameleonSecret) == 32,
 				ChameleonSecret:  chameleonSecret,
@@ -941,7 +844,6 @@ func main() {
 		}
 		m.SetDependencies(nil, hsMod, nil, cryptoMod)
 		m.SetObfuscator(obfsMod)
-		lc.Register(m)
 
 		entry := &TransportEntry{
 			ID:               pool.NextID(),
@@ -1083,7 +985,6 @@ func main() {
 			}
 		} else {
 			if host, _, err := net.SplitHostPort(serverAddress); err == nil {
-				os.Setenv("WHISPERA_VPN_SERVER", host)
 				stdlog.Printf("VPN server IP for routing: %s", host)
 			}
 			stdlog.Printf("WARNING: Internal HevTunnel support removed. Use --no-tun=true (default) with Mihomo.")
@@ -1288,7 +1189,6 @@ func main() {
 	go func() {
 		<-sigChan
 		log.Println("Shutting down...")
-		lc.Stop()
 	}()
 
 	log.Println("Client running. Press Ctrl+C to stop.")
@@ -1324,7 +1224,6 @@ func fetchAndApplyMLWeights(ctx context.Context, mgr *tunnel.Manager, weightsURL
 		stdlog.Printf("[ml-sync] fetch failed: %v", err)
 		return
 	}
-	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		stdlog.Printf("[ml-sync] server returned %d", resp.StatusCode)
