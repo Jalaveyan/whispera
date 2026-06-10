@@ -254,6 +254,52 @@ ml:
     listen_addr: ""
     token_file: ""
 ```
+
+## If you need a cascade, I recommend using this instruction
+
+Install a whisper on each relay
+
+```bash
+curl -sSL https://raw.githubusercontent.com/Jalaveyan/Whispera/main/install.sh | bash
+```
+
+Generate keys on each relay
+
+```bash
+whispera keygen 
+```
+
+On the master server, add this to the config.yaml file.
+
+```bash
+outbounds:
+  - tag: relay1
+    protocol: whispera
+    address: RELAY1_IP:443
+    settings:
+      server_pub_key: "RELAY1_PUB_KEY"
+
+  - tag: relay2
+    protocol: whispera
+    address: RELAY2_IP:443
+    settings:
+      server_pub_key: "RELAY2_PUB_KEY"
+
+  - tag: exit
+    protocol: whispera
+    address: REAL_SERVER_IP:443
+    settings:
+      server_pub_key: "REAL_PUB_KEY"
+    chain: ["relay1", "relay2"]   # клиент → relay1 → relay2 → real
+```
+
+Apply config
+
+```bash
+whispera update-checksum /etc/whispera/config.yaml
+systemctl restart whispera
+```
+
 ## Supported platforms - windows, android, linux
 Self-Hosting и
 почему это база?
