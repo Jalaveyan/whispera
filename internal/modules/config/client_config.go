@@ -100,8 +100,6 @@ type ClientConfig struct {
 
 	ASNBypass *ClientASNBypassConfig `yaml:"asn_bypass,omitempty" json:"asn_bypass,omitempty"`
 
-	Phantom *ClientPhantomConfig `yaml:"phantom,omitempty" json:"phantom,omitempty"`
-
 	Transport string `yaml:"transport,omitempty" json:"transport,omitempty"`
 
 	TransportWhitelist []string `yaml:"transport_whitelist,omitempty" json:"transport_whitelist,omitempty"`
@@ -217,17 +215,6 @@ type ClientASNBypassConfig struct {
 	EnableECH          bool     `yaml:"enable_ech" json:"enable_ech"`
 	ConnectionBurst    int      `yaml:"connection_burst" json:"connection_burst"`
 	BurstCooldownMs    int      `yaml:"burst_cooldown_ms" json:"burst_cooldown_ms"`
-}
-
-type ClientPhantomConfig struct {
-	Enabled         bool   `yaml:"enabled" json:"enabled"`
-	SNI             string `yaml:"sni" json:"sni"`
-	ShortId         string `yaml:"short_id" json:"short_id"`
-	ServerPublicKey string `yaml:"server_public_key" json:"server_public_key"`
-	PSK             string `yaml:"psk" json:"psk"`
-
-	EnableChatFSM        bool `yaml:"enable_chat_fsm" json:"enable_chat_fsm"`
-	ChatFSMCoverInterval int  `yaml:"chat_fsm_cover_interval_sec" json:"chat_fsm_cover_interval_sec"`
 }
 
 func LoadClient(path string) (*ClientConfig, error) {

@@ -36,7 +36,6 @@ import (
 	"whispera/internal/modules/config"
 	"whispera/internal/modules/dhcp"
 	"whispera/internal/modules/keylimits"
-	asn_bypass "whispera/internal/modules/transport/asn_bypass"
 	"whispera/internal/network"
 	"whispera/internal/stats"
 
@@ -2152,14 +2151,6 @@ func (s *Server) handleGenerateKeys(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func randomRussianSNI() string {
-	sni, _ := asn_bypass.PickRandomSNI()
-	if sni == "" {
-		return "vk.com"
-	}
-	return sni
-}
-
 func (s *Server) handleGenerateConnectionKey(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAdmin(w, r) {
 		return
@@ -2171,8 +2162,6 @@ func (s *Server) handleGenerateConnectionKey(w http.ResponseWriter, r *http.Requ
 		Obfs            string                 `json:"obfs"`
 		RussianService  string                 `json:"russianService"`
 		PSK             string                 `json:"psk"`
-		SNI             string                 `json:"sni"`
-		PhantomEnabled  bool                   `json:"phantom"`
 		ASNBypass       bool                   `json:"asn"`
 		TLSFingerprint  string                 `json:"tls"`
 		Port            int                    `json:"port"`
@@ -2217,9 +2206,6 @@ func (s *Server) handleGenerateConnectionKey(w http.ResponseWriter, r *http.Requ
 
 	serverAddr := fmt.Sprintf("%s:443", serverIP)
 	serverPubKey := ""
-	phantomEnabled := false
-	matchedInboundSecurity := ""
-	sni := req.SNI
 
 	if s.registry != nil {
 		if configMod, ok := s.registry.Get("config.provider"); ok {
@@ -2243,15 +2229,8 @@ func (s *Server) handleGenerateConnectionKey(w http.ResponseWriter, r *http.Requ
 						}
 						portMatch := req.Port > 0 && inbound.Port == req.Port
 						if matchTransports[network] || portMatch {
-							matchedInboundSecurity = inbound.StreamSettings.Security
 							port := fmt.Sprintf("%d", inbound.Port)
 							serverAddr = fmt.Sprintf("%s:%s", serverIP, port)
-							if pk := inbound.StreamSettings.Phantom.PrivateKey; pk != "" {
-								serverPubKey = derivePublicKeyB64(pk)
-							}
-							if sni == "" && len(inbound.StreamSettings.Phantom.ServerNames) > 0 {
-								sni = inbound.StreamSettings.Phantom.ServerNames[0]
-							}
 							// Auto-populate transport-specific params from inbound config.
 							if (network == "ws" || network == "websocket") && inbound.StreamSettings.WS.Path != "" {
 								if req.TransportConfig == nil {
@@ -2273,9 +2252,6 @@ func (s *Server) handleGenerateConnectionKey(w http.ResponseWriter, r *http.Requ
 							}
 							break
 						}
-					}
-					if serverPubKey == "" && cfg.Phantom.PrivateKey != "" {
-						serverPubKey = derivePublicKeyB64(cfg.Phantom.PrivateKey)
 					}
 					if serverPubKey == "" && cfg.Server.PrivateKey != "" {
 						serverPubKey = derivePublicKeyB64(cfg.Server.PrivateKey)
@@ -2314,10 +2290,6 @@ func (s *Server) handleGenerateConnectionKey(w http.ResponseWriter, r *http.Requ
 		}()
 	}
 
-	phantomEnabled = serverPubKey != "" && (matchedInboundSecurity == "phantom" || matchedInboundSecurity == "reality")
-	if phantomEnabled && sni == "" {
-		sni = randomRussianSNI()
-	}
 	tlsFP := req.TLSFingerprint
 	if tlsFP == "" {
 		tlsFP = "chrome"
@@ -2378,8 +2350,6 @@ func (s *Server) handleGenerateConnectionKey(w http.ResponseWriter, r *http.Requ
 		ObfsProfile:     "vk",
 		EnableML:        true,
 		EnableFTE:       true,
-		PhantomEnabled:  true,
-		PhantomSNI:      sni,
 		EnableASNBypass: true,
 		TLSFingerprint:  tlsFP,
 		RussianService:  req.RussianService,
@@ -2404,8 +2374,6 @@ func (s *Server) handleGenerateConnectionKey(w http.ResponseWriter, r *http.Requ
 		"pub":            userPubKey,
 		"server":         serverAddr,
 		"transport":      req.Transport,
-		"phantom":        phantomEnabled,
-		"sni":            sni,
 		"russianService": req.RussianService,
 	})
 }

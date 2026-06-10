@@ -75,7 +75,7 @@ var (
 	adminTokenFlag   = flag.String("admin-token", "", "Admin token required for privileged control endpoints (e.g. /spoof). Empty = no auth")
 	tlsFragSize      = flag.Int("tls-fragment", 0, "TLS ClientHello fragment size in bytes (0=default 40, range 16-200). Smaller = harder for DPI but more RTT")
 	logFilePath      = flag.String("log-file", "", "Write logs to file (default: in-memory only, no disk storage)")
-	forceSNIFlag     = flag.String("sni", "", "Force custom SNI in TLS ClientHello for all connections (e.g. www.google.com). Overrides phantom/asn-bypass SNI")
+	forceSNIFlag     = flag.String("sni", "", "Force custom SNI in TLS ClientHello for all connections (e.g. www.google.com). Overrides asn-bypass SNI")
 	regionFlag       = flag.String("region", "", "Preferred server region: auto|ru|eu|us|cn (overrides config)")
 	subURL           = flag.String("sub-url", "", "Subscription URL for automatic key refresh (checked every 24h)")
 	subInterval      = flag.Duration("sub-interval", 24*time.Hour, "Subscription refresh interval")
@@ -227,13 +227,9 @@ func main() {
 		cfg.MLToken = *mlTokenFlag
 	}
 
-	if *userKey != "" {
-		if cfg.Phantom == nil {
-			cfg.Phantom = &config.ClientPhantomConfig{}
-		}
-		cfg.Phantom.Enabled = true
-		cfg.Phantom.PSK = *userKey
-		stdlog.Printf("ML mode: user-key PSK set, phantom auth enabled")
+	if *userKey != "" && cfg.PSK == "" {
+		cfg.PSK = *userKey
+		stdlog.Printf("ML mode: user-key PSK set")
 	}
 
 	if cfg.Server == "" && cfg.ServerTCP == "" {
@@ -408,13 +404,7 @@ func main() {
 
 	var chameleonSecret []byte
 
-	if cfg.Phantom != nil && cfg.Phantom.PSK != "" {
-		if pskBytes, err := base64.StdEncoding.DecodeString(cfg.Phantom.PSK); err == nil && len(pskBytes) == 32 {
-			chameleonSecret = pskBytes
-		}
-	}
-	// Keys with phantom:false but chameleon_addr set use the top-level PSK for chameleon.
-	if len(chameleonSecret) == 0 && cfg.ChameleonAddr != "" && cfg.PSK != "" {
+	if cfg.ChameleonAddr != "" && cfg.PSK != "" {
 		if pskBytes, err := base64.StdEncoding.DecodeString(cfg.PSK); err == nil && len(pskBytes) == 32 {
 			chameleonSecret = pskBytes
 		}

@@ -121,7 +121,6 @@ const (
 	TransportObfs4Meek       TransportType = "obfs4+meek"
 	TransportShadowTLSMeek   TransportType = "shadowtls+meek"
 	TransportSSWebSocket     TransportType = "shadowsocks+websocket"
-	TransportVKWebRTCPhantom TransportType = "vkwebrtc+phantom"
 )
 
 

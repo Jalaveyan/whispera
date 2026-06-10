@@ -38,7 +38,7 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
 ```yaml
 server:
     name: whispera-server
-    listen_addr: 0.0.0.0:8443
+    listen_addr: 0.0.0.0:443
     tun_name: tun0
     mtu: 1420
     workers: 8
@@ -121,36 +121,6 @@ relay:
     enable_udp: true
     debug: false
     upstream_proxy: ""
-phantom:
-    enabled: false
-    dest: yandex.ru:443
-    server_names:
-        - tamtam.chat
-        - sberbank.ru
-        - tinkoff.ru
-        - yandex.ru
-        - mail.ru
-        - rambler.ru
-        - ya.ru
-        - vk.com
-        - ok.ru
-        - dzen.ru
-        - max.ru
-        - rutube.ru
-        - ozon.ru
-        - wildberries.ru
-        - avito.ru
-        - mos.ru
-        - gosuslugi.ru
-    private_key: ""
-    short_ids:
-        - ""
-    max_time_diff: 300000
-    fingerprint: <your fingerprint>
-    use_russian_service: false
-    russian_service: ""
-    enable_chat_fsm: false
-    chat_fsm_cover_interval_sec: 0
 chameleon:
     ### chameleon need a tls cert!!!
     enabled: true
@@ -168,7 +138,7 @@ inbounds:
     - tag: default-inbound
       protocol: whispera
       listen: 0.0.0.0
-      port: 8443
+      port: 443
       settings: {}
       stream_settings:
         network: tcp
@@ -176,18 +146,6 @@ inbounds:
         tls:
             cert_file: ""
             key_file: ""
-        phantom:
-            dest: ""
-            server_names: []
-            private_key: ""
-            short_ids: []
-            max_time_diff: 0
-            enable_obfuscation: false
-            obfuscation_profile: ""
-        ws:
-            path: ""
-        h2c:
-            path: ""
       sniffing:
         enabled: false
         dest_override: []

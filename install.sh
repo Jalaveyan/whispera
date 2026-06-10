@@ -1367,36 +1367,6 @@ transport:
   tcp:
     enabled: true
     listen_addr: ":8443"
-  websocket:
-    enabled: false
-    listen_addr: ":8080"
-
-phantom:
-  enabled: true
-  dest: "yandex.ru:443"
-  server_names:
-    - "tamtam.chat"
-    - "sberbank.ru"
-    - "tinkoff.ru"
-    - "yandex.ru"
-    - "mail.ru"
-    - "rambler.ru"
-    - "ya.ru"
-    - "vk.com"
-    - "ok.ru"
-    - "dzen.ru"
-    - "max.ru"
-    - "rutube.ru"
-    - "ozon.ru"
-    - "wildberries.ru"
-    - "avito.ru"
-    - "mos.ru"
-    - "gosuslugi.ru"
-  max_time_diff: 300000
-  fingerprint: "chrome"
-  enable_sni_rotation: true
-  sni_rotation_interval: 900
-  enable_cover_traffic: true
 
 network:
   tun_name: "Whispera"
@@ -1704,14 +1674,6 @@ _enable_ml_in_config() {
     log_success "ML enabled in config.yaml"
 }
 
-_disable_phantom_in_config() {
-    local cfg="${CONF_PATH}/config.yaml"
-    [[ -f "$cfg" ]] || return
-    grep -q "^phantom:" "$cfg" || return
-    sed -i '/^phantom:/,/^[^ ]/{s/enabled: true/enabled: false/}' "$cfg"
-    refresh_config "$cfg"
-    log_success "Phantom disabled in config.yaml"
-}
 
 _enable_chameleon_in_config() {
     local cfg="${CONF_PATH}/config.yaml"
@@ -2046,7 +2008,6 @@ main() {
     setup_nginx_proxy
 
     _enable_chameleon_in_config
-    _disable_phantom_in_config
     refresh_config
     if systemctl is-active whispera &>/dev/null; then
         systemctl restart whispera >/dev/null 2>&1 || true

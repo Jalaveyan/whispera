@@ -411,12 +411,6 @@ func buildServerList(cfg *config.ServerConfig, serverIP string, preferredTranspo
 			entry["ports"] = inbound.AllPorts()
 		}
 
-		if pk := inbound.StreamSettings.Phantom.PrivateKey; pk != "" {
-			entry["public_key"] = derivePublicKeyB64(pk)
-		}
-		if len(inbound.StreamSettings.Phantom.ServerNames) > 0 {
-			entry["server_names"] = inbound.StreamSettings.Phantom.ServerNames
-		}
 		if inbound.StreamSettings.WS.Path != "" {
 			entry["ws_path"] = inbound.StreamSettings.WS.Path
 		}

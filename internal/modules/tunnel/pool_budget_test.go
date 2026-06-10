@@ -20,7 +20,7 @@ func TestPoolConnCap(t *testing.T) {
 		{256, poolCap},
 	}
 	for _, c := range cases {
-		m := &Manager{config: &Config{ChameleonMux: c.mux}}
+		m := &Manager{config: &Config{ChameleonOptions: ChameleonOptions{ChameleonMux: c.mux}}}
 		if got := m.poolConnCap(); got != c.want {
 			t.Errorf("poolConnCap(ChameleonMux=%d)=%d, want %d", c.mux, got, c.want)
 		}
@@ -36,7 +36,7 @@ func TestPoolPlusGameLaneWithinBudget(t *testing.T) {
 }
 
 func TestOpenPoolConnRespectsBudget(t *testing.T) {
-	m := &Manager{config: &Config{EnableChameleon: true}}
+	m := &Manager{config: &Config{ChameleonOptions: ChameleonOptions{EnableChameleon: true}}}
 	m.activePool = make([]*managedConn, m.poolConnCap())
 	before := len(m.activePool)
 	if err := m.openPoolConn(context.Background()); err != nil {

@@ -123,14 +123,6 @@ PYEOF
     log_success "Chameleon enabled in config.yaml"
 }
 
-_disable_phantom_in_config() {
-    local cfg="${CONF_PATH}/config.yaml"
-    [[ -f "$cfg" ]] || return
-    grep -q "^phantom:" "$cfg" || return
-    sed -i '/^phantom:/,/^[^ ]/{s/enabled: true/enabled: false/}' "$cfg"
-    refresh_config "$cfg"
-    log_success "Phantom disabled in config.yaml"
-}
 
 _enable_ml_in_config() {
     local cfg="${CONF_PATH}/config.yaml"
@@ -966,7 +958,6 @@ show_extras_menu() {
         _row " 21.  List registered bridges"
         _row " 22.  SSH OTP       - One-time SSH key for bridge admin (1h)"
         _row " 23.  Panel Password  - Change panel Basic Auth password"
-        _row " 24.  Panel Integrity - Verify panel bundle has not been tampered"
         echo -e "${BLUE}╠${SEP}╣${PLAIN}"
         _row "  OPTIONAL EXTRAS"
         _row "  1.  BBR           - Faster TCP (recommended)"
@@ -990,7 +981,7 @@ show_extras_menu() {
         _row " 16.  View Logs     - Watch live logs"
         _row " 17.  Edit Config   - Modify config.yaml"
         echo -e "${BLUE}╠${SEP}╣${PLAIN}"
-        _row " 18.  Update        - Update Whispera from GitHub"
+        _row " 18.  Update        - Update"
         _row "  0.  Exit"
         echo -e "${BLUE}╚${SEP}╝${PLAIN}"
         echo ""
@@ -1432,7 +1423,6 @@ do_update() {
     _enable_ml_in_config
     _enable_tcp8443_in_config
     _enable_chameleon_in_config
-    _disable_phantom_in_config
 
     if [[ -f "$CONF_PATH/config.yaml" ]]; then
         local MTD

@@ -11,8 +11,8 @@ import (
 	"testing"
 )
 
-// newTestServer поднимает MLServer без сети на in-memory mux и возвращает
-// httptest.Server для удобных HTTP-вызовов. Без TLS и без auth-token.
+// newTestServer РїРѕРґРЅРёРјР°РµС‚ MLServer Р±РµР· СЃРµС‚Рё РЅР° in-memory mux Рё РІРѕР·РІСЂР°С‰Р°РµС‚
+// httptest.Server РґР»СЏ СѓРґРѕР±РЅС‹С… HTTP-РІС‹Р·РѕРІРѕРІ. Р‘РµР· TLS Рё Р±РµР· auth-token.
 func newTestServer(t *testing.T) (*MLServer, *httptest.Server) {
 	t.Helper()
 	dir := t.TempDir()
@@ -25,7 +25,7 @@ func newTestServer(t *testing.T) (*MLServer, *httptest.Server) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	// New() уже вызывает registerRoutes(); повторный вызов панкнет на ServeMux dup.
+	// New() СѓР¶Рµ РІС‹Р·С‹РІР°РµС‚ registerRoutes(); РїРѕРІС‚РѕСЂРЅС‹Р№ РІС‹Р·РѕРІ РїР°РЅРєРЅРµС‚ РЅР° ServeMux dup.
 	ts := httptest.NewServer(srv.mux)
 	t.Cleanup(ts.Close)
 	return srv, ts
@@ -73,23 +73,23 @@ func mustPost(t *testing.T, url string, payload interface{}) []byte {
 	return body
 }
 
-// Полный happy-path:
-//   feedback × N → /federated/export (видит stats) → /federated/import
-//   (усреднил) → /federated/losses (видит loss).
-// Если какой-то из endpoints возвращает пустоту/ошибку — становится понятно
-// какой именно сломан и user сразу видит этот тест в CI.
+// РџРѕР»РЅС‹Р№ happy-path:
+//   feedback Г— N в†’ /federated/export (РІРёРґРёС‚ stats) в†’ /federated/import
+//   (СѓСЃСЂРµРґРЅРёР») в†’ /federated/losses (РІРёРґРёС‚ loss).
+// Р•СЃР»Рё РєР°РєРѕР№-С‚Рѕ РёР· endpoints РІРѕР·РІСЂР°С‰Р°РµС‚ РїСѓСЃС‚РѕС‚Сѓ/РѕС€РёР±РєСѓ вЂ” СЃС‚Р°РЅРѕРІРёС‚СЃСЏ РїРѕРЅСЏС‚РЅРѕ
+// РєР°РєРѕР№ РёРјРµРЅРЅРѕ СЃР»РѕРјР°РЅ Рё user СЃСЂР°Р·Сѓ РІРёРґРёС‚ СЌС‚РѕС‚ С‚РµСЃС‚ РІ CI.
 func TestFederatedRoundTrip(t *testing.T) {
 	srv, ts := newTestServer(t)
 
-	// 1. Подсыпаем feedback для двух transport'ов.
+	// 1. РџРѕРґСЃС‹РїР°РµРј feedback РґР»СЏ РґРІСѓС… transport'РѕРІ.
 	feedbacks := []struct {
 		Transport  string  `json:"transport"`
 		Success    bool    `json:"success"`
 		LatencyMs  float64 `json:"latency_ms"`
 	}{
-		{"phantom-http", true, 120.0},
-		{"phantom-http", true, 90.0},
-		{"phantom-http", false, 5000.0},
+		{"stealth-http", true, 120.0},
+		{"stealth-http", true, 90.0},
+		{"stealth-http", false, 5000.0},
 		{"vkwebrtc", true, 200.0},
 	}
 	for i, f := range feedbacks {
@@ -100,7 +100,7 @@ func TestFederatedRoundTrip(t *testing.T) {
 		t.Fatalf("transportStats want 2, got %d", got)
 	}
 
-	// 2. Export — должен содержать обе transport'а.
+	// 2. Export вЂ” РґРѕР»Р¶РµРЅ СЃРѕРґРµСЂР¶Р°С‚СЊ РѕР±Рµ transport'Р°.
 	exportBody := mustGet(t, ts.URL+"/federated/export")
 	var exp struct {
 		Transports map[string]TransportStats `json:"transports"`
@@ -110,31 +110,31 @@ func TestFederatedRoundTrip(t *testing.T) {
 	if err := json.Unmarshal(exportBody, &exp); err != nil {
 		t.Fatalf("export decode: %v body=%s", err, exportBody)
 	}
-	if _, ok := exp.Transports["phantom-http"]; !ok {
-		t.Fatalf("export: phantom-http missing, body=%s", exportBody)
+	if _, ok := exp.Transports["stealth-http"]; !ok {
+		t.Fatalf("export: stealth-http missing, body=%s", exportBody)
 	}
-	if exp.Transports["phantom-http"].Total != 3 {
-		t.Errorf("phantom-http.Total = %d want 3", exp.Transports["phantom-http"].Total)
+	if exp.Transports["stealth-http"].Total != 3 {
+		t.Errorf("stealth-http.Total = %d want 3", exp.Transports["stealth-http"].Total)
 	}
-	if exp.Transports["phantom-http"].Fail != 1 {
-		t.Errorf("phantom-http.Fail = %d want 1", exp.Transports["phantom-http"].Fail)
+	if exp.Transports["stealth-http"].Fail != 1 {
+		t.Errorf("stealth-http.Fail = %d want 1", exp.Transports["stealth-http"].Fail)
 	}
 
-	// 3. Import — отдаём 'remote' половину. После import local должен усреднить.
+	// 3. Import вЂ” РѕС‚РґР°С‘Рј 'remote' РїРѕР»РѕРІРёРЅСѓ. РџРѕСЃР»Рµ import local РґРѕР»Р¶РµРЅ СѓСЃСЂРµРґРЅРёС‚СЊ.
 	remote := map[string]*TransportStats{
-		"phantom-http": {Success: 100, Fail: 0, Total: 100, TotalLatency: 5000, Count: 100},
+		"stealth-http": {Success: 100, Fail: 0, Total: 100, TotalLatency: 5000, Count: 100},
 	}
 	mustPost(t, ts.URL+"/federated/import", map[string]interface{}{"transports": remote})
 
 	srv.feedbackMu.Lock()
-	avgSuccess := srv.transportStats["phantom-http"].Success
+	avgSuccess := srv.transportStats["stealth-http"].Success
 	srv.feedbackMu.Unlock()
-	// local Success было 2, remote 100 → avg = 51.
+	// local Success Р±С‹Р»Рѕ 2, remote 100 в†’ avg = 51.
 	if avgSuccess != 51 {
-		t.Errorf("after federated import: phantom-http.Success = %d want 51", avgSuccess)
+		t.Errorf("after federated import: stealth-http.Success = %d want 51", avgSuccess)
 	}
 
-	// 4. Losses — для phantom-http должно быть >0 (1 fail из 3).
+	// 4. Losses вЂ” РґР»СЏ stealth-http РґРѕР»Р¶РЅРѕ Р±С‹С‚СЊ >0 (1 fail РёР· 3).
 	lossesBody := mustGet(t, ts.URL+"/federated/losses")
 	var lossesResp struct {
 		LocalLosses map[string]float64 `json:"local_losses"`
@@ -142,11 +142,11 @@ func TestFederatedRoundTrip(t *testing.T) {
 	if err := json.Unmarshal(lossesBody, &lossesResp); err != nil {
 		t.Fatalf("losses decode: %v body=%s", err, lossesBody)
 	}
-	if _, ok := lossesResp.LocalLosses["phantom-http"]; !ok {
-		t.Fatalf("losses: phantom-http missing, body=%s", lossesBody)
+	if _, ok := lossesResp.LocalLosses["stealth-http"]; !ok {
+		t.Fatalf("losses: stealth-http missing, body=%s", lossesBody)
 	}
-	if lossesResp.LocalLosses["phantom-http"] <= 0 {
-		t.Errorf("phantom-http loss = %v should be > 0", lossesResp.LocalLosses["phantom-http"])
+	if lossesResp.LocalLosses["stealth-http"] <= 0 {
+		t.Errorf("stealth-http loss = %v should be > 0", lossesResp.LocalLosses["stealth-http"])
 	}
 }
 

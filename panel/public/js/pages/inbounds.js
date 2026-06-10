@@ -14,7 +14,6 @@ export const inboundsPage = {
         }
         warnEl.style.display = clientOnlyTransports.has(transport) ? '' : 'none';
 
-        const phantomTransports = new Set(['tcp', 'udp', 'ws', 'httpupgrade', 'grpc', 'h2c']);
         const paramsTransports = {
             shadowtls:   { label: 'ShadowTLS параметры', hint: 'password, sni, version', placeholder: '{"password":"secret","sni":"www.apple.com","version":3}' },
             shadowsocks: { label: 'Shadowsocks параметры', hint: 'password, method (aes-256-gcm / chacha20-poly1305)', placeholder: '{"password":"secret","method":"aes-256-gcm"}' },
@@ -33,21 +32,18 @@ export const inboundsPage = {
             torsocks:    { label: 'Tor SOCKS параметры', hint: 'proxy_addr (обычно 127.0.0.1:9050)', placeholder: '{"proxy_addr":"127.0.0.1:9050"}' },
             mirage:      { label: 'Mirage параметры', hint: 'password, fingerprint (chrome/firefox/safari/ios/android/random), dest (fallback TLS-хост)', placeholder: '{"password":"secret","fingerprint":"chrome","dest":"www.google.com:443"}' },
         };
-        const sniGroup = document.getElementById('inbound-sni-group');
         const paramsGroup = document.getElementById('inbound-params-group');
         const paramsLabel = document.getElementById('inbound-params-label');
         const paramsHint = document.getElementById('inbound-params-hint');
         const paramsTA = document.querySelector('[name="params_json"]');
-        if (phantomTransports.has(transport)) {
-            sniGroup.style.display = '';
-            paramsGroup.style.display = 'none';
-        } else {
-            sniGroup.style.display = 'none';
+        const info = paramsTransports[transport];
+        if (info) {
             paramsGroup.style.display = '';
-            const info = paramsTransports[transport] || { label: 'Параметры (JSON)', hint: '', placeholder: '{}' };
             paramsLabel.textContent = info.label;
             paramsHint.textContent = info.hint;
             if (paramsTA) paramsTA.placeholder = info.placeholder;
+        } else {
+            paramsGroup.style.display = 'none';
         }
     },
     collectTransportConfig() {
@@ -62,29 +58,17 @@ export const inboundsPage = {
         const form = document.getElementById('add-inbound-form');
         const raw = Object.fromEntries(new FormData(form));
         const transport = raw.transport || 'tcp';
-        const phantomTransports = new Set(['tcp', 'udp', 'ws', 'httpupgrade', 'grpc', 'h2c']);
-        const usesPhantom = phantomTransports.has(transport);
-        const serverNames = raw.server_names
-            ? raw.server_names.split(',').map(s => s.trim()).filter(Boolean)
-            : [];
         let params = {};
-        if (!usesPhantom && raw.params_json) {
+        if (raw.params_json) {
             try { params = JSON.parse(raw.params_json); } catch { params = {}; }
         }
-        const enableObfuscation = raw.enable_obfuscation === 'on';
-        const obfuscationProfile = raw.obfuscation_profile || 'vk';
         const data = {
             tag: raw.tag,
             protocol: raw.protocol,
             port: parseInt(raw.port),
             stream_settings: {
                 network: transport,
-                security: usesPhantom ? 'phantom' : 'none',
-                phantom: usesPhantom ? {
-                    server_names: serverNames,
-                    enable_obfuscation: enableObfuscation,
-                    obfuscation_profile: enableObfuscation ? obfuscationProfile : undefined,
-                } : undefined,
+                security: 'none',
                 params: Object.keys(params).length > 0 ? params : undefined
             }
         };

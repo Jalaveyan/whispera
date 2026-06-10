@@ -37,9 +37,6 @@ type ConnectionKey struct {
 	DomainFrontHost    string `json:"front_host,omitempty"`
 	ResidentialProxies string `json:"res_proxies,omitempty"`
 
-	PhantomEnabled bool   `json:"phantom,omitempty"`
-	PhantomSNI     string `json:"phantom_sni,omitempty"`
-	PhantomShortID string `json:"phantom_sid,omitempty"`
 	RussianService string `json:"russian_service,omitempty"`
 
 	ChameleonAddr string `json:"chameleon_addr,omitempty"`
@@ -148,17 +145,6 @@ func ParseConnectionKey(key string) (*ConnectionKey, error) {
 		if val := q.Get("profile"); val != "" {
 			ck.ObfsProfile = val
 		}
-		if q.Get("phantom") == "1" || q.Get("phantom") == "true" {
-			ck.PhantomEnabled = true
-		}
-		if val := q.Get("sni"); val != "" {
-			ck.PhantomSNI = val
-			ck.PhantomEnabled = true
-		}
-		if val := q.Get("sid"); val != "" {
-			ck.PhantomShortID = val
-		}
-
 		if q.Get("asn") == "1" || q.Get("asn_bypass") == "1" {
 			ck.EnableASNBypass = true
 		}
@@ -278,16 +264,6 @@ func (ck *ConnectionKey) ToClientConfig() *ClientConfig {
 		cfg.UDPOnly = true
 	}
 
-	if ck.PhantomEnabled {
-		cfg.Phantom = &ClientPhantomConfig{
-			Enabled:         true,
-			SNI:             ck.PhantomSNI,
-			ShortId:         ck.PhantomShortID,
-			ServerPublicKey: ck.ServerPub,
-			PSK:             ck.PSK,
-		}
-	}
-
 	if srv := ck.GetPrimaryServer(); srv != "" {
 		host, _, err := net.SplitHostPort(srv)
 		if err != nil {
@@ -340,9 +316,6 @@ type KeyGenOptions struct {
 	ObfsProfile       string
 	ObfsPreset        string
 	Transport         string
-	PhantomEnabled    bool
-	PhantomSNI        string
-	PhantomShortID    string
 	ASNBypass         bool
 	TLSFingerprint    string
 	DefaultMarionette string
@@ -427,19 +400,8 @@ func parseVLESSKey(raw string) (*ConnectionKey, error) {
 	}
 
 	sec := strings.ToLower(q.Get("security"))
-	sni := q.Get("sni")
-	if sni == "" {
-		sni = q.Get("host")
-	}
-	if sni == "" {
-		sni = host
-	}
-
 	if sec == "reality" || sec == "tls" {
-		ck.PhantomEnabled = true
-		ck.PhantomSNI = sni
 		ck.ServerPub = q.Get("pbk")
-		ck.PhantomShortID = q.Get("sid")
 	}
 
 	tc := make(map[string]interface{})
@@ -501,14 +463,6 @@ func parseVMessKey(raw string) (*ConnectionKey, error) {
 		}
 	}
 
-	sni := v.SNI
-	if sni == "" {
-		sni = v.Host
-	}
-	if sni == "" {
-		sni = v.Add
-	}
-
 	ck := &ConnectionKey{
 		Version:    1,
 		Name:       v.Name,
@@ -516,10 +470,6 @@ func parseVMessKey(raw string) (*ConnectionKey, error) {
 		PSK:        v.ID,
 		Transport:  mapXRayTransport(v.Net),
 		ObfsPreset: "default",
-	}
-	if strings.ToLower(v.TLS) == "tls" {
-		ck.PhantomEnabled = true
-		ck.PhantomSNI = sni
 	}
 	tc := make(map[string]interface{})
 	if v.Path != "" {
@@ -550,22 +500,13 @@ func parseTrojanKey(raw string) (*ConnectionKey, error) {
 		port = "443"
 	}
 	q := u.Query()
-	sni := q.Get("sni")
-	if sni == "" {
-		sni = q.Get("host")
-	}
-	if sni == "" {
-		sni = host
-	}
 	ck := &ConnectionKey{
-		Version:        1,
-		Name:           u.Fragment,
-		Server:         net.JoinHostPort(host, port),
-		PSK:            password,
-		Transport:      mapXRayTransport(q.Get("type")),
-		ObfsPreset:     "default",
-		PhantomEnabled: true,
-		PhantomSNI:     sni,
+		Version:    1,
+		Name:       u.Fragment,
+		Server:     net.JoinHostPort(host, port),
+		PSK:        password,
+		Transport:  mapXRayTransport(q.Get("type")),
+		ObfsPreset: "default",
 	}
 	tc := make(map[string]interface{})
 	if path := q.Get("path"); path != "" {

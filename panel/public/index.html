@@ -560,7 +560,7 @@
                                 </div>
                             </div>
                         </div>
-                        <p class="text-muted small" style="margin-top:10px">После <b>5 неудачных</b> Phantom-аутентификаций IP блокируется на 30 мин.</p>
+                        <p class="text-muted small" style="margin-top:10px">После <b>5 неудачных</b> аутентификаций IP блокируется на 30 мин.</p>
                     </div>
 
                     <!-- Row 5: Appearance -->
@@ -682,7 +682,7 @@
                 <div id="transport-checkboxes" class="checkbox-grid-wrap">
                     <div class="cb-section-label" data-i18n="modal.user.transport.server">Серверные</div>
                     <div class="cb-grid">
-                        <label class="cb-label"><input type="checkbox" name="transport-cb" value="tcp" checked> TCP + Phantom</label>
+                        <label class="cb-label"><input type="checkbox" name="transport-cb" value="tcp" checked> TCP</label>
                         <label class="cb-label"><input type="checkbox" name="transport-cb" value="udp"> UDP</label>
                         <label class="cb-label"><input type="checkbox" name="transport-cb" value="ws"> WebSocket</label>
                         <label class="cb-label"><input type="checkbox" name="transport-cb" value="httpupgrade"> HTTP Upgrade</label>
@@ -711,7 +711,6 @@
                 </div>
             </div>
             <div class="field-group"><label data-i18n="modal.user.port">Порт (опционально)</label><input type="number" id="new-user-port" placeholder="Авто" min="1" max="65535"><span class="field-hint" data-i18n="modal.user.port.hint">Авто-определяется из inbound</span></div>
-            <div class="field-group" id="new-user-sni-group"><label data-i18n="modal.user.sni">SNI (для Phantom/TLS)</label><input type="text" id="new-user-sni" placeholder="Авто (из настроек inbound)"></div>
             <div id="new-user-transport-config" style="display:none">
                 <div class="section-divider"><span id="new-user-tcfg-title" data-i18n="modal.user.transport_params">Параметры транспорта</span><span id="new-user-tcfg-hint" class="label-hint"></span></div>
                 <div id="new-user-tcfg-fields"></div>
@@ -766,7 +765,7 @@
                 <label data-i18n="modal.inbound.transport">Транспорт</label>
                 <select name="transport" onchange="app.onInboundTransportChange(this.value)">
                     <optgroup label="Серверные (работают)" data-i18n-label="modal.inbound.group.server">
-                        <option value="tcp">TCP + Phantom</option>
+                        <option value="tcp">TCP</option>
                         <option value="udp">UDP</option>
                         <option value="ws">WebSocket</option>
                         <option value="httpupgrade">HTTP Upgrade</option>
@@ -802,33 +801,10 @@
                     </optgroup>
                 </select>
             </div>
-            <div class="field-group" id="inbound-sni-group">
-                <label data-i18n="modal.inbound.sni">SNI (через запятую)</label>
-                <input type="text" name="server_names" placeholder="cloudflare.com, google.com">
-                <span class="field-hint" data-i18n="modal.inbound.sni.hint">Только для TCP/WS/HTTP. Пустое поле = allowlist отключён.</span>
-            </div>
             <div class="field-group" id="inbound-params-group" style="display:none">
                 <label id="inbound-params-label">Параметры транспорта</label>
                 <textarea name="params_json" rows="3" class="mono-textarea"></textarea>
                 <span id="inbound-params-hint" class="field-hint"></span>
-            </div>
-            <div class="field-group">
-                <label class="checkbox-label"><input type="checkbox" name="enable_obfuscation" checked><span>Marionette обфускация трафика</span></label>
-                <div id="inbound-obfuscation-profile-row" style="margin-top:8px">
-                    <div class="row-gap">
-                        <span class="text-muted small">Профиль:</span>
-                        <select name="obfuscation_profile" style="flex:1">
-                            <option value="vk" selected>VK</option>
-                            <option value="yandex">Яндекс</option>
-                            <option value="mailru">Mail.ru</option>
-                            <option value="mobile_vk_android">VK Android</option>
-                            <option value="mobile_vk_ios">VK iOS</option>
-                            <option value="websocket">WebSocket</option>
-                            <option value="http2">HTTP/2</option>
-                            <option value="quic">QUIC</option>
-                        </select>
-                    </div>
-                </div>
             </div>
             <div class="modal-foot">
                 <button type="button" class="btn btn-ghost modal-close" data-i18n="common.cancel">Отмена</button>

@@ -158,14 +158,6 @@ type Dialer struct {
 	proxyAttempts   int64
 	successCount    int64
 	failureCount    int64
-
-	phantomSNI  string
-	phantomAuth PhantomAuthProvider
-}
-
-type PhantomAuthProvider interface {
-	GenerateAuthData() ([]byte, error)
-	GenerateSessionID() ([]byte, []byte, error)
 }
 
 func NewDialer(cfg *Config) *Dialer {
@@ -187,12 +179,6 @@ var (
 	globalStickySNI stickySNI
 	globalSNIMu     sync.RWMutex
 )
-
-func (d *Dialer) SetPhantomAuth(auth PhantomAuthProvider) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	d.phantomAuth = auth
-}
 
 func (d *Dialer) DialContext(ctx context.Context, network, addr string) (net.Conn, error) {
 	if !d.checkBurstLimit() {
@@ -347,36 +333,6 @@ func (d *Dialer) dialTLSMasquerade(ctx context.Context, network, addr string) (n
 		}
 	}
 
-	var phantomClientRandom []byte
-	var phantomSessionID []byte
-
-	if d.phantomAuth != nil {
-		cr, sid, err := d.phantomAuth.GenerateSessionID()
-		if err == nil {
-			phantomClientRandom = cr
-			phantomSessionID = sid
-
-			if uconn.HandshakeState.Hello == nil {
-				_ = uconn.BuildHandshakeState()
-			}
-			if uconn.HandshakeState.Hello != nil {
-				uconn.HandshakeState.Hello.SessionId = make([]byte, 32)
-
-				if len(phantomSessionID) == 32 {
-					copy(uconn.HandshakeState.Hello.SessionId, phantomSessionID)
-				} else {
-					rand.Read(uconn.HandshakeState.Hello.SessionId)
-				}
-
-				if len(phantomClientRandom) == 32 {
-					copy(uconn.HandshakeState.Hello.Random[:], phantomClientRandom)
-				}
-			}
-		} else {
-			fmt.Printf("Phantom auth generation failed: %v\n", err)
-		}
-	}
-
 	go func() {
 		_ = uconn.Handshake()
 	}()
@@ -387,20 +343,6 @@ func (d *Dialer) dialTLSMasquerade(ctx context.Context, network, addr string) (n
 		fmt.Printf("[ASN-BYPASS] ClientHello generation failed: %v\n", err)
 		tcpConn.Close()
 		return nil, fmt.Errorf("failed to generate ClientHello: %w", err)
-	}
-
-	if phantomClientRandom != nil && phantomSessionID != nil {
-		if len(clientHello) >= 44+32 {
-			copy(clientHello[11:43], phantomClientRandom)
-
-			sidLen := int(clientHello[43])
-			if sidLen == 32 {
-				copy(clientHello[44:76], phantomSessionID)
-				fmt.Printf("[ASN-BYPASS] Patched ClientHello with Phantom Auth (Random+SessionID)\n")
-			} else {
-				fmt.Printf("[ASN-BYPASS] WARN: Could not patch SessionID - length mismatch (got %d, wanted 32)\n", sidLen)
-			}
-		}
 	}
 
 	fmt.Printf("[ASN-BYPASS] ClientHello generated (%d bytes), sending to server...\n", len(clientHello))
@@ -806,23 +748,6 @@ func (d *Dialer) SetFingerprint(fp string) {
 	d.mu.Lock()
 	d.config.TLSFingerprint = fp
 	d.mu.Unlock()
-}
-
-func (d *Dialer) SetPhantomConfig(sni string, authProvider PhantomAuthProvider) {
-	d.mu.Lock()
-	d.phantomSNI = sni
-	d.phantomAuth = authProvider
-	if sni != "" {
-		d.config.EnableSNIMask = true
-		d.config.FrontDomain = sni
-	}
-	d.mu.Unlock()
-}
-
-func (d *Dialer) GetPhantomSNI() string {
-	d.mu.RLock()
-	defer d.mu.RUnlock()
-	return d.phantomSNI
 }
 
 type domainFrontedConn struct {

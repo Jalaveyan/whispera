@@ -11,7 +11,6 @@ export const usersPage = {
         const marionetteProfile = document.getElementById('new-user-marionette').value;
         const russianService = document.getElementById('new-user-russian').value;
         const transport = Array.from(document.querySelectorAll('input[name="transport-cb"]:checked')).map(i => i.value).join(',') || 'tcp';
-        const sni = document.getElementById('new-user-sni')?.value || '';
         const portVal = parseInt(document.getElementById('new-user-port')?.value) || 0;
 
         try {
@@ -30,8 +29,6 @@ export const usersPage = {
                 const serverTransports = new Set(['tcp', 'udp', 'ws', 'httpupgrade', 'h2c', 'grpc', 'shadowtls', 'shadowsocks']);
                 const existingInbounds = this._cachedInbounds || [];
                 const transportSecurity = {
-                    tcp: 'phantom', udp: 'phantom', ws: 'phantom',
-                    httpupgrade: 'phantom', h2c: 'phantom', grpc: 'phantom',
                     shadowtls: 'shadowtls', shadowsocks: 'shadowsocks',
                 };
                 const transports = transport.split(',').map(t => t.trim()).filter(t => serverTransports.has(t));
@@ -43,7 +40,6 @@ export const usersPage = {
                     });
                     if (!alreadyExists) {
                         const security = transportSecurity[tr] || 'none';
-                        const usesPhantom = security === 'phantom';
                         const tag = transports.length > 1 ? `inbound-${portVal}-${tr}` : `inbound-${portVal}`;
                         try {
                             await api.addInbound({
@@ -53,7 +49,6 @@ export const usersPage = {
                                 stream_settings: {
                                     network: tr,
                                     security,
-                                    phantom: usesPhantom ? { server_names: sni ? [sni] : [] } : undefined,
                                 }
                             });
                             createdInboundTags.push(tag);
@@ -76,7 +71,6 @@ export const usersPage = {
                         psk: privKey,
                         name: email,
                         transport,
-                        sni: sni || undefined,
                         russianService,
                     };
                     if (portVal > 0) keyOpts.port = portVal;
@@ -353,7 +347,6 @@ export const usersPage = {
                             </optgroup>
                         </select>
                         <span style="font-size:11px;opacity:0.5;">Имитирует TLS-паттерны указанного приложения</span>`)}
-                    ${field('SNI (для Phantom/TLS)', `<input id="eu-sni" class="form-control" type="text" value="${escapeHtml(user.sni || '')}" placeholder="авто (из настроек входящего)">`)}
                 </div>
             </div>
             <div class="modal-footer">
@@ -371,7 +364,6 @@ export const usersPage = {
         const obfsProfile = modal.querySelector('#eu-obfs').value;
         const russianService = modal.querySelector('#eu-russian').value;
         const marionetteProfile = modal.querySelector('#eu-marionette')?.value || '';
-        const sni = modal.querySelector('#eu-sni')?.value.trim() || '';
 
         if (!username) { this.showNotification('Email не может быть пустым', 'error'); return; }
 
@@ -384,7 +376,6 @@ export const usersPage = {
                 obfsProfile,
                 russianService,
                 marionetteProfile,
-                sni,
             });
             modal.remove();
             this.showNotification('Пользователь обновлён', 'success');

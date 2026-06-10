@@ -1,7 +1,6 @@
 package apiserver
 
 import (
-	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -75,44 +74,11 @@ func (s *Server) handleAddInbound(w http.ResponseWriter, r *http.Request) {
 		req.StreamSettings.Network = "tcp"
 	}
 	if req.StreamSettings.Security == "" {
-		req.StreamSettings.Security = "phantom"
+		req.StreamSettings.Security = "none"
 	}
 
-	log.Printf("[API] Normalized inbound config: tag=%s, port=%d, network=%s, security=%s, has_phantom_key=%v",
-		req.Tag, req.Port, req.StreamSettings.Network, req.StreamSettings.Security,
-		req.StreamSettings.Phantom.PrivateKey != "")
-
-	isPhantomOrReality := req.StreamSettings.Security == "phantom" || req.StreamSettings.Security == "reality"
-	if isPhantomOrReality && req.StreamSettings.Phantom.PrivateKey == "" {
-		var privKey [32]byte
-		if _, err := rand.Read(privKey[:]); err != nil {
-			log.Printf("[API] Failed to generate random key: %v", err)
-			s.jsonError(w, http.StatusInternalServerError, "Key generation failed")
-			return
-		}
-		req.StreamSettings.Phantom.PrivateKey = base64Encode(privKey[:])
-
-		if req.StreamSettings.Security == "reality" {
-			req.StreamSettings.Reality.PrivateKey = req.StreamSettings.Phantom.PrivateKey
-		}
-
-		log.Printf("[API] Auto-generated unique Private Key for inbound %s (Security: %s)", req.Tag, req.StreamSettings.Security)
-	}
-
-	if isPhantomOrReality && req.StreamSettings.Phantom.Dest == "" {
-		if module, ok := s.registry.Get("config.provider"); ok {
-			if cfgProvider, ok := module.(*config.Provider); ok {
-				globalCfg := cfgProvider.GetConfig()
-				if globalCfg != nil && globalCfg.Phantom.Dest != "" {
-					req.StreamSettings.Phantom.Dest = globalCfg.Phantom.Dest
-					log.Printf("[API] Inherited global Phantom Dest: %s", req.StreamSettings.Phantom.Dest)
-				}
-			}
-		}
-		if req.StreamSettings.Phantom.Dest == "" {
-			req.StreamSettings.Phantom.Dest = "cloudflare.com:443"
-		}
-	}
+	log.Printf("[API] Normalized inbound config: tag=%s, port=%d, network=%s, security=%s",
+		req.Tag, req.Port, req.StreamSettings.Network, req.StreamSettings.Security)
 
 	module, ok := s.registry.Get("config.provider")
 	if !ok {
@@ -345,15 +311,12 @@ func (s *Server) handleGetInboundPublicKey(w http.ResponseWriter, r *http.Reques
 	for i, inbound := range cfg.Inbounds {
 		if inbound.Port == port {
 			foundInbound = &cfg.Inbounds[i]
-			if inbound.StreamSettings.Phantom.PrivateKey != "" {
-				privateKey = inbound.StreamSettings.Phantom.PrivateKey
-			}
 			break
 		}
 	}
 
 	if foundInbound != nil {
-		log.Printf("[API] Found inbound for port %d. Has private key: %v", port, privateKey != "")
+		log.Printf("[API] Found inbound for port %d", port)
 	} else {
 		log.Printf("[API] Inbound for port %d NOT found in current config (Total inbounds: %d)", port, len(cfg.Inbounds))
 		for _, in := range cfg.Inbounds {

@@ -53,9 +53,6 @@ func main() {
 	log.Printf("Server: %s", ck.Server)
 	log.Printf("Profile: %s", ck.ObfsProfile)
 	log.Printf("Transport: %s", ck.Transport)
-	if ck.PhantomEnabled {
-		log.Printf("Phantom: enabled (SNI: %s)", ck.PhantomSNI)
-	}
 	if ck.EnableASNBypass {
 		log.Printf("ASN Bypass: enabled (TLS: %s)", ck.TLSFingerprint)
 	}
@@ -119,11 +116,6 @@ func generateConfig(ck *config.ConnectionKey) string {
 		profile = "vk"
 	}
 
-	phantomSNI := ck.PhantomSNI
-	if phantomSNI == "" {
-		phantomSNI = "cloudflare.com"
-	}
-
 	tlsFP := ck.TLSFingerprint
 	if tlsFP == "" {
 		tlsFP = "chrome"
@@ -147,12 +139,6 @@ obfuscation:
   enabled: true
   profile: "%s"
 
-# Phantom Protocol
-phantom:
-  enabled: %v
-  sni: "%s"
-  short_id: "%s"
-
 # ASN Bypass
 asn_bypass:
   enabled: %v
@@ -174,9 +160,6 @@ auto_reconnect: true
 		ck.ServerPub,
 		*socksPort,
 		profile,
-		ck.PhantomEnabled,
-		phantomSNI,
-		ck.PhantomShortID,
 		ck.EnableASNBypass,
 		tlsFP,
 		ck.DomainFrontHost,

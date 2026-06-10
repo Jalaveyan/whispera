@@ -1,33 +1,13 @@
 inbounds:
-  - tag: "tcp-phantom"
+  - tag: "tcp-main"
     protocol: "whispera"
     listen: "0.0.0.0"
     port: 8444
     stream_settings:
       network: "tcp"
       security: "none"
-      phantom:
-        dest: "cloudflare.com:443"
-        server_names:
-          - "vk.com"
-          - "yandex.ru"
-          - "mail.ru"
-          - "ozon.ru"
-          - "rutube.ru"
-          - "max.ru"
-          - "tamtam.chat"
-          - "messenger.yandex.ru"
-          - "vkuservideo.net"
-          - "2gis.ru"
-          - "avito.ru"
-          - "wildberries.ru"
-          - "sberbank.ru"
-        private_key: "0c728faebc9f9b327da53d7eb0b04f608d779b98958aad76f1fa3fe9bcc68eed"
-        short_ids:
-          - ""
-          - "0123456789abcdef"
 
-  - tag: "websocket-phantom"
+  - tag: "websocket-main"
     protocol: "whispera"
     listen: "0.0.0.0"
     port: 8445
@@ -36,30 +16,10 @@ inbounds:
       security: "none"
       ws:
         path: "/ws"
-      phantom:
-        dest: "cloudflare.com:443"
-        server_names:
-          - "vk.com"
-          - "yandex.ru"
-          - "mail.ru"
-          - "ozon.ru"
-          - "rutube.ru"
-          - "max.ru"
-          - "tamtam.chat"
-          - "messenger.yandex.ru"
-          - "vkuservideo.net"
-          - "2gis.ru"
-          - "avito.ru"
-          - "wildberries.ru"
-          - "sberbank.ru"
-        private_key: "0c728faebc9f9b327da53d7eb0b04f608d779b98958aad76f1fa3fe9bcc68eed"
-        short_ids:
-          - ""
-          - "0123456789abcdef"
 
 transport:
   selector_mode: "auto"
-  
+
   udp:
     enabled: true
     listen_addr: ":8443"
@@ -71,26 +31,26 @@ obfuscation:
   enabled: true
   ml_enabled: true
   default_profile: "ml"
-  
+
 network:
   tun_name: "Whispera"
   tun_ip: "198.18.0.1"
   tun_mtu: 1500
   dns: "1.1.1.1"
-  
+
 session:
   max_sessions: 10000
   idle_timeout: 300
   cleanup_interval: 60
-  
+
 rate_limit:
-  handshake: 100  
+  handshake: 100
   packets: 10000000
-  
+
 logging:
-  level: "info"  
+  level: "info"
   format: "json"
-  
+
 metrics:
   enabled: true
   listen_addr: ":9090"
@@ -101,21 +61,9 @@ api:
   listen_addr: ":8080"
   web_root: "c:/Whispera-main/web"
   enable_cors: true
-  auth_token: "whispera_admin_token" 
+  auth_token: "whispera_admin_token"
   admin_username: "admin"
   admin_password: "admin"
-  
-phantom:
-  enabled: true  
-  dest: "cloudflare.com:443"
-  server_names: []
-  private_key: "0c728faebc9f9b327da53d7eb0b04f608d779b98958aad76f1fa3fe9bcc68eed"
-  short_ids:
-    - ""  
-    - "0123456789abcdef"
-  max_time_diff: 1800000
-  
-  fingerprint: "chrome"
 
 chameleon:
   enabled: true

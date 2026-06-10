@@ -64,7 +64,6 @@ type ServerConfig struct {
 	Metrics        MetricsConfig      `yaml:"metrics"`
 	Logging        LoggingConfig      `yaml:"logging"`
 	Relay          RelayConfig        `yaml:"relay"`
-	Phantom        PhantomConfig      `yaml:"phantom"`
 	Chameleon      ChameleonConfig    `yaml:"chameleon"`
 	Inbounds       []InboundConfig    `yaml:"inbounds" json:"inbounds"`
 	Outbounds      []OutboundConfig   `yaml:"outbounds" json:"outbounds"`
@@ -314,8 +313,6 @@ type StreamConfig struct {
 	Network  string                 `yaml:"network" json:"network"`
 	Security string                 `yaml:"security" json:"security"`
 	TLS      TLSConfig              `yaml:"tls" json:"tls"`
-	Phantom  PhantomStreamConfig    `yaml:"phantom" json:"phantom"`
-	Reality  PhantomStreamConfig    `yaml:"reality,omitempty" json:"reality,omitempty"`
 	WS       WebSocketConfig        `yaml:"ws" json:"ws"`
 	H2C      H2CStreamConfig        `yaml:"h2c" json:"h2c"`
 	Params   map[string]interface{} `yaml:"params,omitempty" json:"params,omitempty"`
@@ -324,16 +321,6 @@ type StreamConfig struct {
 type TLSConfig struct {
 	CertFile string `yaml:"cert_file" json:"cert_file"`
 	KeyFile  string `yaml:"key_file" json:"key_file"`
-}
-
-type PhantomStreamConfig struct {
-	Dest               string   `yaml:"dest" json:"dest"`
-	ServerNames        []string `yaml:"server_names" json:"server_names"`
-	PrivateKey         string   `yaml:"private_key" json:"private_key"`
-	ShortIds           []string `yaml:"short_ids" json:"short_ids"`
-	MaxTimeDiff        int      `yaml:"max_time_diff" json:"max_time_diff"`
-	EnableObfuscation  bool     `yaml:"enable_obfuscation" json:"enable_obfuscation"`
-	ObfuscationProfile string   `yaml:"obfuscation_profile" json:"obfuscation_profile"`
 }
 
 type WebSocketConfig struct {
@@ -347,29 +334,6 @@ type H2CStreamConfig struct {
 type SniffingConfig struct {
 	Enabled      bool     `yaml:"enabled" json:"enabled"`
 	DestOverride []string `yaml:"dest_override" json:"dest_override"`
-}
-
-type PhantomConfig struct {
-	Enabled bool `yaml:"enabled" json:"enabled"`
-
-	Dest string `yaml:"dest" json:"dest"`
-
-	ServerNames []string `yaml:"server_names" json:"server_names"`
-
-	PrivateKey string `yaml:"private_key" json:"private_key"`
-
-	ShortIds []string `yaml:"short_ids" json:"short_ids"`
-
-	MaxTimeDiff int `yaml:"max_time_diff" json:"max_time_diff"`
-
-	Fingerprint string `yaml:"fingerprint" json:"fingerprint"`
-
-	UseRussianService bool `yaml:"use_russian_service" json:"use_russian_service"`
-
-	RussianService string `yaml:"russian_service" json:"russian_service"`
-
-	EnableChatFSM        bool `yaml:"enable_chat_fsm" json:"enable_chat_fsm"`
-	ChatFSMCoverInterval int  `yaml:"chat_fsm_cover_interval_sec" json:"chat_fsm_cover_interval_sec"`
 }
 
 type ChameleonConfig struct {
@@ -539,7 +503,7 @@ func DefaultServerConfig() *ServerConfig {
 				Port:     8443,
 				StreamSettings: StreamConfig{
 					Network:  "tcp",
-					Security: "reality",
+					Security: "none",
 				},
 			},
 		},
@@ -579,15 +543,6 @@ func DefaultServerConfig() *ServerConfig {
 			EnableTCP:  true,
 			EnableUDP:  true,
 			Debug:      false,
-		},
-		Phantom: PhantomConfig{
-			Enabled:     false,
-			Dest:        "",
-			ServerNames: []string{},
-			PrivateKey:  "",
-			ShortIds:    []string{""},
-			MaxTimeDiff: 300000,
-			Fingerprint: "chrome",
 		},
 		Bot: BotConfig{
 			Enabled:         false,

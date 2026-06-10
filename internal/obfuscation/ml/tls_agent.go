@@ -40,7 +40,6 @@ const (
 type TLSView struct {
 	ConsecutiveTLSErrors int
 	TransportName        string
-	IsPhantom            bool
 }
 
 type RLTLSAgent struct {
@@ -98,9 +97,6 @@ func (a *RLTLSAgent) encodeState(v TLSView) []float64 {
 	hour := float64(time.Now().Hour()) + float64(time.Now().Minute())/60.0
 	s[2] = math.Sin(2 * math.Pi * hour / 24.0)
 	s[3] = math.Cos(2 * math.Pi * hour / 24.0)
-	if v.IsPhantom {
-		s[4] = 1.0
-	}
 	return s
 }
 

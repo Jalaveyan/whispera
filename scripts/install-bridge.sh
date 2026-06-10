@@ -17,11 +17,6 @@ BRIDGE_TYPE="operator"
 PROVIDER="unknown"
 REGION="auto"
 LISTEN_PORT="443"
-RUSSIAN_SERVICE="vk"
-DEST_SITE=""
-ENABLE_OBFUSCATION="false"
-ENABLE_SNI_ROTATION="true"
-ENABLE_COVER_TRAFFIC="true"
 INSTALL_DIR="/usr/local/bin"
 CONFIG_DIR="/etc/whispera"
 
@@ -38,26 +33,6 @@ while [[ $# -gt 0 ]]; do
         --port)
             LISTEN_PORT="$2"
             shift 2
-            ;;
-        --russian-service)
-            RUSSIAN_SERVICE="$2"
-            shift 2
-            ;;
-        --dest)
-            DEST_SITE="$2"
-            shift 2
-            ;;
-        --obfuscation)
-            ENABLE_OBFUSCATION="true"
-            shift
-            ;;
-        --sni-rotation)
-            ENABLE_SNI_ROTATION="true"
-            shift
-            ;;
-        --cover-traffic)
-            ENABLE_COVER_TRAFFIC="true"
-            shift
             ;;
         --region)
             REGION="$2"
@@ -118,7 +93,6 @@ log_info "Main Server: $MAIN_SERVER"
 log_info "Bridge Type: $BRIDGE_TYPE"
 log_info "Provider: $PROVIDER"
 log_info "Listen Port: $LISTEN_PORT"
-log_info "Russian Service: $RUSSIAN_SERVICE"
 
 if [ "$EUID" -ne 0 ]; then
     log_error "Please run as root (sudo)"
@@ -176,9 +150,6 @@ fi
 chmod +x "$INSTALL_DIR/whispera-bridge"
 
 log_info "Generating keys..."
-PRIVATE_KEY=$("$INSTALL_DIR/whispera-bridge" x25519 2>/dev/null | grep "Private Key:" | awk '{print $3}')
-[ -z "$PRIVATE_KEY" ] && PRIVATE_KEY=$(openssl rand -base64 32)
-
 log_info "Creating configuration..."
 cat > "$CONFIG_DIR/bridge.yaml" <<EOF
 
@@ -193,16 +164,6 @@ bridge:
   type: ${BRIDGE_TYPE}
   provider: ${PROVIDER}
   registration_token: "${REG_TOKEN}"
-
-phantom:
-  enabled: true
-  private_key: "${PRIVATE_KEY}"
-  use_russian_service: true
-  russian_service_name: ${RUSSIAN_SERVICE}
-  dest: "${DEST_SITE}"
-  enable_obfuscation: ${ENABLE_OBFUSCATION}
-  enable_sni_rotation: ${ENABLE_SNI_ROTATION}
-  enable_cover_traffic: ${ENABLE_COVER_TRAFFIC}
 
 logging:
   level: info
