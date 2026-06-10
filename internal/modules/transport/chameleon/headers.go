@@ -3,19 +3,33 @@ package chameleon
 import (
 	"math/rand"
 	"net/http"
+	"strings"
+
+	utls "github.com/refraction-networking/utls"
 )
 
-var mobileUserAgents = []string{
-	"Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.6367.82 Mobile Safari/537.36",
-	"Mozilla/5.0 (Linux; Android 14; Pixel 8 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.6422.53 Mobile Safari/537.36",
-	"Mozilla/5.0 (Linux; Android 14; SM-S928B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.6367.179 Mobile Safari/537.36",
-	"Mozilla/5.0 (Linux; Android 14; SM-A546B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.6367.82 Mobile Safari/537.36",
-	"Mozilla/5.0 (Linux; Android 13; Pixel 7 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.6312.99 Mobile Safari/537.36",
-	"Mozilla/5.0 (Linux; Android 13; Redmi Note 12) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.6367.82 Mobile Safari/537.36",
-	"Mozilla/5.0 (Linux; Android 14; M2101K6G) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.6422.53 Mobile Safari/537.36",
-	"Mozilla/5.0 (Linux; Android 13; SM-G991B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.6367.179 Mobile Safari/537.36",
-	"Mozilla/5.0 (Linux; Android 12; moto g82 5G) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.6312.99 Mobile Safari/537.36",
-	"Mozilla/5.0 (Linux; Android 14; CPH2609) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.6367.82 Mobile Safari/537.36",
+var chromeDesktopUAs = []string{
+	"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
+	"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.6778.205 Safari/537.36",
+	"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
+	"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
+}
+
+var chromeMobileUAs = []string{
+	"Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.6943.53 Mobile Safari/537.36",
+	"Mozilla/5.0 (Linux; Android 14; SM-S928B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.6778.260 Mobile Safari/537.36",
+	"Mozilla/5.0 (Linux; Android 14; M2101K6G) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.6943.53 Mobile Safari/537.36",
+}
+
+var firefoxDesktopUAs = []string{
+	"Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:148.0) Gecko/20100101 Firefox/148.0",
+	"Mozilla/5.0 (Macintosh; Intel Mac OS X 14.7; rv:148.0) Gecko/20100101 Firefox/148.0",
+	"Mozilla/5.0 (X11; Linux x86_64; rv:148.0) Gecko/20100101 Firefox/148.0",
+}
+
+var safariDesktopUAs = []string{
+	"Mozilla/5.0 (Macintosh; Intel Mac OS X 14_7_4) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.3 Safari/605.1.15",
+	"Mozilla/5.0 (Macintosh; Intel Mac OS X 13_7_4) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4.1 Safari/605.1.15",
 }
 
 var acceptLanguages = []string{
@@ -31,8 +45,26 @@ var acceptLanguages = []string{
 	"ar-SA,ar;q=0.9,en;q=0.8",
 }
 
+func uaForFingerprint(id utls.ClientHelloID) string {
+	client := strings.ToLower(id.Client)
+	if strings.Contains(client, "firefox") {
+		return firefoxDesktopUAs[rand.Intn(len(firefoxDesktopUAs))]
+	}
+	if strings.Contains(client, "safari") {
+		return safariDesktopUAs[rand.Intn(len(safariDesktopUAs))]
+	}
+	if strings.Contains(client, "android") || strings.Contains(client, "ios") || strings.Contains(client, "mobile") {
+		return chromeMobileUAs[rand.Intn(len(chromeMobileUAs))]
+	}
+	return chromeDesktopUAs[rand.Intn(len(chromeDesktopUAs))]
+}
+
 func applyBrowserHeaders(req *http.Request, origin string) {
-	ua := mobileUserAgents[rand.Intn(len(mobileUserAgents))]
+	detectOnce.Do(func() {
+		detectedBrowserID = detectDefaultBrowserID()
+	})
+
+	ua := uaForFingerprint(detectedBrowserID)
 	lang := acceptLanguages[rand.Intn(len(acceptLanguages))]
 
 	req.Header.Set("User-Agent", ua)
