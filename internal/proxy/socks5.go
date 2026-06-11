@@ -208,10 +208,8 @@ func (s *SOCKS5Server) handleHandshake(conn net.Conn) error {
 		}
 	}
 
-	if s.authHandler != nil {
-		if hasUsernamePass {
-			selectedMethod = socks5MethodUsernamePass
-		}
+	if s.authHandler != nil && hasUsernamePass {
+		selectedMethod = socks5MethodUsernamePass
 	} else if hasNoAuth {
 		selectedMethod = socks5MethodNoAuth
 	}
