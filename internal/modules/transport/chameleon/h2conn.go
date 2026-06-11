@@ -219,6 +219,9 @@ func (c *httpStreamConn) Write(b []byte) (int, error) {
 	if n > 0 {
 		atomic.AddInt64(&c.downBytes, int64(n))
 	}
+	if err == nil {
+		c.flush()
+	}
 	return n, err
 }
 func (c *httpStreamConn) FlushWrite() {

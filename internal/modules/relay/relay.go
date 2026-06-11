@@ -406,7 +406,7 @@ func (s *Server) serveTunnel(conn net.Conn, streamObf bool, usePadding bool) {
 	}
 	defer session.Close()
 
-	s.log.Debug("Tunnel session ready for %s", clientID)
+	s.log.Info("Tunnel session ready for %s", clientID)
 
 	firstStream := true
 	s.log.Debug("waiting for first stream from %s", clientID)
@@ -428,7 +428,7 @@ func (s *Server) serveTunnel(conn net.Conn, streamObf bool, usePadding bool) {
 		}
 		if firstStream {
 			firstStream = false
-			s.log.Debug("control stream (1) accepted from %s", clientID)
+			s.log.Info("control stream (1) accepted from %s", clientID)
 			if streamObf {
 				go io.Copy(io.Discard, transport.WrapStreamTLS(stream))
 			} else {
@@ -501,7 +501,7 @@ func (s *Server) handleProxyStream(stream net.Conn) {
 	addr := string(rest[:addrLen])
 	port := binary.BigEndian.Uint16(rest[addrLen:])
 
-	s.log.Debug("proxy stream: %s:%d", addr, port)
+	s.log.Info("proxy stream: %s:%d", addr, port)
 	streamStart := time.Now()
 
 	network := "tcp"
