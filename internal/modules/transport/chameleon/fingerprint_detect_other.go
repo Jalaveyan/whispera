@@ -3,6 +3,7 @@
 package chameleon
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"runtime"
@@ -16,9 +17,10 @@ func detectDefaultBrowserID() utls.ClientHelloID {
 		return mapBrowserToFingerprint(b)
 	}
 
+	ctx := context.Background()
 	switch runtime.GOOS {
 	case "linux":
-		if out, err := exec.Command("xdg-mime", "query", "default", "x-scheme-handler/https").Output(); err == nil {
+		if out, err := exec.CommandContext(ctx, "xdg-mime", "query", "default", "x-scheme-handler/https").Output(); err == nil {
 			return mapBrowserToFingerprint(strings.TrimSpace(string(out)))
 		}
 		for _, candidate := range []string{"google-chrome", "chromium", "firefox", "safari"} {
@@ -27,7 +29,7 @@ func detectDefaultBrowserID() utls.ClientHelloID {
 			}
 		}
 	case "darwin":
-		out, err := exec.Command("defaults", "read", "com.apple.LaunchServices/com.apple.launchservices.secure", "LSHandlers").Output()
+		out, err := exec.CommandContext(ctx, "defaults", "read", "com.apple.LaunchServices/com.apple.launchservices.secure", "LSHandlers").Output()
 		if err == nil {
 			s := string(out)
 			if strings.Contains(strings.ToLower(s), "firefox") {

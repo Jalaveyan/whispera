@@ -136,11 +136,18 @@ func resolveMLToken(cfg *config.ClientConfig) string {
 		return cfg.MLToken
 	}
 
-	candidates := []string{}
+	candidates := []string{mlDefaultDataDir() + string(os.PathSeparator) + "api_token"}
 	if cfg.MLTokenFile != "" {
-		candidates = append(candidates, cfg.MLTokenFile)
+		candidates = append([]string{cfg.MLTokenFile}, candidates...)
 	}
-	candidates = append(candidates, mlDefaultDataDir()+string(os.PathSeparator)+"api_token")
+
+	for _, path := range candidates {
+		if data, err := os.ReadFile(path); err == nil {
+			if tok := strings.TrimSpace(string(data)); tok != "" {
+				return tok
+			}
+		}
+	}
 
 	stdlog.Printf("WARNING: MLServerURL set but no API token found — requests may be rejected (401)")
 	return ""

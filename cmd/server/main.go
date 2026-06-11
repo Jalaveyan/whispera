@@ -93,43 +93,7 @@ func (c *prependConn) Read(b []byte) (int, error) {
 	return c.Conn.Read(b)
 }
 
-// chanListener delivers pre-accepted connections to h2c when sharing a TCP port.
-type chanListener struct {
-	ch   chan net.Conn
-	addr net.Addr
-	once sync.Once
-	done chan struct{}
-}
 
-func (l *chanListener) Accept() (net.Conn, error) {
-	select {
-	case conn, ok := <-l.ch:
-		if !ok {
-			return nil, fmt.Errorf("listener closed")
-		}
-		return conn, nil
-	case <-l.done:
-		return nil, fmt.Errorf("listener closed")
-	}
-}
-
-func (l *chanListener) Close() error {
-	l.once.Do(func() { close(l.done) })
-	return nil
-}
-
-func (l *chanListener) Addr() net.Addr { return l.addr }
-
-// findListenerByAddr returns the active listener bound to addr.
-// Must be called with listenersMutex held.
-func findListenerByAddr(addr string) net.Listener {
-	for _, l := range activeListeners {
-		if l.Addr().String() == addr {
-			return l
-		}
-	}
-	return nil
-}
 
 var globalProbeDetector *probedetector.Detector
 
@@ -1330,7 +1294,6 @@ func createModules(manager *lifecycle.Manager, ctx context.Context) error {
 		globalProbeDetector = probedetector.New(probedetector.DefaultConfig())
 		globalProbeDetector.Start()
 		apiServer.SetProbeDetector(globalProbeDetector)
-
 	}
 
 	if serverConfig.Chameleon.Enabled && (serverConfig.Chameleon.TLSCert != "" || serverConfig.Chameleon.Domain != "") {

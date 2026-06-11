@@ -85,7 +85,9 @@ func (r *GANRunner) loop() {
 			}
 		case <-saveTicker.C:
 			if r.savePath != "" {
-				r.gan.Save(r.savePath)
+				if err := r.gan.Save(r.savePath); err != nil {
+					log.Error("GAN: save state failed: %v", err)
+				}
 			}
 		}
 	}

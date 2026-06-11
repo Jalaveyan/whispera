@@ -72,7 +72,7 @@ type ganState struct {
 	TrainCount    int64           `json:"train_count"`
 	DecoyFeatures [][]float64     `json:"decoy_features,omitempty"`
 	DecoyScores   []float64       `json:"decoy_scores,omitempty"`
-	DecoyReplay   [][]float64     `json:"decoy_replay,omitempty"` // legacy
+	DecoyReplay   [][]float64     `json:"decoy_replay,omitempty"`
 }
 
 func (g *TrafficGAN) Save(path string) error {
@@ -179,7 +179,6 @@ func (g *TrafficGAN) addDecoy(features []float64, score float64) {
 		g.decoyReplay = append(g.decoyReplay, d)
 		return
 	}
-	// Вытесняем худший элемент (индекс 0 — минимальный score после sort)
 	if score > g.decoyReplay[0].score {
 		g.decoyReplay[0] = d
 		for i := 0; i < len(g.decoyReplay)-1; i++ {
@@ -221,7 +220,6 @@ func (g *TrafficGAN) Train(lf LabeledFlow) {
 		g.lastTunnelX = append([]float64(nil), x...)
 		g.TunnelConfidence = 0.95*g.TunnelConfidence + 0.05*pred
 		if n := len(g.decoyReplay); n > 0 {
-			// Выбираем из верхней половины (лучшие декои)
 			topStart := n / 2
 			idx := topStart + mrand.Intn(n-topStart)
 			g.trainDiscOnDecoy(g.decoyReplay[idx].features)
@@ -243,15 +241,17 @@ func (g *TrafficGAN) Train(lf LabeledFlow) {
 	gLossGrad := -(1.0 - predAdv)
 	dqnBackpropAdam(g.gen, g.genAdam, gActs, []float64{gLossGrad, gLossGrad, gLossGrad}, 0.0005)
 
-	// Не шейпить мелкие пакеты — это порождало петлю дросселирования
 	if lf.Features.SizeMean < 200 {
 		action.SegShrink = 0
 	}
-	// EMA-сглаживание: исключает резкие скачки действий генератора
 	const alpha = 0.15
-	g.smoothed.PaddingFrac = alpha*action.PaddingFrac + (1-alpha)*g.smoothed.PaddingFrac
-	g.smoothed.SleepMs = alpha*action.SleepMs + (1-alpha)*g.smoothed.SleepMs
-	g.smoothed.SegShrink = alpha*action.SegShrink + (1-alpha)*g.smoothed.SegShrink
+	if g.TunnelConfidence < 0.4 {
+		g.smoothed = GeneratorAction{}
+	} else {
+		g.smoothed.PaddingFrac = alpha*action.PaddingFrac + (1-alpha)*g.smoothed.PaddingFrac
+		g.smoothed.SleepMs = alpha*action.SleepMs + (1-alpha)*g.smoothed.SleepMs
+		g.smoothed.SegShrink = alpha*action.SegShrink + (1-alpha)*g.smoothed.SegShrink
+	}
 
 	g.trainCount++
 }
@@ -262,6 +262,9 @@ func (g *TrafficGAN) Decide(f FlowFeatures) GeneratorAction {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
 	if g.trainCount < GANDecideThreshold {
+		return GeneratorAction{}
+	}
+	if g.TunnelConfidence < 0.4 {
 		return GeneratorAction{}
 	}
 	return g.smoothed
@@ -370,7 +373,6 @@ func (g *TrafficGAN) Diagnostics() (tunnelConf, decoyConf float64, trainCount in
 	return
 }
 
-// ── Feature normalizer ────────────────────────────────────────────────────────
 
 type ganNorm struct {
 	mean []float64
@@ -406,7 +408,6 @@ func (n *ganNorm) normalise(x []float64) []float64 {
 	return out
 }
 
-// ── helpers ───────────────────────────────────────────────────────────────────
 
 func sigmoid64(x float64) float64 {
 	return 1.0 / (1.0 + math.Exp(-x))
