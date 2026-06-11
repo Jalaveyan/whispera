@@ -2239,10 +2239,17 @@ func (s *Server) handleGenerateConnectionKey(w http.ResponseWriter, r *http.Requ
 							matchTransports[strings.TrimSpace(p)] = true
 						}
 					}
+					chmPort := 0
+					if cfg.Chameleon.Enabled {
+						chmPort = portOf(cfg.Chameleon.ListenAddr)
+					}
 					for _, inbound := range cfg.Inbounds {
 						network := inbound.StreamSettings.Network
 						if network == "" {
 							network = "tcp"
+						}
+						if chmPort != 0 && inbound.Port == chmPort {
+							continue
 						}
 						portMatch := req.Port > 0 && inbound.Port == req.Port
 						if matchTransports[network] || portMatch {

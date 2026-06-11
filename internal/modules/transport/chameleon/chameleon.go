@@ -426,9 +426,12 @@ func handleClientStream(w http.ResponseWriter, r *http.Request, cfg *ServerConfi
 
 	secret, userID := resolveSecret(cfg, token, sessionID)
 	if secret == nil {
+		log.Printf("chameleon: stream auth failed from %s", r.RemoteAddr)
 		serveDecoy(w, r, cfg)
 		return
 	}
+
+	log.Printf("chameleon: stream authenticated user=%s from %s", userID, r.RemoteAddr)
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {

@@ -25,7 +25,6 @@ import (
 	"golang.org/x/crypto/curve25519"
 	"golang.org/x/net/proxy"
 
-	"whispera/internal/bond"
 	"whispera/internal/cache"
 	"whispera/internal/core/base"
 	"whispera/internal/core/events"
@@ -242,6 +241,13 @@ func StartInbound(inbound modconfig.InboundConfig, serverConfig *modconfig.Serve
 
 	listenAddr := fmt.Sprintf("%s:%d", inbound.Listen, inbound.Port)
 	network := inbound.StreamSettings.Network
+
+	if serverConfig.Chameleon.Enabled {
+		if _, chmPort, err := net.SplitHostPort(serverConfig.Chameleon.ListenAddr); err == nil && chmPort != "" && strconv.Itoa(inbound.Port) == chmPort {
+			log.Printf("⚠ [Dynamic] Inbound %s port %d reserved by chameleon — skipping", inbound.Tag, inbound.Port)
+			return nil
+		}
+	}
 
 	log.Printf("🚀 [Dynamic] Starting inbound %s (%s) on %s", inbound.Tag, network, listenAddr)
 
@@ -1330,8 +1336,6 @@ func createModules(manager *lifecycle.Manager, ctx context.Context) error {
 			log.Printf("[GAN] pcap collector started on %s:%d", ganIface, ganPort)
 		}
 
-		bondCoord := bond.NewCoordinator()
-
 		cCfg := &chameleon.ServerConfig{
 			GANDecide: func(iatMean, sizeMean, upRatio float64) chameleon.GANAction {
 				a := ganRunner.GAN().Decide(mlpkg.FlowFeatures{
@@ -1365,19 +1369,6 @@ func createModules(manager *lifecycle.Manager, ctx context.Context) error {
 				return entries
 			},
 			OnConn: func(conn net.Conn, userID string) {
-				b, legacy, err := bondCoord.Offer(conn)
-				if err != nil {
-					conn.Close()
-					return
-				}
-				switch {
-				case b != nil:
-					conn = b
-				case legacy != nil:
-					conn = legacy
-				default:
-					return
-				}
 				if globalRelay == nil {
 					conn.Close()
 					return

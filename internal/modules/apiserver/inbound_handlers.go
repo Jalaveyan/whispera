@@ -16,6 +16,15 @@ import (
 	"golang.org/x/crypto/curve25519"
 )
 
+func portOf(listenAddr string) int {
+	i := strings.LastIndex(listenAddr, ":")
+	if i < 0 {
+		return 0
+	}
+	p, _ := strconv.Atoi(listenAddr[i+1:])
+	return p
+}
+
 func (s *Server) handleGetInbounds(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAdmin(w, r) {
 		return
@@ -87,6 +96,13 @@ func (s *Server) handleAddInbound(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cfgProvider := module.(*config.Provider)
+
+	if cfg := cfgProvider.GetConfig(); cfg != nil && cfg.Chameleon.Enabled {
+		if p := portOf(cfg.Chameleon.ListenAddr); p != 0 && p == req.Port {
+			s.jsonError(w, http.StatusConflict, fmt.Sprintf("port %d is reserved by chameleon", req.Port))
+			return
+		}
+	}
 
 	err := cfgProvider.Update(func(cfg *config.ServerConfig) {
 		foundIndex := -1
