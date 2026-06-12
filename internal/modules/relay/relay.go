@@ -495,11 +495,15 @@ func (s *Server) serveTunnel(conn net.Conn, streamObf bool, usePadding bool) {
 		if streamObf {
 			proxyConn = transport.WrapStreamTLS(stream)
 		}
+		logger.Trace().Infow("proxy_stream_accepted",
+			"trace_id", traceID,
+			"client", clientID,
+		)
 		select {
 		case s.streamSem <- struct{}{}:
 			go func() {
 				defer func() { <-s.streamSem }()
-				s.handleProxyStream(proxyConn)
+				s.handleProxyStream(traceID, clientID, proxyConn)
 			}()
 		default:
 			s.log.Info("stream limit reached, dropping stream from %s", clientID)
@@ -535,7 +539,7 @@ func (s *Server) serveControlStream(stream net.Conn) {
 	}
 }
 
-func (s *Server) handleProxyStream(stream net.Conn) {
+func (s *Server) handleProxyStream(tunnelID uint64, clientID string, stream net.Conn) {
 	defer stream.Close()
 
 	hdr := make([]byte, 3)
@@ -558,6 +562,12 @@ func (s *Server) handleProxyStream(stream net.Conn) {
 
 	s.log.Info("proxy stream: %s:%d", addr, port)
 	streamStart := time.Now()
+	logger.Trace().Infow("proxy_stream_start",
+		"trace_id", tunnelID,
+		"client", clientID,
+		"target", fmt.Sprintf("%s:%d", addr, port),
+		"proto", fmt.Sprintf("0x%02x", proto),
+	)
 
 	network := "tcp"
 	if proto == 0x11 {
@@ -614,9 +624,21 @@ func (s *Server) handleProxyStream(stream net.Conn) {
 	if err != nil {
 		stream.Write([]byte{0x01})
 		s.log.Info("Dial %s:%d failed in %s: %v", addr, port, dialDur, err)
+		logger.Trace().Warnw("proxy_stream_dial_fail",
+			"trace_id", tunnelID,
+			"target", targetAddr,
+			"dial_ms", dialDur.Milliseconds(),
+			"err", err.Error(),
+			"err_type", fmt.Sprintf("%T", err),
+		)
 		return
 	}
 	defer target.Close()
+	logger.Trace().Infow("proxy_stream_dial_ok",
+		"trace_id", tunnelID,
+		"target", targetAddr,
+		"dial_ms", dialDur.Milliseconds(),
+	)
 	if dialDur > 500*time.Millisecond {
 		s.log.Debug("slow dial %s:%d took %s", addr, port, dialDur)
 	}
@@ -725,6 +747,19 @@ func (s *Server) handleProxyStream(stream net.Conn) {
 		}
 	}
 	dur := time.Since(streamStart)
+	errField := ""
+	if firstErr != nil && !isNormalConnClose(firstErr) && !errors.Is(firstErr, io.EOF) {
+		errField = firstErr.Error()
+	}
+	logger.Trace().Infow("proxy_stream_done",
+		"trace_id", tunnelID,
+		"target", fmt.Sprintf("%s:%d", addr, port),
+		"up", up,
+		"down", down,
+		"dur_ms", dur.Milliseconds(),
+		"err_dir", firstDir,
+		"err", errField,
+	)
 	if firstErr != nil {
 		if isNormalConnClose(firstErr) {
 			s.log.Debug("stream done %s:%d up=%d down=%d in %s, %s closed: %v", addr, port, up, down, dur, firstDir, firstErr)
