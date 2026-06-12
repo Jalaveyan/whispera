@@ -31,6 +31,8 @@ import (
 
 var log = logger.Module("chameleon")
 
+var traceLog = logger.Trace()
+
 func NewSessionCache(capacity int) any {
 	return utls.NewLRUClientSessionCache(capacity)
 }
@@ -451,7 +453,14 @@ func handleClientStream(w http.ResponseWriter, r *http.Request, cfg *ServerConfi
 		return
 	}
 
-	log.Printf("chameleon: stream authenticated user=%s from %s", userID, r.RemoteAddr)
+	startedAt := time.Now()
+	log.Printf("chameleon: stream authenticated user=%s from %s proto=%s contentLength=%d", userID, r.RemoteAddr, r.Proto, r.ContentLength)
+	traceLog.Infow("client_stream_authenticated",
+		"user", userID,
+		"remote", r.RemoteAddr,
+		"proto", r.Proto,
+		"content_length", r.ContentLength,
+	)
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -477,8 +486,22 @@ func handleClientStream(w http.ResponseWriter, r *http.Request, cfg *ServerConfi
 
 	select {
 	case <-conn.done:
+		traceLog.Infow("client_stream_closed",
+			"reason", "conn_done",
+			"remote", r.RemoteAddr,
+			"dur_ms", time.Since(startedAt).Milliseconds(),
+			"up_bytes", atomic.LoadInt64(&conn.upBytes),
+			"down_bytes", atomic.LoadInt64(&conn.downBytes),
+		)
 	case <-r.Context().Done():
-		log.Printf("chameleon: stream request context done for %s: %v", r.RemoteAddr, r.Context().Err())
+		traceLog.Warnw("client_stream_closed",
+			"reason", "request_context_done",
+			"remote", r.RemoteAddr,
+			"dur_ms", time.Since(startedAt).Milliseconds(),
+			"up_bytes", atomic.LoadInt64(&conn.upBytes),
+			"down_bytes", atomic.LoadInt64(&conn.downBytes),
+			"err", r.Context().Err().Error(),
+		)
 	}
 }
 

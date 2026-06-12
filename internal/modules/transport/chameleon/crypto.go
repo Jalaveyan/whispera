@@ -97,6 +97,16 @@ type FrameConn struct {
 	bytesRecent uint64
 }
 
+func connRemote(c net.Conn) string {
+	if c == nil {
+		return ""
+	}
+	if a := c.RemoteAddr(); a != nil {
+		return a.String()
+	}
+	return ""
+}
+
 func NewFrameConn(conn net.Conn) *FrameConn {
 	fc := &FrameConn{
 		Conn:    conn,
@@ -362,11 +372,24 @@ func (fc *FrameConn) Read(b []byte) (int, error) {
 		}
 
 		var hdr [4]byte
-		if _, err := io.ReadFull(fc.Conn, hdr[:]); err != nil {
+		if n, err := io.ReadFull(fc.Conn, hdr[:]); err != nil {
+			traceLog.Warnw("frameconn_read_err",
+				"phase", "len_header",
+				"got", n,
+				"want", 4,
+				"remote", connRemote(fc.Conn),
+				"err", err.Error(),
+				"err_type", fmt.Sprintf("%T", err),
+			)
 			return 0, err
 		}
 		frameLen := binary.BigEndian.Uint32(hdr[:])
 		if frameLen == 0 || frameLen > uint32(maxFrameSize) {
+			traceLog.Warnw("frameconn_bad_len",
+				"frame_len", frameLen,
+				"header", fmt.Sprintf("%x", hdr),
+				"remote", connRemote(fc.Conn),
+			)
 			return 0, fmt.Errorf("chameleon: bad frame len %d", frameLen)
 		}
 
@@ -375,7 +398,15 @@ func (fc *FrameConn) Read(b []byte) (int, error) {
 		} else {
 			fc.recvBuf = fc.recvBuf[:frameLen]
 		}
-		if _, err := io.ReadFull(fc.Conn, fc.recvBuf); err != nil {
+		if n, err := io.ReadFull(fc.Conn, fc.recvBuf); err != nil {
+			traceLog.Warnw("frameconn_read_err",
+				"phase", "body",
+				"got", n,
+				"want", frameLen,
+				"remote", connRemote(fc.Conn),
+				"err", err.Error(),
+				"err_type", fmt.Sprintf("%T", err),
+			)
 			return 0, err
 		}
 

@@ -1,6 +1,7 @@
 package chameleon
 
 import (
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -178,7 +179,12 @@ func (c *httpStreamConn) Read(b []byte) (int, error) {
 	if err != nil {
 		up := atomic.LoadInt64(&c.upBytes)
 		if err != io.EOF || up < 64 {
-			log.Printf("chameleon: server body read err=%v after %d up-bytes", err, up)
+			traceLog.Warnw("server_post_body_read_err",
+				"remote", c.remote.String(),
+				"up_bytes", up,
+				"err", err.Error(),
+				"err_type", fmt.Sprintf("%T", err),
+			)
 		}
 	}
 	return n, err

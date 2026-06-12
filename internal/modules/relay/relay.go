@@ -359,6 +359,28 @@ func (s *Server) HealthCheck() interfaces.HealthStatus {
 	return status
 }
 
+var tunnelTraceSeq uint64
+
+type byteCountConn struct {
+	net.Conn
+	n     int64
+	first []byte
+}
+
+func (c *byteCountConn) Read(b []byte) (int, error) {
+	n, err := c.Conn.Read(b)
+	if n > 0 {
+		total := atomic.AddInt64(&c.n, int64(n))
+		if total <= 64 {
+			c.first = append(c.first, b[:n]...)
+			if len(c.first) > 64 {
+				c.first = c.first[:64]
+			}
+		}
+	}
+	return n, err
+}
+
 func (s *Server) ServeTunnel(conn net.Conn, streamObf bool) {
 	s.serveTunnel(conn, streamObf, true)
 }
@@ -370,6 +392,15 @@ func (s *Server) ServeTunnelRaw(conn net.Conn, streamObf bool) {
 func (s *Server) serveTunnel(conn net.Conn, streamObf bool, usePadding bool) {
 	defer conn.Close()
 	clientID := conn.RemoteAddr().String()
+	traceID := atomic.AddUint64(&tunnelTraceSeq, 1)
+	startedAt := time.Now()
+	logger.Trace().Infow("serve_tunnel_enter",
+		"trace_id", traceID,
+		"client", clientID,
+		"conn_type", fmt.Sprintf("%T", conn),
+		"stream_obf", streamObf,
+		"use_padding", usePadding,
+	)
 	s.log.Debug("Starting tunnel session for %s", clientID)
 
 	if tcpConn, ok := conn.(*net.TCPConn); ok {
@@ -399,17 +430,20 @@ func (s *Server) serveTunnel(conn net.Conn, streamObf bool, usePadding bool) {
 		muxConn = conn
 	}
 
+	bc := &byteCountConn{Conn: muxConn}
+	muxConn = bc
+
 	session, err := mux.Server(muxConn, muxCfg)
 	if err != nil {
-		s.log.Error("Failed to create SMUX session for %s: %v", clientID, err)
+		s.log.Error("[T%d] Failed to create SMUX session for %s: %v", traceID, clientID, err)
 		return
 	}
 	defer session.Close()
 
-	s.log.Info("Tunnel session ready for %s", clientID)
+	s.log.Info("[T%d] Tunnel session ready for %s (connType=%T)", traceID, clientID, conn)
 
 	firstStream := true
-	s.log.Info("waiting for first stream from %s", clientID)
+	s.log.Info("[T%d] waiting for first stream from %s", traceID, clientID)
 	for {
 		stream, err := session.AcceptStream()
 		if err != nil {
@@ -421,17 +455,35 @@ func (s *Server) serveTunnel(conn net.Conn, streamObf bool, usePadding bool) {
 				strings.Contains(errStr, "padded_conn:") ||
 				isNormalConnClose(err)
 			if firstStream {
-				s.log.Info("Tunnel session ended before first stream from %s: %v", clientID, err)
+				readBytes := atomic.LoadInt64(&bc.n)
+				logger.Trace().Warnw("ended_before_first_stream",
+					"trace_id", traceID,
+					"client", clientID,
+					"dur_ms", time.Since(startedAt).Milliseconds(),
+					"conn_type", fmt.Sprintf("%T", conn),
+					"bytes_read", readBytes,
+					"first_bytes", fmt.Sprintf("%x", bc.first),
+					"err", err.Error(),
+					"err_type", fmt.Sprintf("%T", err),
+				)
+				s.log.Info("[T%d] Tunnel session ended before first stream from %s after %s: %v (connType=%T bytesReadFromConn=%d firstBytes=%x)",
+					traceID, clientID, time.Since(startedAt).Round(time.Millisecond), err, conn, readBytes, bc.first)
 			} else if isNormal {
-				s.log.Debug("Tunnel session ended for %s: %v", clientID, err)
+				s.log.Debug("[T%d] Tunnel session ended for %s: %v", traceID, clientID, err)
 			} else {
-				s.log.Info("Tunnel session closed for %s: %v", clientID, err)
+				s.log.Info("[T%d] Tunnel session closed for %s: %v", traceID, clientID, err)
 			}
 			return
 		}
 		if firstStream {
 			firstStream = false
-			s.log.Info("control stream (1) accepted from %s", clientID)
+			logger.Trace().Infow("control_stream_accepted",
+				"trace_id", traceID,
+				"client", clientID,
+				"dur_ms", time.Since(startedAt).Milliseconds(),
+				"bytes_read", atomic.LoadInt64(&bc.n),
+			)
+			s.log.Info("[T%d] control stream (1) accepted from %s after %s (bytesReadFromConn=%d)", traceID, clientID, time.Since(startedAt).Round(time.Millisecond), atomic.LoadInt64(&bc.n))
 			if streamObf {
 				go io.Copy(io.Discard, transport.WrapStreamTLS(stream))
 			} else {
