@@ -206,8 +206,12 @@ func (c *httpStreamConn) Write(b []byte) (int, error) {
 			if c.writeCount > 1 {
 				iatMean = c.iatSum / (c.writeCount - 1)
 			}
+			sizeMean := 0.0
+			if c.writeCount > 0 {
+				sizeMean = c.sizeSum / c.writeCount
+			}
 			c.smoothedIAT = ganEMA(c.smoothedIAT, iatMean, 0.1)
-			c.smoothedSize = ganEMA(c.smoothedSize, c.sizeSum/c.writeCount, 0.1)
+			c.smoothedSize = ganEMA(c.smoothedSize, sizeMean, 0.1)
 			up := float64(atomic.LoadInt64(&c.upBytes))
 			down := float64(atomic.LoadInt64(&c.downBytes))
 			upRatio := 0.0
@@ -216,6 +220,9 @@ func (c *httpStreamConn) Write(b []byte) (int, error) {
 			}
 			c.lastGANAction = c.ganDecide(c.smoothedIAT, c.smoothedSize, upRatio)
 			c.lastGANUpdate = now
+			c.iatSum = 0
+			c.sizeSum = 0
+			c.writeCount = 0
 		}
 
 		a := c.lastGANAction
