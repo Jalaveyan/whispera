@@ -148,8 +148,14 @@ func Client(ctx context.Context, cfg *ClientConfig) (net.Conn, error) {
 	helloID, helloSpec := pickFingerprint()
 
 	dialFn := func(ctx context.Context, network, addr string, _ *tls.Config) (net.Conn, error) {
-		d := &net.Dialer{Timeout: 10 * time.Second}
-		rawConn, err := d.DialContext(ctx, network, addr)
+		var rawConn net.Conn
+		var err error
+		if cfg.TCPDialer != nil {
+			rawConn, err = cfg.TCPDialer(ctx, network, addr)
+		} else {
+			d := &net.Dialer{Timeout: 10 * time.Second}
+			rawConn, err = d.DialContext(ctx, network, addr)
+		}
 		if err != nil {
 			return nil, err
 		}

@@ -72,6 +72,76 @@ func PickRandomSNI() (string, time.Duration) {
 	return pickRandomSNI()
 }
 
+// DialTCP dials a raw TCP connection with optional TLS record fragmentation.
+// The fragmentation applies only to the first write (TLS ClientHello), making
+// SNI extraction harder for shallow DPI. Does NOT do TLS itself.
+func (d *Dialer) DialTCP(ctx context.Context, network, addr string) (net.Conn, error) {
+	conn, err := d.dialDirect(ctx, network, addr)
+	if err != nil {
+		return nil, err
+	}
+	if d.config.EnableTLSFragmentation {
+		fragSize := d.config.TLSFragmentSize
+		if fragSize <= 0 {
+			fragSize = 40
+		}
+		return &firstWriteFragConn{Conn: conn, fragSize: fragSize}, nil
+	}
+	return conn, nil
+}
+
+type firstWriteFragConn struct {
+	net.Conn
+	fragSize int
+	done     bool
+	mu       sync.Mutex
+}
+
+func (c *firstWriteFragConn) Write(b []byte) (int, error) {
+	c.mu.Lock()
+	done := c.done
+	if !done {
+		c.done = true
+	}
+	c.mu.Unlock()
+	if done {
+		return c.Conn.Write(b)
+	}
+	if err := writeFragmentedTLSRecord(c.Conn, b, c.fragSize); err != nil {
+		return 0, err
+	}
+	return len(b), nil
+}
+
+func writeFragmentedTLSRecord(conn net.Conn, data []byte, fragSize int) error {
+	if len(data) < 6 || data[0] != 0x16 {
+		_, err := conn.Write(data)
+		return err
+	}
+	contentType := data[0]
+	majorVer := data[1]
+	minorVer := data[2]
+	payload := data[5:]
+	for len(payload) > 0 {
+		chunk := payload
+		if len(chunk) > fragSize {
+			chunk = payload[:fragSize]
+		}
+		payload = payload[len(chunk):]
+		record := make([]byte, 5+len(chunk))
+		record[0] = contentType
+		record[1] = majorVer
+		record[2] = minorVer
+		record[3] = byte(len(chunk) >> 8)
+		record[4] = byte(len(chunk))
+		copy(record[5:], chunk)
+		if _, err := conn.Write(record); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func WhitelistSNIPool() []string {
 	pool := make([]string, 0, 32)
 	for _, cat := range SNICategories {

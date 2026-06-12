@@ -2282,6 +2282,10 @@ func (m *Manager) chameleonDial() (func(context.Context) (net.Conn, error), bool
 		sni = ""
 		sniList = asnbypass.WhitelistSNIPool()
 	}
+	var tcpDialer func(context.Context, string, string) (net.Conn, error)
+	if m.asnBypassDialer != nil {
+		tcpDialer = m.asnBypassDialer.DialTCP
+	}
 	cCfg := &chameleon.ClientConfig{
 		ServerAddr:    addr,
 		ServerName:    sni,
@@ -2289,6 +2293,7 @@ func (m *Manager) chameleonDial() (func(context.Context) (net.Conn, error), bool
 		SharedSecret:  m.config.ChameleonSecret,
 		ServerCertPin: m.config.ChameleonCertPin,
 		SessionCache:  m.chameleonSessionCache,
+		TCPDialer:     tcpDialer,
 	}
 	return func(ctx context.Context) (net.Conn, error) {
 		return chameleon.Client(ctx, cCfg)

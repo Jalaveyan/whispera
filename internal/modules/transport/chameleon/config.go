@@ -1,6 +1,7 @@
 package chameleon
 
 import (
+	"context"
 	"net"
 	"sync"
 	"time"
@@ -14,6 +15,7 @@ type ClientConfig struct {
 	SharedSecret  []byte
 	ServerCertPin string
 	SessionCache  any
+	TCPDialer     func(ctx context.Context, network, addr string) (net.Conn, error)
 }
 
 // ServerConfig contains only the fields relevant to the server listener.
