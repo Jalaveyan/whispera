@@ -2277,16 +2277,14 @@ func (m *Manager) chameleonDial() (func(context.Context) (net.Conn, error), bool
 		addr = m.config.ServerAddr
 	}
 	sni := m.config.ChameleonSNI
+	var sniList []string
 	if sni == "" {
-		host, _, _ := net.SplitHostPort(addr)
-		if host == "" {
-			host = addr
-		}
-		sni = host
+		sniList = asnbypass.WhitelistSNIPool()
 	}
 	cCfg := &chameleon.ClientConfig{
 		ServerAddr:    addr,
 		ServerName:    sni,
+		ServerNames:   sniList,
 		SharedSecret:  m.config.ChameleonSecret,
 		ServerCertPin: m.config.ChameleonCertPin,
 		SessionCache:  m.chameleonSessionCache,

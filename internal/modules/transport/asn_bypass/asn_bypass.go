@@ -72,6 +72,14 @@ func PickRandomSNI() (string, time.Duration) {
 	return pickRandomSNI()
 }
 
+func WhitelistSNIPool() []string {
+	pool := make([]string, 0, 32)
+	for _, cat := range SNICategories {
+		pool = append(pool, cat.Domains...)
+	}
+	return pool
+}
+
 func pickRandomSNI() (string, time.Duration) {
 	r := rand.Float64()
 	var cat SNICategory

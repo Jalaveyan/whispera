@@ -154,21 +154,12 @@ type httpStreamConn struct {
 	done   chan struct{}
 	once   sync.Once
 
-	ganDecide     GANDecideFunc
-	lastWrite     time.Time
-	iatSum        float64
-	sizeSum       float64
-	writeCount    float64
-	upBytes       int64
-	downBytes     int64
-	lastGANUpdate time.Time
-	smoothedIAT   float64
-	smoothedSize  float64
-	lastGANAction GANAction
+	upBytes   int64
+	downBytes int64
 }
 
-func newHTTPStreamConn(r io.Reader, w http.ResponseWriter, flush func(), local, remote net.Addr, ganDecide GANDecideFunc) *httpStreamConn {
-	return &httpStreamConn{r: r, w: w, flush: flush, local: local, remote: remote, done: make(chan struct{}), ganDecide: ganDecide}
+func newHTTPStreamConn(r io.Reader, w http.ResponseWriter, flush func(), local, remote net.Addr, _ GANDecideFunc) *httpStreamConn {
+	return &httpStreamConn{r: r, w: w, flush: flush, local: local, remote: remote, done: make(chan struct{})}
 }
 
 func (c *httpStreamConn) Read(b []byte) (int, error) {
@@ -191,49 +182,6 @@ func (c *httpStreamConn) Read(b []byte) (int, error) {
 }
 
 func (c *httpStreamConn) Write(b []byte) (int, error) {
-	if c.ganDecide != nil {
-		now := time.Now()
-		if !c.lastWrite.IsZero() {
-			c.iatSum += now.Sub(c.lastWrite).Seconds()
-		}
-		c.sizeSum += float64(len(b))
-		c.writeCount++
-		c.lastWrite = now
-
-		const ganInterval = 100 * time.Millisecond
-		if now.Sub(c.lastGANUpdate) >= ganInterval {
-			iatMean := 0.0
-			if c.writeCount > 1 {
-				iatMean = c.iatSum / (c.writeCount - 1)
-			}
-			sizeMean := 0.0
-			if c.writeCount > 0 {
-				sizeMean = c.sizeSum / c.writeCount
-			}
-			c.smoothedIAT = ganEMA(c.smoothedIAT, iatMean, 0.1)
-			c.smoothedSize = ganEMA(c.smoothedSize, sizeMean, 0.1)
-			up := float64(atomic.LoadInt64(&c.upBytes))
-			down := float64(atomic.LoadInt64(&c.downBytes))
-			upRatio := 0.0
-			if up+down > 0 {
-				upRatio = up / (up + down)
-			}
-			c.lastGANAction = c.ganDecide(c.smoothedIAT, c.smoothedSize, upRatio)
-			c.lastGANUpdate = now
-			c.iatSum = 0
-			c.sizeSum = 0
-			c.writeCount = 0
-		}
-
-		a := c.lastGANAction
-		if c.smoothedIAT > 0.03 && a.SleepMs > 0.5 {
-			sleep := a.SleepMs
-			if sleep > 15 {
-				sleep = 15
-			}
-			time.Sleep(time.Duration(sleep * float64(time.Millisecond)))
-		}
-	}
 	n, err := c.w.Write(b)
 	if n > 0 {
 		atomic.AddInt64(&c.downBytes, int64(n))
