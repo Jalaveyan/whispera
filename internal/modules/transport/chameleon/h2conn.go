@@ -175,6 +175,12 @@ func (c *httpStreamConn) Read(b []byte) (int, error) {
 	if n > 0 {
 		atomic.AddInt64(&c.upBytes, int64(n))
 	}
+	if err != nil {
+		up := atomic.LoadInt64(&c.upBytes)
+		if err != io.EOF || up < 64 {
+			log.Printf("chameleon: server body read err=%v after %d up-bytes", err, up)
+		}
+	}
 	return n, err
 }
 
