@@ -2278,7 +2278,8 @@ func (m *Manager) chameleonDial() (func(context.Context) (net.Conn, error), bool
 	}
 	sni := m.config.ChameleonSNI
 	var sniList []string
-	if sni == "" {
+	if sni == "" || net.ParseIP(sni) != nil {
+		sni = ""
 		sniList = asnbypass.WhitelistSNIPool()
 	}
 	cCfg := &chameleon.ClientConfig{
