@@ -599,7 +599,7 @@ img, svg { display: block; }
 .btn-secondary {
   background: #1e1e38;
   border: 1px solid rgba(255,255,255,.22);
-  color: var(--text-primary);
+  color: #fff;
 }
 .btn-secondary:hover { background: #272748; border-color: rgba(255,255,255,.38); }
 
