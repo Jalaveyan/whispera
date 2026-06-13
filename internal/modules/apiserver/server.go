@@ -1229,9 +1229,7 @@ func (s *Server) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 			IP        string `json:"ip"`
 			Port      int    `json:"port"`
 			TCPPort   int    `json:"tcpPort"`
-			WSPort    int    `json:"wsPort"`
-			WS2Port   int    `json:"ws2Port"`
-			PublicURL string `json:"public_url"`
+				PublicURL string `json:"public_url"`
 		} `json:"server"`
 		Obfuscation struct {
 			DefaultProfile    string `json:"defaultProfile"`
@@ -1266,13 +1264,6 @@ func (s *Server) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 		if req.Server.TCPPort > 0 {
 			cfg.Transport.TCP.ListenAddr = fmt.Sprintf(":%d", req.Server.TCPPort)
 		}
-		if req.Server.WSPort > 0 {
-			cfg.Transport.WebSocket.ListenAddr = fmt.Sprintf(":%d", req.Server.WSPort)
-		}
-		if req.Server.WS2Port > 0 {
-			cfg.Transport.XHTTP.ListenAddr = fmt.Sprintf(":%d", req.Server.WS2Port)
-		}
-
 		if req.Obfuscation.DefaultProfile != "" {
 			cfg.Obfuscation.Profile = req.Obfuscation.DefaultProfile
 		}

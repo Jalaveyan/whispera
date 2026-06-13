@@ -384,18 +384,6 @@ type TransportConfig struct {
 		ListenAddr string `yaml:"listen_addr"`
 	} `yaml:"tcp"`
 
-	WebSocket struct {
-		Enabled    bool   `yaml:"enabled"`
-		ListenAddr string `yaml:"listen_addr"`
-		Path       string `yaml:"path"`
-	} `yaml:"websocket"`
-
-	XHTTP struct {
-		Enabled        bool   `yaml:"enabled"`
-		ListenAddr     string `yaml:"listen_addr"`
-		Mode           string `yaml:"mode"`
-		MaxConcurrency int    `yaml:"max_concurrency"`
-	} `yaml:"xhttp"`
 }
 
 type SessionConfig struct {
