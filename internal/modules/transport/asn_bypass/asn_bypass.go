@@ -99,15 +99,14 @@ type firstWriteFragConn struct {
 
 func (c *firstWriteFragConn) Write(b []byte) (int, error) {
 	c.mu.Lock()
-	done := c.done
-	if !done {
-		c.done = true
-	}
-	c.mu.Unlock()
-	if done {
+	if c.done {
+		c.mu.Unlock()
 		return c.Conn.Write(b)
 	}
-	if err := writeFragmentedTLSRecord(c.Conn, b, c.fragSize); err != nil {
+	c.done = true
+	err := writeFragmentedTLSRecord(c.Conn, b, c.fragSize)
+	c.mu.Unlock()
+	if err != nil {
 		return 0, err
 	}
 	return len(b), nil

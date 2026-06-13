@@ -78,6 +78,12 @@ func (cfg *ServerConfig) waitSession(key string, timeout time.Duration) (*restSe
 	deadline := time.Now().Add(timeout)
 	cfg.sessionMu.Lock()
 	defer cfg.sessionMu.Unlock()
+	var wakeTimer *time.Timer
+	defer func() {
+		if wakeTimer != nil {
+			wakeTimer.Stop()
+		}
+	}()
 	for {
 		if v, ok := cfg.sessions.Load(key); ok {
 			return v.(*restSession), true
@@ -86,7 +92,9 @@ func (cfg *ServerConfig) waitSession(key string, timeout time.Duration) (*restSe
 		if remaining <= 0 {
 			return nil, false
 		}
-		go func() { time.Sleep(remaining); cfg.sessionCond.Broadcast() }()
+		if wakeTimer == nil {
+			wakeTimer = time.AfterFunc(remaining, cfg.sessionCond.Broadcast)
+		}
 		cfg.sessionCond.Wait()
 	}
 }
