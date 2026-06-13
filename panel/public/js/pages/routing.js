@@ -46,7 +46,7 @@ export const routingPage = {
                     <td>${tagBadge(r.outboundTag)}</td>
                     <td style="opacity:0.6;">${r.priority || 0}</td>
                     <td>
-                        <button class="btn btn-danger btn-sm" data-act="deleteRoutingRule" data-arg="${escapeHtml(String(r.id))}"><i class="fas fa-trash"></i> Удалить</button>
+                        <button class="btn btn-danger btn-sm" data-act="deleteRoutingRule" data-arg="${escapeHtml(String(r.id))}">Удалить</button>
                     </td>
                 </tr>
     `).join('');

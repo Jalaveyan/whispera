@@ -109,8 +109,8 @@ export const bridgesPage = {
             : '<span style="color:#444;font-size:0.8em;">—</span>';
 
         const blacklistBtn = blacklisted
-            ? `<button class="btn btn-secondary btn-sm bridge-label-btn" data-id="${id}" data-blacklisted="true" style="color:#facc15;"><i class="fas fa-ban"></i> Разблок</button>`
-            : `<button class="btn btn-secondary btn-sm bridge-label-btn" data-id="${id}" data-blacklisted="false"><i class="fas fa-ban"></i> Блок</button>`;
+            ? `<button class="btn btn-secondary btn-sm bridge-label-btn" data-id="${id}" data-blacklisted="true" style="color:#facc15;">Разблок</button>`
+            : `<button class="btn btn-secondary btn-sm bridge-label-btn" data-id="${id}" data-blacklisted="false">Блок</button>`;
 
         const rowStyle = blacklisted ? ' style="opacity:0.45;"' : '';
 
@@ -125,10 +125,10 @@ export const bridgesPage = {
             <td>${mlBadge}</td>
             <td style="font-size:0.82em;color:#888;">${lastCheckStr}</td>
             <td style="text-align:right;white-space:nowrap;">
-                <button class="btn btn-secondary btn-sm bridge-check-btn" data-id="${id}"><i class="fas fa-stethoscope"></i> Проверить</button>
-                <button class="btn btn-secondary btn-sm bridge-ping-btn" data-id="${id}"><i class="fas fa-satellite-dish"></i> Пинг</button>
+                <button class="btn btn-secondary btn-sm bridge-check-btn" data-id="${id}">Проверить</button>
+                <button class="btn btn-secondary btn-sm bridge-ping-btn" data-id="${id}">Пинг</button>
                 ${blacklistBtn}
-                <button class="btn btn-danger btn-sm bridge-delete-btn" data-id="${id}"><i class="fas fa-trash-alt"></i> Удалить</button>
+                <button class="btn btn-danger btn-sm bridge-delete-btn" data-id="${id}">Удалить</button>
             </td>
         </tr>`;
     },

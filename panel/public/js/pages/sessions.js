@@ -19,7 +19,7 @@ export const sessionsPage = {
           <td>${this.formatTime(s.connected_at)}</td>
           <td>${this.formatBytes(s.bytes_in || 0)} / ${this.formatBytes(s.bytes_out || 0)}</td>
           <td>
-            <button class="btn btn-danger btn-sm" data-act="killSession" data-arg="${escapeHtml(String(s.id))}"><i class="fas fa-times"></i> Завершить</button>
+            <button class="btn btn-danger btn-sm" data-act="killSession" data-arg="${escapeHtml(String(s.id))}">Завершить</button>
           </td>
         </tr>
     `).join('');

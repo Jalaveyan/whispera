@@ -219,9 +219,9 @@ export const usersPage = {
           <td><span class="status ${user.status === 'active' ? 'active' : 'inactive'}">${user.status === 'active' ? 'Активен' : 'Неактивен'}</span></td>
           <td>
             <div style="display:flex;gap:6px;flex-wrap:wrap;">
-                ${user.privateKey ? `<button class="btn btn-secondary btn-sm" onclick="app.generateKeyForUser(${user.id})"><i class="fas fa-key"></i> Ключ</button>` : ''}
-                <button class="btn btn-secondary btn-sm" onclick="app.showEditUserModal(${user.id})"><i class="fas fa-pen"></i> Изменить</button>
-                <button class="btn btn-danger btn-sm" data-act="deleteUser" data-arg="${escapeHtml(String(user.id))}"><i class="fas fa-trash"></i> Удалить</button>
+                ${user.privateKey ? `<button class="btn btn-secondary btn-sm" onclick="app.generateKeyForUser(${user.id})">Ключ</button>` : ''}
+                <button class="btn btn-secondary btn-sm" onclick="app.showEditUserModal(${user.id})">Изменить</button>
+                <button class="btn btn-danger btn-sm" data-act="deleteUser" data-arg="${escapeHtml(String(user.id))}">Удалить</button>
             </div>
           </td>
         </tr>

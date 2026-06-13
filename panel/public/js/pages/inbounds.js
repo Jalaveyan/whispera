@@ -104,7 +104,7 @@ export const inboundsPage = {
                     <td>${allPorts}</td>
                     <td>${network}</td>
                     <td>
-                        <button class="btn btn-danger btn-sm" data-act="deleteInbound" data-arg="${escapeHtml(i.tag)}"><i class="fas fa-trash"></i> Удалить</button>
+                        <button class="btn btn-danger btn-sm" data-act="deleteInbound" data-arg="${escapeHtml(i.tag)}">Удалить</button>
                     </td>
                 </tr>`;
             }).join('');

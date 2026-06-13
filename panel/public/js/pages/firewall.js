@@ -110,7 +110,7 @@ export const firewallPage = {
                         </td>
                         <td style="padding:10px 12px;opacity:0.7;font-size:0.88em;">${r.from}</td>
                         <td style="padding:10px 12px;text-align:right;">
-                            <button onclick="app._firewallDeleteRule(${r.number})" class="btn btn-danger btn-sm"><i class="fas fa-trash"></i> Удалить</button>
+                            <button onclick="app._firewallDeleteRule(${r.number})" class="btn btn-danger btn-sm">Удалить</button>
                         </td>
                     </tr>`).join('');
             }

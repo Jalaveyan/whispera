@@ -47,8 +47,8 @@ export const subscriptionsPage = {
                     <td>${esc(transports)}</td>
                     <td>${esc(userCount)}</td>
                     <td>
-                        <button class="btn btn-secondary btn-sm sub-copy-btn" data-id="${esc(s.id)}"><i class="fas fa-copy"></i> Копировать</button>
-                        <button class="btn btn-danger btn-sm sub-del-btn" data-id="${esc(s.id)}"><i class="fas fa-trash"></i> Удалить</button>
+                        <button class="btn btn-secondary btn-sm sub-copy-btn" data-id="${esc(s.id)}">Копировать</button>
+                        <button class="btn btn-danger btn-sm sub-del-btn" data-id="${esc(s.id)}">Удалить</button>
                     </td>
                 </tr>`;
             }).join('');

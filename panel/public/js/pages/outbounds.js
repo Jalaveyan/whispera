@@ -77,7 +77,7 @@ export const outboundsPage = {
                     <td>${chain}</td>
                     <td>${o.latency ? o.latency + 'ms' : '-'}</td>
                     <td>
-                        <button class="btn btn-danger btn-sm" data-act="deleteOutbound" data-arg="${escapeHtml(o.tag)}"><i class="fas fa-trash"></i> Удалить</button>
+                        <button class="btn btn-danger btn-sm" data-act="deleteOutbound" data-arg="${escapeHtml(o.tag)}">Удалить</button>
                     </td>
                 </tr>`;
             }).join('');
