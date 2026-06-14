@@ -83,11 +83,11 @@ func (s *Server) handleBridgeRollout(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	s.jsonOK(w, map[string]interface{}{
-		"success":  true,
-		"total":    len(results),
-		"ok":       success,
-		"failed":   len(results) - success,
-		"results":  results,
+		"success": true,
+		"total":   len(results),
+		"ok":      success,
+		"failed":  len(results) - success,
+		"results": results,
 	})
 }
 

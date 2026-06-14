@@ -91,8 +91,8 @@ type Stream struct {
 	outgoing  chan []byte
 	closeChan chan struct{}
 
-	bytesIn  uint64
-	bytesOut uint64
+	bytesIn   uint64
+	bytesOut  uint64
 	created   time.Time
 	lastTNano int64
 

@@ -12,39 +12,27 @@ import (
 	"whispera/internal/core/interfaces"
 )
 
-
 type Registry interface {
-	
 	Register(module interfaces.Module) error
 
-	
 	Get(name string) (interfaces.Module, bool)
 
-	
 	GetTyped(name string, target interface{}) error
 
-	
 	GetAll() []interfaces.Module
 
-	
 	StartAll(ctx context.Context) error
 
-	
 	StopAll(ctx context.Context) error
 
-	
 	Reload(ctx context.Context, cfg interface{}) error
 
-	
 	HealthCheck() map[string]interfaces.HealthStatus
 
-	
 	SetEventBus(bus events.EventBus)
 
-	
 	Events() events.EventBus
 }
-
 
 type ModuleState int
 
@@ -79,21 +67,18 @@ func (s ModuleState) String() string {
 	}
 }
 
-
 type moduleEntry struct {
 	module interfaces.Module
 	state  ModuleState
 	err    error
 }
 
-
 type registry struct {
 	mu       sync.RWMutex
 	modules  map[string]*moduleEntry
-	order    []string 
+	order    []string
 	eventBus events.EventBus
 }
-
 
 func NewRegistry() Registry {
 	return &registry{
@@ -102,7 +87,6 @@ func NewRegistry() Registry {
 		eventBus: events.NewEventBus(100),
 	}
 }
-
 
 func (r *registry) Register(module interfaces.Module) error {
 	if module == nil {
@@ -130,7 +114,6 @@ func (r *registry) Register(module interfaces.Module) error {
 	return nil
 }
 
-
 func (r *registry) Get(name string) (interfaces.Module, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -142,14 +125,12 @@ func (r *registry) Get(name string) (interfaces.Module, bool) {
 	return entry.module, true
 }
 
-
 func (r *registry) GetTyped(name string, target interface{}) error {
 	module, exists := r.Get(name)
 	if !exists {
 		return fmt.Errorf("module %q not found", name)
 	}
 
-	
 	switch t := target.(type) {
 	case *interfaces.Transport:
 		if m, ok := module.(interfaces.Transport); ok {
@@ -176,7 +157,6 @@ func (r *registry) GetTyped(name string, target interface{}) error {
 	return fmt.Errorf("module %q is not of the expected type", name)
 }
 
-
 func (r *registry) GetAll() []interfaces.Module {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -188,12 +168,10 @@ func (r *registry) GetAll() []interfaces.Module {
 	return modules
 }
 
-
 func (r *registry) StartAll(ctx context.Context) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	
 	order, err := r.computeStartOrder()
 	if err != nil {
 		return fmt.Errorf("failed to compute start order: %w", err)
@@ -202,7 +180,6 @@ func (r *registry) StartAll(ctx context.Context) error {
 
 	log.Printf("[Registry] Starting %d modules in order: %v", len(order), order)
 
-	
 	for _, name := range order {
 		entry := r.modules[name]
 		if entry.state == ModuleStateRunning {
@@ -238,12 +215,10 @@ func (r *registry) StartAll(ctx context.Context) error {
 	return nil
 }
 
-
 func (r *registry) StopAll(ctx context.Context) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	
 	stopOrder := make([]string, len(r.order))
 	for i, name := range r.order {
 		stopOrder[len(r.order)-1-i] = name
@@ -282,18 +257,15 @@ func (r *registry) StopAll(ctx context.Context) error {
 	return nil
 }
 
-
 func (r *registry) Reload(ctx context.Context, cfg interface{}) error {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	
 	log.Printf("[Registry] Reloading configuration for %d modules", len(r.modules))
 
 	r.publishEvent(events.EventTypeConfigReloaded, "registry", cfg)
 	return nil
 }
-
 
 func (r *registry) HealthCheck() map[string]interfaces.HealthStatus {
 	r.mu.RLock()
@@ -314,13 +286,11 @@ func (r *registry) HealthCheck() map[string]interfaces.HealthStatus {
 	return status
 }
 
-
 func (r *registry) SetEventBus(bus events.EventBus) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.eventBus = bus
 }
-
 
 func (r *registry) Events() events.EventBus {
 	r.mu.RLock()
@@ -347,7 +317,6 @@ func (r *registry) computeStartOrder() ([]string, error) {
 		}
 	}
 
-	
 	queue := make([]string, 0)
 	for name, degree := range inDegree {
 		if degree == 0 {
@@ -355,7 +324,6 @@ func (r *registry) computeStartOrder() ([]string, error) {
 		}
 	}
 
-	
 	sort.Strings(queue)
 
 	order := make([]string, 0, len(r.modules))
@@ -364,7 +332,6 @@ func (r *registry) computeStartOrder() ([]string, error) {
 		queue = queue[1:]
 		order = append(order, name)
 
-		
 		dependents := deps[name]
 		sort.Strings(dependents)
 		for _, dependent := range dependents {
@@ -382,22 +349,18 @@ func (r *registry) computeStartOrder() ([]string, error) {
 	return order, nil
 }
 
-
 func (r *registry) publishEvent(eventType, source string, data interface{}) {
 	if r.eventBus != nil {
 		r.eventBus.PublishAsync(events.NewEvent(eventType, source, data))
 	}
 }
 
-
 type ModuleFactory func(cfg interface{}) (interfaces.Module, error)
-
 
 type FactoryRegistry struct {
 	mu        sync.RWMutex
 	factories map[string]ModuleFactory
 }
-
 
 func NewFactoryRegistry() *FactoryRegistry {
 	return &FactoryRegistry{
@@ -405,12 +368,10 @@ func NewFactoryRegistry() *FactoryRegistry {
 	}
 }
 
-
 func (fr *FactoryRegistry) RegisterFactory(moduleType string, factory ModuleFactory) {
 	fr.mu.Lock()
 	defer fr.mu.Unlock()
 	fr.factories[moduleType] = factory
 }
-
 
 var GlobalFactoryRegistry = NewFactoryRegistry()

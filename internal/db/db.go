@@ -9,11 +9,9 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-
 type DB struct {
 	pool *pgxpool.Pool
 }
-
 
 type Config struct {
 	URL             string
@@ -22,7 +20,6 @@ type Config struct {
 	MaxConnLifetime time.Duration
 	MaxConnIdleTime time.Duration
 }
-
 
 func DefaultConfig() *Config {
 	return &Config{
@@ -34,10 +31,9 @@ func DefaultConfig() *Config {
 	}
 }
 
-
 func New(cfg *Config) (*DB, error) {
 	if cfg == nil || cfg.URL == "" {
-		return nil, nil 
+		return nil, nil
 	}
 
 	poolCfg, err := pgxpool.ParseConfig(cfg.URL)
@@ -58,7 +54,6 @@ func New(cfg *Config) (*DB, error) {
 		return nil, fmt.Errorf("connect to database: %w", err)
 	}
 
-	
 	if err := pool.Ping(ctx); err != nil {
 		pool.Close()
 		return nil, fmt.Errorf("ping database: %w", err)
@@ -68,7 +63,6 @@ func New(cfg *Config) (*DB, error) {
 
 	db := &DB{pool: pool}
 
-	
 	if err := db.Migrate(ctx); err != nil {
 		pool.Close()
 		return nil, fmt.Errorf("run migrations: %w", err)
@@ -77,13 +71,11 @@ func New(cfg *Config) (*DB, error) {
 	return db, nil
 }
 
-
 func (db *DB) Close() {
 	if db != nil && db.pool != nil {
 		db.pool.Close()
 	}
 }
-
 
 func (db *DB) Ping(ctx context.Context) error {
 	if db == nil || db.pool == nil {

@@ -304,4 +304,3 @@ func entropy(probs []float64) float64 {
 	}
 	return h
 }
-

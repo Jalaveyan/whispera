@@ -22,8 +22,8 @@ func newTestServer(t *testing.T) *Server {
 	secret := []byte("test-signing-secret-32-bytes!!!!!")
 	bridgeReg := bridgepool.NewRegistry("")
 	s := &Server{
-		Module:         base.NewModule(ModuleName, ModuleVersion, nil),
-		config:         &Config{
+		Module: base.NewModule(ModuleName, ModuleVersion, nil),
+		config: &Config{
 			Enabled:       true,
 			ListenAddr:    ":0",
 			EnableCORS:    true,
@@ -481,7 +481,7 @@ func TestSecurityHeaders(t *testing.T) {
 
 	expectedHeaders := map[string]string{
 		"X-Content-Type-Options": "nosniff",
-		"X-Frame-Options":       "DENY",
+		"X-Frame-Options":        "DENY",
 	}
 
 	for header, expected := range expectedHeaders {

@@ -24,9 +24,9 @@ type BridgeEntry struct {
 }
 
 type MultiRouter struct {
-	primary TunnelManager
-	mu      sync.RWMutex
-	bridges []*BridgeEntry
+	primary         TunnelManager
+	mu              sync.RWMutex
+	bridges         []*BridgeEntry
 	processOverride string
 }
 
@@ -156,7 +156,6 @@ func matchPattern(pattern, host, processName string) bool {
 		return strings.EqualFold(host, pattern)
 	}
 }
-
 
 type MultiRouterStatus struct {
 	Bridges []*BridgeStatusEntry `json:"bridges"`

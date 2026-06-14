@@ -99,8 +99,6 @@ func NewSelectorWithURL(discoveryURL string) *Selector {
 	})
 }
 
-// StartRefresh launches a background goroutine that re-fetches the bridge list
-// every Config.RefreshInterval. It stops when ctx is canceled.
 func (s *Selector) StartRefresh(ctx context.Context) {
 	if s.config.RefreshInterval <= 0 || s.config.DiscoveryURL == "" {
 		return
@@ -185,21 +183,27 @@ func (s *Selector) FetchBridges(ctx context.Context) error {
 
 func (s *Selector) fetchFromURL(ctx context.Context, rawURL string) ([]*BridgeInfo, error) {
 	req, err := http.NewRequestWithContext(ctx, "GET", rawURL, nil)
+
 	if err != nil {
 		return nil, err
 	}
 	resp, err := http.DefaultClient.Do(req)
+
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
+
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("status %d", resp.StatusCode)
 	}
+
 	var bridges []*BridgeInfo
+
 	if err := json.NewDecoder(resp.Body).Decode(&bridges); err != nil {
 		return nil, err
 	}
+
 	return bridges, nil
 }
 
@@ -219,36 +223,48 @@ func (s *Selector) fetchFromDNS(ctx context.Context, domain string) ([]*BridgeIn
 		go func() {
 			u, _ := url.Parse(resolver)
 			q := u.Query()
+
 			q.Set("name", domain)
 			q.Set("type", "TXT")
+
 			u.RawQuery = q.Encode()
 
 			req, err := http.NewRequestWithContext(ctx, "GET", u.String(), nil)
 			if err != nil {
 				return
 			}
+
 			req.Header.Set("Accept", "application/dns-json")
 			resp, err := httpClient.Do(req)
+
 			if err != nil {
 				return
 			}
+
 			defer resp.Body.Close()
 
 			var dr dohResp
 			if err := json.NewDecoder(resp.Body).Decode(&dr); err != nil {
 				return
 			}
+
 			for _, ans := range dr.Answer {
+
 				data := strings.Trim(ans.Data, `"`)
+
 				if !strings.HasPrefix(data, "v=whispera-bridges") {
 					continue
 				}
+
 				idx := strings.Index(data, " ")
+
 				if idx < 0 {
 					continue
 				}
+
 				jsonPart := data[idx+1:]
 				var bridges []*BridgeInfo
+
 				if err := json.Unmarshal([]byte(jsonPart), &bridges); err == nil && len(bridges) > 0 {
 					ch <- bridges
 					return
@@ -266,7 +282,9 @@ func (s *Selector) fetchFromDNS(ctx context.Context, domain string) ([]*BridgeIn
 }
 
 func (s *Selector) TestLatency(ctx context.Context, b *BridgeInfo) (time.Duration, error) {
+
 	ctx, cancel := context.WithTimeout(ctx, s.config.TestTimeout)
+
 	defer cancel()
 
 	start := time.Now()
@@ -293,8 +311,10 @@ func (s *Selector) TestLatency(ctx context.Context, b *BridgeInfo) (time.Duratio
 
 func (s *Selector) TestAllBridges(ctx context.Context) {
 	s.mu.RLock()
+
 	bridges := make([]*BridgeInfo, len(s.bridges))
 	copy(bridges, s.bridges)
+
 	s.mu.RUnlock()
 
 	if len(bridges) == 0 {
@@ -307,17 +327,23 @@ func (s *Selector) TestAllBridges(ctx context.Context) {
 
 	for _, b := range bridges {
 		go func(bridge *BridgeInfo) {
+
 			latency, err := s.TestLatency(ctx, bridge)
+
 			if err != nil {
+
 				log.Printf("[BridgeSelector] Bridge %s (%s): FAILED - %v", bridge.ID, bridge.Address, err)
 				s.MarkFailed(bridge.ID)
+
 			} else {
+
 				bridge.Latency = int(latency.Milliseconds())
 				log.Printf("[BridgeSelector] Bridge %s (%s): %dms", bridge.ID, bridge.Address, bridge.Latency)
 
 				select {
 				case firstReady <- bridge:
 				default:
+					return
 				}
 			}
 		}(b)
@@ -357,13 +383,16 @@ func (s *Selector) SelectBest() *BridgeInfo {
 
 func (s *Selector) MarkFailed(id string) {
 	s.mu.Lock()
+
 	defer s.mu.Unlock()
 
 	s.failedIDs[id] = time.Now()
 }
 
 func (s *Selector) isFailed(id string) bool {
+
 	failedAt, exists := s.failedIDs[id]
+
 	if !exists {
 		return false
 	}
@@ -390,8 +419,10 @@ type ClusterMasterInfo struct {
 
 func (s *Selector) GetClusterMaster(ctx context.Context) *ClusterMasterInfo {
 	s.mu.RLock()
+
 	bridges := make([]*BridgeInfo, len(s.bridges))
 	copy(bridges, s.bridges)
+
 	s.mu.RUnlock()
 
 	client := &http.Client{Timeout: 3 * time.Second}
@@ -408,19 +439,25 @@ func (s *Selector) GetClusterMaster(ctx context.Context) *ClusterMasterInfo {
 		scheme := "http"
 		reqURL := scheme + "://" + b.Address + "/cluster/master"
 		req, err := http.NewRequestWithContext(ctx, "GET", reqURL, nil)
+
 		if err != nil {
 			continue
 		}
 		resp, err := client.Do(req)
+
 		if err != nil {
 			continue
 		}
+
 		var mr masterResp
+
 		if err := json.NewDecoder(resp.Body).Decode(&mr); err != nil {
 			resp.Body.Close()
 			continue
 		}
+
 		resp.Body.Close()
+
 		if mr.MasterAddress != "" {
 			return &ClusterMasterInfo{
 				MasterAddress: mr.MasterAddress,

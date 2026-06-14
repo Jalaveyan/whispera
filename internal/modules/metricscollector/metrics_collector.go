@@ -66,7 +66,7 @@ type metricDef struct {
 
 type Collector struct {
 	*base.Module
-	config *Config
+	config      *Config
 	defsMu      sync.RWMutex
 	definitions map[string]*metricDef
 

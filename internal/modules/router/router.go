@@ -335,7 +335,6 @@ func (e *Engine) matchDomain(cond *interfaces.RuleCondition) bool {
 		return false
 	}
 
-
 	switch cond.Operator {
 	case "eq":
 		return false

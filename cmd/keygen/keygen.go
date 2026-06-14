@@ -13,7 +13,7 @@ import (
 
 func main() {
 	mode := flag.String("mode", "psk", "psk|x25519")
-	fromPriv := flag.String("from-priv", "", "when set with -mode x25519, derive pub from given priv hex32")
+	privateKey := flag.String("privateKey", "", "when set with -mode x25519, derive publicKey from given privateKey hex32")
 	flag.Parse()
 	switch *mode {
 	case "psk":
@@ -23,29 +23,29 @@ func main() {
 		}
 		fmt.Println(base64.StdEncoding.EncodeToString(key))
 	case "x25519":
-		if *fromPriv != "" {
-			priv, err := hex.DecodeString(*fromPriv)
-			if err != nil || len(priv) != 32 {
-				log.Fatal("-from-priv must be hex32")
+		if *privateKey != "" {
+			private, err := hex.DecodeString(*privateKey)
+			if err != nil || len(private) != 32 {
+				log.Fatal("-privateKey must be hex32")
 			}
-			pub, err := curve25519.X25519(priv, curve25519.Basepoint)
+			pub, err := curve25519.X25519(private, curve25519.Basepoint)
 			if err != nil {
 				log.Fatal(err)
 			}
 			fmt.Printf("pub=%s\n", hex.EncodeToString(pub))
 			return
 		}
-		priv := make([]byte, 32)
-		if _, err := rand.Read(priv); err != nil {
+		private := make([]byte, 32)
+		if _, err := rand.Read(private); err != nil {
 			log.Fatal(err)
 		}
-		pub, err := curve25519.X25519(priv, curve25519.Basepoint)
+		public, err := curve25519.X25519(private, curve25519.Basepoint)
 		if err != nil {
 			log.Fatal(err)
 		}
-		fmt.Printf("priv=%s\n", hex.EncodeToString(priv))
-		fmt.Printf("pub=%s\n", hex.EncodeToString(pub))
+		fmt.Printf("privateKey=%s\n", hex.EncodeToString(private))
+		fmt.Printf("publicKey=%s\n", hex.EncodeToString(public))
 	default:
-		log.Fatalf("unknown mode: %s", *mode)
+		log.Fatalf("unknown: %s", *mode)
 	}
 }

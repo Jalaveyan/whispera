@@ -74,9 +74,9 @@ func TestFederatedRoundTrip(t *testing.T) {
 	srv, ts := newTestServer(t)
 
 	feedbacks := []struct {
-		Transport  string  `json:"transport"`
-		Success    bool    `json:"success"`
-		LatencyMs  float64 `json:"latency_ms"`
+		Transport string  `json:"transport"`
+		Success   bool    `json:"success"`
+		LatencyMs float64 `json:"latency_ms"`
 	}{
 		{"stealth-http", true, 120.0},
 		{"stealth-http", true, 90.0},
@@ -94,8 +94,8 @@ func TestFederatedRoundTrip(t *testing.T) {
 	exportBody := mustGet(t, ts.URL+"/federated/export")
 	var exp struct {
 		Transports map[string]TransportStats `json:"transports"`
-		Model      interface{}                `json:"model"`
-		Ts         int64                      `json:"ts"`
+		Model      interface{}               `json:"model"`
+		Ts         int64                     `json:"ts"`
 	}
 	if err := json.Unmarshal(exportBody, &exp); err != nil {
 		t.Fatalf("export decode: %v body=%s", err, exportBody)

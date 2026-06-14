@@ -36,9 +36,9 @@ type Config struct {
 	MaxConns            int
 	EnableEarlyData     bool
 	InitialStreamWindow uint64
-	ALPN string
-	ServerName string
-	CertDomains []string
+	ALPN                string
+	ServerName          string
+	CertDomains         []string
 }
 
 func DefaultConfig() *Config {

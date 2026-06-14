@@ -29,29 +29,29 @@ const (
 )
 
 type AdversarialEngine struct {
-	mu               sync.RWMutex
-	surrogate        *surrogateModel
-	population       []perturbationVector
-	bestVector       perturbationVector
-	bestFitness      float64
-	feedbackRing     []feedbackEntry
-	feedbackIdx      int
-	feedbackCount    int64
-	intensity        float64
-	detectionRate    float64
-	evasionRate      float64
-	generation       int64
-	rng              *mrand.Rand
-	featureWeights   [featureDims]float64
-	strategyScores   [6]float64
-	lastAdapt        time.Time
-	totalProcessed   int64
-	totalEvaded      int64
-	stopCh           chan struct{}
+	mu             sync.RWMutex
+	surrogate      *surrogateModel
+	population     []perturbationVector
+	bestVector     perturbationVector
+	bestFitness    float64
+	feedbackRing   []feedbackEntry
+	feedbackIdx    int
+	feedbackCount  int64
+	intensity      float64
+	detectionRate  float64
+	evasionRate    float64
+	generation     int64
+	rng            *mrand.Rand
+	featureWeights [featureDims]float64
+	strategyScores [6]float64
+	lastAdapt      time.Time
+	totalProcessed int64
+	totalEvaded    int64
+	stopCh         chan struct{}
 }
 
 type perturbationVector struct {
-	offsets    [featureDims]float64
+	offsets   [featureDims]float64
 	strategy  int
 	fitness   float64
 	byteMap   [256]byte
@@ -60,11 +60,11 @@ type perturbationVector struct {
 }
 
 type feedbackEntry struct {
-	detected   bool
-	strategy   int
-	intensity  float64
-	features   [featureDims]float64
-	ts         time.Time
+	detected  bool
+	strategy  int
+	intensity float64
+	features  [featureDims]float64
+	ts        time.Time
 }
 
 type surrogateModel struct {
@@ -942,9 +942,9 @@ func (ae *AdversarialEngine) GetStats() map[string]interface{} {
 }
 
 type MLEvasion struct {
-	adversarial    *AdversarialEngine
-	enabled        bool
-	mlTechniques   map[string]bool
+	adversarial     *AdversarialEngine
+	enabled         bool
+	mlTechniques    map[string]bool
 	behavioralScore float64
 	sessionPattern  string
 }
@@ -959,12 +959,12 @@ func NewMLEvasion() *MLEvasion {
 			"ml_classification_evasion": true,
 			"statistical_evasion":       true,
 			"pattern_disruption":        true,
-			"fgsm_attack":              true,
-			"pgd_attack":               true,
-			"byte_shuffle":             true,
-			"entropy_target":           true,
-			"size_morph":               true,
-			"composite_attack":         true,
+			"fgsm_attack":               true,
+			"pgd_attack":                true,
+			"byte_shuffle":              true,
+			"entropy_target":            true,
+			"size_morph":                true,
+			"composite_attack":          true,
 		},
 		behavioralScore: 0.5,
 		sessionPattern:  "generic",

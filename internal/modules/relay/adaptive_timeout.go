@@ -17,6 +17,7 @@ type AdaptiveTimeout struct {
 	rttVar       time.Duration
 	updated      atomic.Value
 }
+
 func NewAdaptiveTimeout(bufferSize int) *AdaptiveTimeout {
 	if bufferSize <= 0 {
 		bufferSize = 100

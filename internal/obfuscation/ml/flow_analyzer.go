@@ -19,20 +19,20 @@ const (
 )
 
 type FlowState struct {
-	Hidden    []float64
-	Cell      []float64
-	PacketNum int
-	LastSeen  time.Time
-	History   []flowStep
-	HistIdx   int
-	HistFull  bool
+	Hidden     []float64
+	Cell       []float64
+	PacketNum  int
+	LastSeen   time.Time
+	History    []flowStep
+	HistIdx    int
+	HistFull   bool
 	ClassVotes [FlowOutputSize]int
 }
 
 type flowStep struct {
-	Input    []float64
-	HidPrev  []float64
-	CellPrev []float64
+	Input      []float64
+	HidPrev    []float64
+	CellPrev   []float64
 	ForgetGate []float64
 	InputGate  []float64
 	OutputGate []float64
@@ -57,20 +57,20 @@ type FlowAnalyzer struct {
 func NewFlowAnalyzer() *FlowAnalyzer {
 	fa := &FlowAnalyzer{
 		flows: make(map[string]*FlowState),
-		WxF: xavierInit(FlowInputSize, FlowHiddenSize),
-		WhF: xavierInit(FlowHiddenSize, FlowHiddenSize),
-		BF:  biasInit(FlowHiddenSize, 1.0),
-		WxI: xavierInit(FlowInputSize, FlowHiddenSize),
-		WhI: xavierInit(FlowHiddenSize, FlowHiddenSize),
-		BI:  make([]float64, FlowHiddenSize),
-		WxO: xavierInit(FlowInputSize, FlowHiddenSize),
-		WhO: xavierInit(FlowHiddenSize, FlowHiddenSize),
-		BO:  make([]float64, FlowHiddenSize),
-		WxC: xavierInit(FlowInputSize, FlowHiddenSize),
-		WhC: xavierInit(FlowHiddenSize, FlowHiddenSize),
-		BC:  make([]float64, FlowHiddenSize),
-		Wo: xavierInit(FlowHiddenSize, FlowOutputSize),
-		Bo: make([]float64, FlowOutputSize),
+		WxF:   xavierInit(FlowInputSize, FlowHiddenSize),
+		WhF:   xavierInit(FlowHiddenSize, FlowHiddenSize),
+		BF:    biasInit(FlowHiddenSize, 1.0),
+		WxI:   xavierInit(FlowInputSize, FlowHiddenSize),
+		WhI:   xavierInit(FlowHiddenSize, FlowHiddenSize),
+		BI:    make([]float64, FlowHiddenSize),
+		WxO:   xavierInit(FlowInputSize, FlowHiddenSize),
+		WhO:   xavierInit(FlowHiddenSize, FlowHiddenSize),
+		BO:    make([]float64, FlowHiddenSize),
+		WxC:   xavierInit(FlowInputSize, FlowHiddenSize),
+		WhC:   xavierInit(FlowHiddenSize, FlowHiddenSize),
+		BC:    make([]float64, FlowHiddenSize),
+		Wo:    xavierInit(FlowHiddenSize, FlowOutputSize),
+		Bo:    make([]float64, FlowOutputSize),
 	}
 	go fa.cleanupLoop()
 	return fa

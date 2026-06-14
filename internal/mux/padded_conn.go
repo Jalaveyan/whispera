@@ -160,5 +160,5 @@ func (pc *PaddedConn) Read(p []byte) (int, error) {
 }
 
 func (pc *PaddedConn) SetDeadline(t time.Time) error      { return pc.Conn.SetDeadline(t) }
-func (pc *PaddedConn) SetReadDeadline(t time.Time) error   { return pc.Conn.SetReadDeadline(t) }
-func (pc *PaddedConn) SetWriteDeadline(t time.Time) error  { return pc.Conn.SetWriteDeadline(t) }
+func (pc *PaddedConn) SetReadDeadline(t time.Time) error  { return pc.Conn.SetReadDeadline(t) }
+func (pc *PaddedConn) SetWriteDeadline(t time.Time) error { return pc.Conn.SetWriteDeadline(t) }

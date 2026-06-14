@@ -26,20 +26,20 @@ const (
 )
 
 type LogEvent struct {
-	Time     time.Time             `json:"time"`
-	Kind     EventKind             `json:"kind"`
-	Severity EventSeverity         `json:"severity"`
-	Message  string                `json:"message"`
-	Fields   map[string]string     `json:"fields,omitempty"`
+	Time     time.Time         `json:"time"`
+	Kind     EventKind         `json:"kind"`
+	Severity EventSeverity     `json:"severity"`
+	Message  string            `json:"message"`
+	Fields   map[string]string `json:"fields,omitempty"`
 }
 
 const eventRingSize = 500
 
 type eventRing struct {
-	mu     sync.Mutex
-	buf    [eventRingSize]LogEvent
-	head   int
-	count  int
+	mu    sync.Mutex
+	buf   [eventRingSize]LogEvent
+	head  int
+	count int
 }
 
 var globalEventRing = &eventRing{}

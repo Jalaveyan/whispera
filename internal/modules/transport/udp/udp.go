@@ -277,7 +277,6 @@ func (t *Transport) readLoop() {
 			continue
 		}
 
-
 		if !t.rateLimiter.Allow() {
 			t.metrics.Increment("rate_limited")
 			t.bufferPool.Put(buf)

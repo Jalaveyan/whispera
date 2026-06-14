@@ -337,13 +337,13 @@ type SniffingConfig struct {
 }
 
 type ChameleonConfig struct {
-	Enabled       bool   `yaml:"enabled" json:"enabled"`
-	ListenAddr    string `yaml:"listen_addr" json:"listen_addr"`
-	TLSCert       string `yaml:"tls_cert" json:"tls_cert"`
-	TLSKey        string `yaml:"tls_key" json:"tls_key"`
-	Domain        string `yaml:"domain" json:"domain"`
-	ACMEDir       string `yaml:"acme_dir" json:"acme_dir"`
-	DecoyOrigin   string `yaml:"decoy_origin" json:"decoy_origin"`
+	Enabled        bool   `yaml:"enabled" json:"enabled"`
+	ListenAddr     string `yaml:"listen_addr" json:"listen_addr"`
+	TLSCert        string `yaml:"tls_cert" json:"tls_cert"`
+	TLSKey         string `yaml:"tls_key" json:"tls_key"`
+	Domain         string `yaml:"domain" json:"domain"`
+	ACMEDir        string `yaml:"acme_dir" json:"acme_dir"`
+	DecoyOrigin    string `yaml:"decoy_origin" json:"decoy_origin"`
 	GANIface       string `yaml:"gan_iface" json:"gan_iface"`
 	GANPort        int    `yaml:"gan_port" json:"gan_port"`
 	GANMaxPadding  int    `yaml:"gan_max_padding" json:"gan_max_padding"`
@@ -384,7 +384,6 @@ type TransportConfig struct {
 		Enabled    bool   `yaml:"enabled"`
 		ListenAddr string `yaml:"listen_addr"`
 	} `yaml:"tcp"`
-
 }
 
 type SessionConfig struct {
@@ -433,18 +432,18 @@ type ObfuscationConfig struct {
 }
 
 type APIConfig struct {
-	Enabled        bool     `yaml:"enabled"`
-	ListenAddr     string   `yaml:"listen_addr"`
-	AuthToken      string   `yaml:"auth_token"`
-	WebRoot        string   `yaml:"web_root"`
-	EnableCORS     bool     `yaml:"enable_cors"`
-	AllowedOrigins []string `yaml:"allowed_origins"`
-	TLSCert        string   `yaml:"tls_cert"`
-	TLSKey         string   `yaml:"tls_key"`
-	AdminUsername      string `yaml:"admin_username"`
-	AdminPassword      string `yaml:"admin_password"`
-	AdminPasswordHash  string `yaml:"admin_password_hash"`
-	LoginRateLimit int      `yaml:"login_rate_limit"`
+	Enabled           bool     `yaml:"enabled"`
+	ListenAddr        string   `yaml:"listen_addr"`
+	AuthToken         string   `yaml:"auth_token"`
+	WebRoot           string   `yaml:"web_root"`
+	EnableCORS        bool     `yaml:"enable_cors"`
+	AllowedOrigins    []string `yaml:"allowed_origins"`
+	TLSCert           string   `yaml:"tls_cert"`
+	TLSKey            string   `yaml:"tls_key"`
+	AdminUsername     string   `yaml:"admin_username"`
+	AdminPassword     string   `yaml:"admin_password"`
+	AdminPasswordHash string   `yaml:"admin_password_hash"`
+	LoginRateLimit    int      `yaml:"login_rate_limit"`
 }
 
 type MetricsConfig struct {

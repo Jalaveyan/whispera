@@ -8,7 +8,6 @@ import (
 	"github.com/google/uuid"
 )
 
-
 type TrafficLog struct {
 	ID        int64     `json:"id"`
 	UserID    uuid.UUID `json:"user_id"`
@@ -19,14 +18,12 @@ type TrafficLog struct {
 	Timestamp time.Time `json:"timestamp"`
 }
 
-
 type DailyStats struct {
 	Date     time.Time `json:"date"`
 	BytesIn  int64     `json:"bytes_in"`
 	BytesOut int64     `json:"bytes_out"`
 	Sessions int       `json:"sessions"`
 }
-
 
 func (db *DB) LogTraffic(ctx context.Context, userID, sessionID uuid.UUID, bytesIn, bytesOut int64, duration int) error {
 	tx, err := db.pool.Begin(ctx)
@@ -43,7 +40,6 @@ func (db *DB) LogTraffic(ctx context.Context, userID, sessionID uuid.UUID, bytes
 		return fmt.Errorf("insert traffic log: %w", err)
 	}
 
-	
 	_, err = tx.Exec(ctx, `
 		UPDATE users SET traffic_used = traffic_used + $1, updated_at = NOW() WHERE id = $2
 	`, bytesIn+bytesOut, userID)
@@ -53,7 +49,6 @@ func (db *DB) LogTraffic(ctx context.Context, userID, sessionID uuid.UUID, bytes
 
 	return tx.Commit(ctx)
 }
-
 
 func (db *DB) UpdateDailyStats(ctx context.Context, userID uuid.UUID, bytesIn, bytesOut int64) error {
 	_, err := db.pool.Exec(ctx, `
@@ -66,7 +61,6 @@ func (db *DB) UpdateDailyStats(ctx context.Context, userID uuid.UUID, bytesIn, b
 	`, userID, bytesIn, bytesOut)
 	return err
 }
-
 
 func (db *DB) GetUserDailyStats(ctx context.Context, userID uuid.UUID, days int) ([]DailyStats, error) {
 	rows, err := db.pool.Query(ctx, `
@@ -93,7 +87,6 @@ func (db *DB) GetUserDailyStats(ctx context.Context, userID uuid.UUID, days int)
 	return stats, nil
 }
 
-
 type TotalStats struct {
 	TotalBytesIn  int64 `json:"total_bytes_in"`
 	TotalBytesOut int64 `json:"total_bytes_out"`
@@ -104,7 +97,6 @@ type TotalStats struct {
 func (db *DB) GetUserTotalStats(ctx context.Context, userID uuid.UUID) (*TotalStats, error) {
 	var stats TotalStats
 
-	
 	_ = db.pool.QueryRow(ctx, `
 		SELECT COALESCE(SUM(bytes_in), 0), COALESCE(SUM(bytes_out), 0), COALESCE(SUM(sessions), 0)
 		FROM daily_stats WHERE user_id = $1
@@ -114,7 +106,6 @@ func (db *DB) GetUserTotalStats(ctx context.Context, userID uuid.UUID) (*TotalSt
 
 	return &stats, nil
 }
-
 
 func (db *DB) CleanupOldLogs(ctx context.Context, retentionDays int) (int64, error) {
 	if retentionDays <= 0 {

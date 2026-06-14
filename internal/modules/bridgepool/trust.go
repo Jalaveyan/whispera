@@ -10,6 +10,7 @@ import (
 type TrustManager struct {
 	registry *Registry
 }
+
 func NewTrustManager(registry *Registry) *TrustManager {
 	return &TrustManager{registry: registry}
 }
@@ -61,11 +62,11 @@ func (t *TrustManager) CalculateTrustLevel(b *BridgeInfo) int {
 
 	age := time.Since(b.CreatedAt)
 	if age > 30*24*time.Hour {
-		score += 20 
+		score += 20
 	} else if age > 7*24*time.Hour {
-		score += 10 
+		score += 10
 	} else if age > 24*time.Hour {
-		score += 5 
+		score += 5
 	}
 	if b.PublicKey != "" {
 		score += 10

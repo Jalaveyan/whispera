@@ -105,10 +105,10 @@ func TestAgentHeartbeat(t *testing.T) {
 	defer server.Close()
 
 	agent := NewAgent(&AgentConfig{
-		BridgeID:          "test-bridge",
-		UpstreamServer:    server.Listener.Addr().String(),
-		HeartbeatInterval: 1 * time.Hour,
-		MetricsInterval:   1 * time.Hour,
+		BridgeID:           "test-bridge",
+		UpstreamServer:     server.Listener.Addr().String(),
+		HeartbeatInterval:  1 * time.Hour,
+		MetricsInterval:    1 * time.Hour,
 		ConfigPollInterval: 1 * time.Hour,
 	})
 	agent.client = &http.Client{
@@ -139,10 +139,10 @@ func TestAgentConfigUpdateCallback(t *testing.T) {
 	defer server.Close()
 
 	agent := NewAgent(&AgentConfig{
-		BridgeID:          "test",
-		UpstreamServer:    server.Listener.Addr().String(),
-		HeartbeatInterval: 1 * time.Hour,
-		MetricsInterval:   1 * time.Hour,
+		BridgeID:           "test",
+		UpstreamServer:     server.Listener.Addr().String(),
+		HeartbeatInterval:  1 * time.Hour,
+		MetricsInterval:    1 * time.Hour,
 		ConfigPollInterval: 1 * time.Hour,
 	})
 	agent.client = &http.Client{
@@ -171,10 +171,10 @@ func TestAgentConfigUpdateCallback(t *testing.T) {
 
 func TestAgentStartStop(t *testing.T) {
 	agent := NewAgent(&AgentConfig{
-		BridgeID:          "test",
-		UpstreamServer:    "127.0.0.1:1",
-		HeartbeatInterval: 100 * time.Millisecond,
-		MetricsInterval:   100 * time.Millisecond,
+		BridgeID:           "test",
+		UpstreamServer:     "127.0.0.1:1",
+		HeartbeatInterval:  100 * time.Millisecond,
+		MetricsInterval:    100 * time.Millisecond,
 		ConfigPollInterval: 100 * time.Millisecond,
 	})
 	agent.Start()

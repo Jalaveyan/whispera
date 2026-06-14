@@ -1,4 +1,3 @@
-
 package evasion
 
 import (

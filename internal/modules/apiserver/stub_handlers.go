@@ -4,7 +4,6 @@ import (
 	"net/http"
 )
 
-
 func (s *Server) handleAdblockSettings(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAdmin(w, r) {
 		return

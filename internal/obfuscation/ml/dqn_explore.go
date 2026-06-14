@@ -5,7 +5,6 @@ import (
 	mrand "math/rand"
 )
 
-
 type StickyExplorer struct {
 	K         int
 	remaining int
@@ -24,7 +23,6 @@ func (s *StickyExplorer) Explore(epsilon float64, n int) (int, bool) {
 	}
 	return -1, false
 }
-
 
 type ThompsonSampler struct {
 	alpha []float64
@@ -102,7 +100,6 @@ func gammaRand(shape float64) float64 {
 	}
 }
 
-
 func boltzmannSample(qvals []float64, temp float64) int {
 	n := len(qvals)
 	if n == 0 {
@@ -139,7 +136,6 @@ func boltzmannSample(qvals []float64, temp float64) int {
 	return n - 1
 }
 
-
 type CurriculumTracker struct {
 	window    []float64
 	idx       int
@@ -169,7 +165,6 @@ func (c *CurriculumTracker) Add(reward float64) bool {
 	}
 	return sum/float64(len(c.window)) < c.threshold
 }
-
 
 type DiversityTracker struct {
 	counts []int64

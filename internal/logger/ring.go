@@ -94,4 +94,3 @@ func ring() *ringBuffer {
 func Snapshot(limit int, minLevel Level) []RingEntry {
 	return ring().snapshot(limit, minLevel)
 }
-

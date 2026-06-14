@@ -31,9 +31,10 @@ const (
 	KeySize   = 32
 	NonceSize = 12
 	SaltSize  = 32
-	InfoSend = "whispera-send"
-	InfoRecv = "whispera-recv"
+	InfoSend  = "whispera-send"
+	InfoRecv  = "whispera-recv"
 )
+
 type CipherType string
 
 const (

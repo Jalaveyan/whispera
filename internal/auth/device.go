@@ -42,6 +42,7 @@ func LoadOrCreateDeviceID() ([16]byte, error) {
 	if _, err := rand.Read(id[:]); err != nil {
 		return id, fmt.Errorf("failed to generate device ID: %w", err)
 	}
+
 	id[6] = (id[6] & 0x0f) | 0x40
 	id[8] = (id[8] & 0x3f) | 0x80
 

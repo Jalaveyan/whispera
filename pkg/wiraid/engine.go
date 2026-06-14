@@ -23,9 +23,9 @@ type runningProc struct {
 }
 
 type Engine struct {
-	Registry  *Registry
-	mu        sync.Mutex
-	running   map[string]*runningProc
+	Registry   *Registry
+	mu         sync.Mutex
+	running    map[string]*runningProc
 	useSystemd bool
 }
 

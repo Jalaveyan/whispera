@@ -12,8 +12,8 @@ import (
 )
 
 type TransportCredentials struct {
-	Transport   string                 `json:"transport"`
-	Credentials map[string]interface{} `json:"credentials"`
+	Transport    string                 `json:"transport"`
+	Credentials  map[string]interface{} `json:"credentials"`
 	ClientConfig map[string]interface{} `json:"client_config"`
 }
 
@@ -177,7 +177,6 @@ func (s *Server) handleGenerateMultiTransportKeys(w http.ResponseWriter, r *http
 		"results": results,
 	})
 }
-
 
 func randomBase64(n int) (string, error) {
 	b := make([]byte, n)

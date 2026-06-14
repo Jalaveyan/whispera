@@ -2,24 +2,25 @@ package bond
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
 )
 
 type ScalerOpts struct {
-	MinMembers      int
-	MaxMembers      int
-	AvgHighPct      int
-	PeakHighPct     int
-	HotTicks        int
-	Interval        time.Duration
-	GrowCooldown    time.Duration
-	GrowBatch       int
-	DialTimeout     time.Duration
-	StallTicks      int
-	StallCooldown   time.Duration
-	Logf            func(format string, args ...interface{})
+	MinMembers    int
+	MaxMembers    int
+	AvgHighPct    int
+	PeakHighPct   int
+	HotTicks      int
+	Interval      time.Duration
+	GrowCooldown  time.Duration
+	GrowBatch     int
+	DialTimeout   time.Duration
+	StallTicks    int
+	StallCooldown time.Duration
+	Logf          func(format string, args ...interface{})
 }
 
 func (o *ScalerOpts) normalize() {
@@ -60,8 +61,11 @@ func (o *ScalerOpts) normalize() {
 
 func StartScaler(ctx context.Context, c *Conn, dial DialFunc, opts ScalerOpts) (stop func()) {
 	opts.normalize()
+
 	stopCh := make(chan struct{})
+
 	var stopOnce sync.Once
+
 	stop = func() { stopOnce.Do(func() { close(stopCh) }) }
 
 	go func() {
@@ -84,6 +88,7 @@ func StartScaler(ctx context.Context, c *Conn, dial DialFunc, opts ScalerOpts) (
 			case <-ctx.Done():
 				return
 			case <-t.C:
+				fmt.Println("[scaler] starting")
 			}
 
 			if growing.Load() != 0 {
@@ -108,7 +113,9 @@ func StartScaler(ctx context.Context, c *Conn, dial DialFunc, opts ScalerOpts) (
 				growsSincePressure = 0
 				continue
 			}
+
 			hot++
+
 			if hot < opts.HotTicks && fbDelta == 0 {
 				continue
 			}
@@ -126,6 +133,7 @@ func StartScaler(ctx context.Context, c *Conn, dial DialFunc, opts ScalerOpts) (
 			}
 
 			lastGrow = time.Now()
+
 			hot = 0
 			growsSincePressure++
 			growing.Store(int32(batch))
@@ -139,8 +147,11 @@ func StartScaler(ctx context.Context, c *Conn, dial DialFunc, opts ScalerOpts) (
 			for i := 0; i < batch; i++ {
 				go func() {
 					defer growing.Add(-1)
+
 					gctx, cancel := context.WithTimeout(ctx, opts.DialTimeout)
+
 					defer cancel()
+
 					if err := c.Grow(gctx, dial); err != nil {
 						if opts.Logf != nil {
 							opts.Logf("bond/scaler: grow failed: %v", err)

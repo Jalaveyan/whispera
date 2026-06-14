@@ -50,22 +50,20 @@ func main() {
 		TLSKey:     *tlsKey,
 	}
 
-	srv, err := mlserver.New(cfg)
+	server, err := mlserver.New(cfg)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "init failed: %v\n", err)
 		os.Exit(1)
 	}
 
-	if err := srv.Start(); err != nil {
+	if err := server.Start(); err != nil {
 		fmt.Fprintf(os.Stderr, "start failed: %v\n", err)
 		os.Exit(1)
 	}
-
-	fmt.Printf("whispera-ml-server %s started on %s (native Gorgonia engine)\n", Version, *listenAddr)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 	<-ctx.Done()
 
-	srv.Stop()
+	server.Stop()
 }

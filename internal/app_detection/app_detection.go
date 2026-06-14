@@ -16,7 +16,7 @@ type AppDetector struct {
 func NewAppDetector() *AppDetector {
 	return &AppDetector{
 		runningApps:  make(map[string]bool),
-		scanInterval: 5 * time.Second,
+		scanInterval: 1 * time.Second,
 		stopChan:     make(chan struct{}),
 	}
 }

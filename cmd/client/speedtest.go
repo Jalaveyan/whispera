@@ -13,13 +13,13 @@ import (
 )
 
 type SpeedResult struct {
-	LatencyMs   float64 `json:"latency_ms"`
+	LatencyMs    float64 `json:"latency_ms"`
 	DownloadMbps float64 `json:"download_mbps"`
-	UploadMbps  float64 `json:"upload_mbps"`
-	ServerIP    string  `json:"server_ip,omitempty"`
-	DownloadMB  int     `json:"download_mb"`
-	UploadMB    int     `json:"upload_mb"`
-	Error       string  `json:"error,omitempty"`
+	UploadMbps   float64 `json:"upload_mbps"`
+	ServerIP     string  `json:"server_ip,omitempty"`
+	DownloadMB   int     `json:"download_mb"`
+	UploadMB     int     `json:"upload_mb"`
+	Error        string  `json:"error,omitempty"`
 }
 
 func runSpeedTest(ctx context.Context, proxyAddr, target, token string, downloadMB, uploadMB int) SpeedResult {
@@ -114,11 +114,11 @@ func buildSOCKS5Client(proxyAddr string) (*http.Client, error) {
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 			return dialer.Dial(network, addr)
 		},
-		TLSHandshakeTimeout: 15 * time.Second,
+		TLSHandshakeTimeout: 1 * time.Second,
 	}
 	return &http.Client{
 		Transport: transport,
-		Timeout:   10 * time.Minute,
+		Timeout:   1 * time.Second,
 	}, nil
 }
 

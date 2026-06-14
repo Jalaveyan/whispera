@@ -24,44 +24,44 @@ const (
 )
 
 type BridgeInfo struct {
-	ID         string     `json:"id"`
-	Name       string     `json:"name,omitempty"`
-	Address    string     `json:"address"`
-	Type       BridgeType `json:"type"`
-	Provider   string     `json:"provider"`
-	Region     string     `json:"region"`
-	TrustLevel int        `json:"trust_level"`
-	IsAlive    bool       `json:"is_alive"`
-	Latency    int        `json:"latency_ms"`
-	PublicKey  string     `json:"public_key"`
-	LastCheck  time.Time  `json:"last_check"`
-	CreatedAt  time.Time  `json:"created_at"`
-	OwnerID    string     `json:"owner_id"`
-	Country    string     `json:"country,omitempty"`
-	City       string     `json:"city,omitempty"`
-	Lat        float64    `json:"lat,omitempty"`
-	Lon        float64    `json:"lon,omitempty"`
-	Bandwidth  int        `json:"bandwidth_mbps,omitempty"`
-	SSHPubKey  string     `json:"ssh_pub_key,omitempty"`
-	Load       float64    `json:"load,omitempty"`
-	MaxUsers   int        `json:"max_users,omitempty"`
-	CurUsers   int        `json:"cur_users,omitempty"`
+	ID          string     `json:"id"`
+	Name        string     `json:"name,omitempty"`
+	Address     string     `json:"address"`
+	Type        BridgeType `json:"type"`
+	Provider    string     `json:"provider"`
+	Region      string     `json:"region"`
+	TrustLevel  int        `json:"trust_level"`
+	IsAlive     bool       `json:"is_alive"`
+	Latency     int        `json:"latency_ms"`
+	PublicKey   string     `json:"public_key"`
+	LastCheck   time.Time  `json:"last_check"`
+	CreatedAt   time.Time  `json:"created_at"`
+	OwnerID     string     `json:"owner_id"`
+	Country     string     `json:"country,omitempty"`
+	City        string     `json:"city,omitempty"`
+	Lat         float64    `json:"lat,omitempty"`
+	Lon         float64    `json:"lon,omitempty"`
+	Bandwidth   int        `json:"bandwidth_mbps,omitempty"`
+	SSHPubKey   string     `json:"ssh_pub_key,omitempty"`
+	Load        float64    `json:"load,omitempty"`
+	MaxUsers    int        `json:"max_users,omitempty"`
+	CurUsers    int        `json:"cur_users,omitempty"`
 	Version     string     `json:"version,omitempty"`
 	Blacklisted bool       `json:"blacklisted,omitempty"`
 	LossPct     float64    `json:"loss_pct,omitempty"`
 }
 
 type AccessKey struct {
-	ID             string    `json:"id"`
-	BridgeID       string    `json:"bridge_id"`
-	UserID         string    `json:"user_id"`
-	SSHKey         string    `json:"ssh_key"`
-	ExpiresAt      time.Time `json:"expires_at"`
-	CreatedAt      time.Time `json:"created_at"`
-	Used           bool      `json:"used"`
-	OneTime        bool      `json:"one_time"`
-	PinnedIP       string    `json:"pinned_ip,omitempty"`
-	ChallengeHMAC  string    `json:"challenge_hmac,omitempty"`
+	ID            string    `json:"id"`
+	BridgeID      string    `json:"bridge_id"`
+	UserID        string    `json:"user_id"`
+	SSHKey        string    `json:"ssh_key"`
+	ExpiresAt     time.Time `json:"expires_at"`
+	CreatedAt     time.Time `json:"created_at"`
+	Used          bool      `json:"used"`
+	OneTime       bool      `json:"one_time"`
+	PinnedIP      string    `json:"pinned_ip,omitempty"`
+	ChallengeHMAC string    `json:"challenge_hmac,omitempty"`
 }
 
 type PendingUpdate struct {
@@ -538,8 +538,8 @@ func generateBridgeID() string {
 }
 
 type UserBridgeAssignment struct {
-	UserID    string    `json:"user_id"`
-	BridgeIDs []string  `json:"bridge_ids"`
+	UserID     string    `json:"user_id"`
+	BridgeIDs  []string  `json:"bridge_ids"`
 	AssignedAt time.Time `json:"assigned_at"`
 	ExpiresAt  time.Time `json:"expires_at"`
 }
@@ -602,9 +602,9 @@ type BridgeAlert struct {
 }
 
 type NotificationManager struct {
-	mu       sync.Mutex
-	alerts   []BridgeAlert
-	handlers []func(BridgeAlert)
+	mu        sync.Mutex
+	alerts    []BridgeAlert
+	handlers  []func(BridgeAlert)
 	maxAlerts int
 }
 

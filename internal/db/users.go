@@ -20,7 +20,6 @@ var (
 	ErrUserInactive    = errors.New("user is inactive")
 )
 
-
 type User struct {
 	ID           uuid.UUID  `json:"id"`
 	Email        string     `json:"email"`
@@ -34,20 +33,17 @@ type User struct {
 	CreatedAt    time.Time  `json:"created_at"`
 	UpdatedAt    time.Time  `json:"updated_at"`
 
-	
 	PlanName     string `json:"plan_name,omitempty"`
 	TrafficLimit int64  `json:"traffic_limit"`
 	SpeedLimit   int    `json:"speed_limit"`
 	MaxDevices   int    `json:"max_devices"`
 
-	
 	ObfsProfile       string `json:"obfs_profile"`
 	MarionetteProfile string `json:"marionette_profile"`
 	RussianService    string `json:"russian_service"`
 	PrivateKey        string `json:"private_key,omitempty"`
 	TelegramID        *int64 `json:"telegram_id,omitempty"`
 }
-
 
 func (db *DB) CreateUser(ctx context.Context, email, password string, trafficLimit int64, validUntil *time.Time, obfsProfile, marionetteProfile, russianService, publicKey, privateKey string) (*User, error) {
 	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
@@ -77,7 +73,6 @@ func (db *DB) CreateUser(ctx context.Context, email, password string, trafficLim
 
 	return &user, nil
 }
-
 
 func (db *DB) UpdateUser(ctx context.Context, id uuid.UUID, email, password string) error {
 	var query string
@@ -110,7 +105,6 @@ func (db *DB) UpdateUser(ctx context.Context, id uuid.UUID, email, password stri
 
 	return nil
 }
-
 
 func (db *DB) GetUserByEmail(ctx context.Context, email string) (*User, error) {
 	var user User
@@ -148,7 +142,6 @@ func (db *DB) GetUserByEmail(ctx context.Context, email string) (*User, error) {
 	return &user, nil
 }
 
-
 func (db *DB) GetUserByTelegramID(ctx context.Context, telegramID int64) (*User, error) {
 	var user User
 	err := db.pool.QueryRow(ctx, `
@@ -185,7 +178,6 @@ func (db *DB) GetUserByTelegramID(ctx context.Context, telegramID int64) (*User,
 	return &user, nil
 }
 
-
 func (db *DB) GetUserByPublicKey(ctx context.Context, pubKey string) (*User, error) {
 	var user User
 	err := db.pool.QueryRow(ctx, `
@@ -218,7 +210,6 @@ func (db *DB) GetUserByPublicKey(ctx context.Context, pubKey string) (*User, err
 	return &user, nil
 }
 
-
 func (db *DB) AuthenticateUser(ctx context.Context, email, password string) (*User, error) {
 	user, err := db.GetUserByEmail(ctx, email)
 	if err != nil {
@@ -236,7 +227,6 @@ func (db *DB) AuthenticateUser(ctx context.Context, email, password string) (*Us
 	return user, nil
 }
 
-
 func (db *DB) SetUserPublicKey(ctx context.Context, userID uuid.UUID, pubKey string) error {
 	_, err := db.pool.Exec(ctx, `
 		UPDATE users SET public_key = $1, updated_at = NOW() WHERE id = $2
@@ -244,14 +234,12 @@ func (db *DB) SetUserPublicKey(ctx context.Context, userID uuid.UUID, pubKey str
 	return err
 }
 
-
 func (db *DB) UpdateTrafficUsed(ctx context.Context, userID uuid.UUID, bytesUsed int64) error {
 	_, err := db.pool.Exec(ctx, `
 		UPDATE users SET traffic_used = traffic_used + $1, updated_at = NOW() WHERE id = $2
 	`, bytesUsed, userID)
 	return err
 }
-
 
 func (db *DB) CheckUserLimits(ctx context.Context, userID uuid.UUID) error {
 	var user struct {
@@ -284,7 +272,6 @@ func (db *DB) CheckUserLimits(ctx context.Context, userID uuid.UUID) error {
 		return ErrUserInactive
 	}
 
-	
 	effectiveLimit := user.PlanTrafficLimit
 	if user.UserTrafficLimit > 0 {
 		effectiveLimit = user.UserTrafficLimit
@@ -306,7 +293,6 @@ func (db *DB) CheckUserLimits(ctx context.Context, userID uuid.UUID) error {
 	return nil
 }
 
-
 func (db *DB) SetAdmin(ctx context.Context, userID uuid.UUID, isAdmin bool) error {
 	_, err := db.pool.Exec(ctx, `UPDATE users SET is_admin = $1, updated_at = NOW() WHERE id = $2`, isAdmin, userID)
 	return err
@@ -316,7 +302,6 @@ func (db *DB) SetUserActive(ctx context.Context, userID uuid.UUID, active bool) 
 	_, err := db.pool.Exec(ctx, `UPDATE users SET is_active = $1, updated_at = NOW() WHERE id = $2`, active, userID)
 	return err
 }
-
 
 func (db *DB) ListUsers(ctx context.Context, limit, offset int) ([]User, error) {
 	rows, err := db.pool.Query(ctx, `
@@ -361,7 +346,6 @@ func (db *DB) ListUsers(ctx context.Context, limit, offset int) ([]User, error) 
 
 	return users, nil
 }
-
 
 func (db *DB) DeleteUser(ctx context.Context, userID uuid.UUID) error {
 	result, err := db.pool.Exec(ctx, `DELETE FROM users WHERE id = $1`, userID)

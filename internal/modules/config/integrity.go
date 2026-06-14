@@ -30,8 +30,8 @@ const (
 
 type NotificationConfig struct {
 	Enabled bool   `yaml:"enabled" json:"enabled"`
-	Token   string `yaml:"token" json:"token"`     
-	ChatID  string `yaml:"chat_id" json:"chat_id"` 
+	Token   string `yaml:"token" json:"token"`
+	ChatID  string `yaml:"chat_id" json:"chat_id"`
 }
 
 func (p *Provider) CalculateChecksum() (string, error) {

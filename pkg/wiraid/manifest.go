@@ -36,15 +36,15 @@ type ProxyRules struct {
 }
 
 type ModuleInfo struct {
-	Name        string     `json:"name"`
-	Version     string     `json:"version"`
-	Description string     `json:"description"`
-	Author      string     `json:"author"`
-	Source      string     `json:"source"`
-	Lang        ModuleLang `json:"lang"`
-	Entry       string     `json:"entry"`
-	Platforms   []string   `json:"platforms"`
-	Args        []string   `json:"args"`
+	Name              string            `json:"name"`
+	Version           string            `json:"version"`
+	Description       string            `json:"description"`
+	Author            string            `json:"author"`
+	Source            string            `json:"source"`
+	Lang              ModuleLang        `json:"lang"`
+	Entry             string            `json:"entry"`
+	Platforms         []string          `json:"platforms"`
+	Args              []string          `json:"args"`
 	WiraidID          string            `json:"wiraid_id,omitempty"`
 	Peer              *PeerSpec         `json:"peer,omitempty"`
 	PairExports       map[string]string `json:"pair_exports,omitempty"`
@@ -96,16 +96,16 @@ type ReadySignal struct {
 }
 
 type Runtime struct {
-	Cmd              []string          `json:"cmd,omitempty"`
-	PreCmd           [][]string        `json:"pre_cmd,omitempty"`
-	PostCmd          [][]string        `json:"post_cmd,omitempty"`
-	Env              map[string]string `json:"env,omitempty"`
-	ConfigTemplate     string `json:"config_template,omitempty"`
-	ConfigTemplateFile string `json:"config_template_file,omitempty"`
-	ConfigPath         string `json:"config_path,omitempty"`
-	Protocol         string            `json:"protocol,omitempty"`
-	PortDiscovery    PortDiscovery     `json:"port_discovery,omitempty"`
-	Ready            ReadySignal       `json:"ready_signal,omitempty"`
+	Cmd                []string          `json:"cmd,omitempty"`
+	PreCmd             [][]string        `json:"pre_cmd,omitempty"`
+	PostCmd            [][]string        `json:"post_cmd,omitempty"`
+	Env                map[string]string `json:"env,omitempty"`
+	ConfigTemplate     string            `json:"config_template,omitempty"`
+	ConfigTemplateFile string            `json:"config_template_file,omitempty"`
+	ConfigPath         string            `json:"config_path,omitempty"`
+	Protocol           string            `json:"protocol,omitempty"`
+	PortDiscovery      PortDiscovery     `json:"port_discovery,omitempty"`
+	Ready              ReadySignal       `json:"ready_signal,omitempty"`
 }
 
 type ParamSchema struct {

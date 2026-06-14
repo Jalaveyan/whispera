@@ -146,7 +146,6 @@ func (m *Manager) GetStats() map[string]interface{} {
 	}
 }
 
-
 func (p *IPPool) Release(ip net.IP) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()

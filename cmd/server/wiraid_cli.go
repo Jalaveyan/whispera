@@ -11,13 +11,16 @@ import (
 )
 
 func wiraidBaseDir() string {
+
 	if v := os.Getenv("WHISPERA_WIRAID_DIR"); v != "" {
 		return v
 	}
 	return "/var/lib/whispera/wiraid"
+
 }
 
 func runWiraidCLI(args []string) {
+
 	if len(args) == 0 {
 		printWiraidUsage()
 		return
@@ -49,7 +52,6 @@ func runWiraidCLI(args []string) {
 		return
 
 	case "validate":
-		// validate can run against a manifest file without registry
 		live := false
 		manifestPath := ""
 		rest := args[1:]
@@ -69,7 +71,6 @@ func runWiraidCLI(args []string) {
 		}
 
 		if manifestPath != "" {
-			// Validate a manifest file directly — no registry needed
 			runValidateManifest(manifestPath)
 			return
 		}
@@ -78,25 +79,33 @@ func runWiraidCLI(args []string) {
 			fmt.Fprintln(os.Stderr, "Usage: whispera wiraid validate [--live] [--manifest <path>] <name>")
 			os.Exit(1)
 		}
+
 		eng := mustEngine()
 		target := filtered[0]
+
 		if live {
 			rep, err := eng.LiveValidate(target)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "live validate failed: %v\n", err)
 				os.Exit(1)
 			}
+
 			printLiveReport(rep)
+
 			if rep.LiveError != "" || len(rep.Errors) > 0 || !rep.StartedOK || !rep.ExitedOK {
 				os.Exit(2)
 			}
 		} else {
+
 			rep, err := eng.Validate(target)
+
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "validate failed: %v\n", err)
 				os.Exit(1)
 			}
+
 			printValidateReport(rep)
+
 			if len(rep.Errors) > 0 {
 				os.Exit(2)
 			}
@@ -104,7 +113,6 @@ func runWiraidCLI(args []string) {
 		return
 	}
 
-	// Commands below need the engine
 	eng := mustEngine()
 
 	switch args[0] {
@@ -114,13 +122,16 @@ func runWiraidCLI(args []string) {
 			fmt.Println("No modules installed.")
 			return
 		}
+
 		fmt.Printf("%-24s %-8s %-8s %s\n", "NAME", "VERSION", "ENABLED", "DESCRIPTION")
 		fmt.Println(strings.Repeat("-", 72))
+
 		for _, s := range sums {
 			enabled := "no"
 			if s.Enabled {
 				enabled = "yes"
 			}
+
 			fmt.Printf("%-24s %-8s %-8s %s\n", s.Name, s.Version, enabled, s.Description)
 		}
 
@@ -193,7 +204,6 @@ func runWiraidCLI(args []string) {
 		fmt.Printf("✓ binary updated: %s\n", args[1])
 
 	case "set-manifest":
-		// Reload manifest from disk (module.json) into the registry entry.
 		if len(args) < 2 {
 			fmt.Fprintln(os.Stderr, "Usage: whispera wiraid set-manifest <name>")
 			os.Exit(1)
@@ -221,9 +231,10 @@ func runWiraidCLI(args []string) {
 	}
 }
 
-// runValidateManifest validates a module.json on disk without needing a registry entry.
 func runValidateManifest(path string) {
+
 	m, err := wiraid.LoadManifest(filepath.Dir(path))
+
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "✗ failed to parse %s: %v\n", path, err)
 		os.Exit(2)
@@ -276,15 +287,18 @@ func runValidateManifest(path string) {
 		}
 	}
 
-	// Check that all {params.X} in templates have a schema entry
 	allTemplates := []string{m.Runtime.ConfigTemplate}
+
 	allTemplates = append(allTemplates, m.Runtime.Cmd...)
+
 	for _, pre := range m.Runtime.PreCmd {
 		allTemplates = append(allTemplates, pre...)
 	}
+
 	for _, post := range m.Runtime.PostCmd {
 		allTemplates = append(allTemplates, post...)
 	}
+
 	for _, tmpl := range allTemplates {
 		for _, ph := range extractParamPlaceholders(tmpl) {
 			if _, declared := m.ParamsSchema[ph]; !declared {
@@ -387,9 +401,9 @@ func extractParamPlaceholders(s string) []string {
 	return out
 }
 
-func ok(field, value string)   { fmt.Printf("  ✓ %-28s %s\n", field, value) }
-func warn(field, msg string)   { fmt.Printf("  ⚠ %-28s %s\n", field, msg) }
-func fail(field, msg string)   { fmt.Printf("  ✗ %-28s %s\n", field, msg) }
+func ok(field, value string) { fmt.Printf("  ✓ %-28s %s\n", field, value) }
+func warn(field, msg string) { fmt.Printf("  ⚠ %-28s %s\n", field, msg) }
+func fail(field, msg string) { fmt.Printf("  ✗ %-28s %s\n", field, msg) }
 
 func printValidateReport(rep *wiraid.ValidateReport) {
 	fmt.Printf("\nValidating module: %s\n", rep.Name)
@@ -448,9 +462,12 @@ func printValidateReport(rep *wiraid.ValidateReport) {
 }
 
 func printLiveReport(rep *wiraid.LiveReport) {
+
 	printValidateReport(rep.ValidateReport)
+
 	fmt.Printf("\n  live.started_ok  %v\n", rep.StartedOK)
 	fmt.Printf("  live.exited_ok   %v\n", rep.ExitedOK)
+
 	if rep.LivePort > 0 {
 		fmt.Printf("  live.port        %d\n", rep.LivePort)
 	}
@@ -477,6 +494,7 @@ func init() {
 }
 
 func printWiraidUsage() {
+
 	fmt.Fprintln(os.Stderr, `Usage: whispera wiraid <command>
 
 Module authoring:

@@ -76,6 +76,7 @@ func main() {
 		EnableKeyPool: true,
 		KeyPoolSize:   50,
 	})
+
 	if err != nil {
 		log.Fatalf("Failed to create crypto provider: %v", err)
 	}

@@ -11,11 +11,11 @@ import (
 )
 
 type ConnectionKey struct {
-	Version   int    `json:"v"`
-	Name      string `json:"name,omitempty"`
-	KeyID     string `json:"kid,omitempty"`
-	ExpiresAt int64  `json:"exp,omitempty"`
-	Server    string `json:"server"`
+	Version    int      `json:"v"`
+	Name       string   `json:"name,omitempty"`
+	KeyID      string   `json:"kid,omitempty"`
+	ExpiresAt  int64    `json:"exp,omitempty"`
+	Server     string   `json:"server"`
 	ServerAlts []string `json:"server_alts,omitempty"`
 	ServerTCP  string   `json:"server_tcp,omitempty"`
 	ServerWS   string   `json:"server_ws,omitempty"`
@@ -229,19 +229,19 @@ func ParseConnectionKey(key string) (*ConnectionKey, error) {
 
 func (ck *ConnectionKey) ToClientConfig() *ClientConfig {
 	cfg := &ClientConfig{
-		Server:          ck.Server,
-		ServerAlts:      append([]string(nil), ck.ServerAlts...),
-		ServerTCP:       ck.ServerTCP,
-		ServerWS:        ck.ServerWS,
-		PSK:             ck.PSK,
-		ServerPub:       ck.ServerPub,
-		ObfsPreset:      ck.ObfsPreset,
-		AppProfile:      ck.ObfsProfile,
-		RussianService:  ck.RussianService,
-		TransportConfig: ck.TransportConfig,
-		Transport:       ck.Transport,
-		MLServerURL:     ck.MLServerURL,
-		MLToken:         ck.MLToken,
+		Server:            ck.Server,
+		ServerAlts:        append([]string(nil), ck.ServerAlts...),
+		ServerTCP:         ck.ServerTCP,
+		ServerWS:          ck.ServerWS,
+		PSK:               ck.PSK,
+		ServerPub:         ck.ServerPub,
+		ObfsPreset:        ck.ObfsPreset,
+		AppProfile:        ck.ObfsProfile,
+		RussianService:    ck.RussianService,
+		TransportConfig:   ck.TransportConfig,
+		Transport:         ck.Transport,
+		MLServerURL:       ck.MLServerURL,
+		MLToken:           ck.MLToken,
 		ChameleonAddr:     ck.ChameleonAddr,
 		ChameleonSNI:      ck.ChameleonSNI,
 		ChameleonQUICAddr: ck.ChameleonQUICAddr,

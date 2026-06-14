@@ -410,7 +410,6 @@ func (m *Marionette) ProcessPacket(data []byte, direction string) ([]byte, time.
 	return processed, delay, nil
 }
 
-
 type EvasionWorkerPool struct {
 	workers    int
 	jobQueue   chan *EvasionJob

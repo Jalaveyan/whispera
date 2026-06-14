@@ -7,7 +7,6 @@ import (
 	"github.com/google/uuid"
 )
 
-
 type Session struct {
 	ID         uuid.UUID `json:"id"`
 	UserID     uuid.UUID `json:"user_id"`
@@ -19,7 +18,6 @@ type Session struct {
 	StartedAt  time.Time `json:"started_at"`
 	LastSeen   time.Time `json:"last_seen"`
 }
-
 
 func (db *DB) CreateSession(ctx context.Context, userID uuid.UUID, deviceName, ipAddr, serverID string) (*Session, error) {
 	var session Session
@@ -39,7 +37,6 @@ func (db *DB) CreateSession(ctx context.Context, userID uuid.UUID, deviceName, i
 	return &session, nil
 }
 
-
 func (db *DB) UpdateSessionTraffic(ctx context.Context, sessionID uuid.UUID, bytesIn, bytesOut int64) error {
 	_, err := db.pool.Exec(ctx, `
 		UPDATE sessions 
@@ -49,24 +46,20 @@ func (db *DB) UpdateSessionTraffic(ctx context.Context, sessionID uuid.UUID, byt
 	return err
 }
 
-
 func (db *DB) TouchSession(ctx context.Context, sessionID uuid.UUID) error {
 	_, err := db.pool.Exec(ctx, `UPDATE sessions SET last_seen = NOW() WHERE id = $1`, sessionID)
 	return err
 }
-
 
 func (db *DB) DeleteSession(ctx context.Context, sessionID uuid.UUID) error {
 	_, err := db.pool.Exec(ctx, `DELETE FROM sessions WHERE id = $1`, sessionID)
 	return err
 }
 
-
 func (db *DB) DeleteUserSessions(ctx context.Context, userID uuid.UUID) error {
 	_, err := db.pool.Exec(ctx, `DELETE FROM sessions WHERE user_id = $1`, userID)
 	return err
 }
-
 
 func (db *DB) GetUserSessions(ctx context.Context, userID uuid.UUID) ([]Session, error) {
 	rows, err := db.pool.Query(ctx, `
@@ -92,13 +85,11 @@ func (db *DB) GetUserSessions(ctx context.Context, userID uuid.UUID) ([]Session,
 	return sessions, nil
 }
 
-
 func (db *DB) CountUserSessions(ctx context.Context, userID uuid.UUID) (int, error) {
 	var count int
 	err := db.pool.QueryRow(ctx, `SELECT COUNT(*) FROM sessions WHERE user_id = $1`, userID).Scan(&count)
 	return count, err
 }
-
 
 func (db *DB) CleanupStaleSessions(ctx context.Context) (int64, error) {
 	result, err := db.pool.Exec(ctx, `

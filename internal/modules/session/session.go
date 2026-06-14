@@ -499,7 +499,6 @@ func (m *Manager) publishSessionEvent(eventType interfaces.SessionEventType, ses
 	})
 }
 
-
 func (s *Session) ID() uint32 {
 	return s.id
 }
@@ -602,7 +601,6 @@ func (s *Session) SetMetadata(key string, value interface{}) {
 	}
 	s.metadata[key] = value
 }
-
 
 func (st *Stream) ID() uint16 {
 	return st.id

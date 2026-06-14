@@ -247,8 +247,8 @@ func (s *Session) RemoteAddr() net.Addr {
 
 type muxStream struct {
 	net.Conn
-	session  *Session
-	closed   int32
+	session *Session
+	closed  int32
 }
 
 func (m *muxStream) Read(b []byte) (n int, err error) {
@@ -282,4 +282,3 @@ func (m *muxStream) LocalAddr() net.Addr {
 func (m *muxStream) RemoteAddr() net.Addr {
 	return m.session.RemoteAddr()
 }
-

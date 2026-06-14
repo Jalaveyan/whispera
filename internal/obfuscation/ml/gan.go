@@ -373,7 +373,6 @@ func (g *TrafficGAN) Diagnostics() (tunnelConf, decoyConf float64, trainCount in
 	return
 }
 
-
 type ganNorm struct {
 	mean []float64
 	m2   []float64
@@ -407,7 +406,6 @@ func (n *ganNorm) normalise(x []float64) []float64 {
 	}
 	return out
 }
-
 
 func sigmoid64(x float64) float64 {
 	return 1.0 / (1.0 + math.Exp(-x))

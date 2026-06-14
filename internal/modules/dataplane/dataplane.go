@@ -222,7 +222,6 @@ func (p *Processor) ProcessInbound(ctx context.Context, packet *interfaces.Packe
 		packet.Payload = decrypted
 	}
 
-
 	key := packet.SrcAddr.String() + "->" + packet.DstAddr.String()
 	if entry, ok := p.LookupNATEntry(key); ok {
 		return p.handleDestination(packet.Payload, entry.Destination)

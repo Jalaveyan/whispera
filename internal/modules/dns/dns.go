@@ -36,7 +36,7 @@ type Config struct {
 	BlockingEnabled bool
 	BlockLists      []string
 	DialContext     func(ctx context.Context, network, address string) (net.Conn, error)
-	BypassFunc func(hostname string) bool
+	BypassFunc      func(hostname string) bool
 
 	BypassResolver *net.Resolver
 }

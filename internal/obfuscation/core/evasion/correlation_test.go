@@ -21,9 +21,9 @@ func TestDefaultCorrelationConfig(t *testing.T) {
 
 func TestPaddingRoundTrip(t *testing.T) {
 	cd := NewCorrelationDefense(&CorrelationConfig{
-		Enabled:        true,
-		PaddingEnabled: true,
-		DelayJitter:    0,
+		Enabled:         true,
+		PaddingEnabled:  true,
+		DelayJitter:     0,
 		ConstantRatePPS: 1000,
 	})
 	defer cd.Stop()
@@ -43,9 +43,9 @@ func TestPaddingRoundTrip(t *testing.T) {
 
 func TestPaddingBucketSizes(t *testing.T) {
 	cd := NewCorrelationDefense(&CorrelationConfig{
-		Enabled:        true,
-		PaddingEnabled: true,
-		DelayJitter:    0,
+		Enabled:         true,
+		PaddingEnabled:  true,
+		DelayJitter:     0,
 		ConstantRatePPS: 1000,
 	})
 	defer cd.Stop()
@@ -75,9 +75,9 @@ func TestPaddingBucketSizes(t *testing.T) {
 
 func TestProcessOutboundWithoutJitter(t *testing.T) {
 	cd := NewCorrelationDefense(&CorrelationConfig{
-		Enabled:        true,
-		PaddingEnabled: true,
-		DelayJitter:    0,
+		Enabled:         true,
+		PaddingEnabled:  true,
+		DelayJitter:     0,
 		ConstantRatePPS: 10000,
 	})
 	defer cd.Stop()
@@ -97,9 +97,9 @@ func TestProcessOutboundWithoutJitter(t *testing.T) {
 
 func TestProcessInbound(t *testing.T) {
 	cd := NewCorrelationDefense(&CorrelationConfig{
-		Enabled:        true,
-		PaddingEnabled: true,
-		DelayJitter:    0,
+		Enabled:         true,
+		PaddingEnabled:  true,
+		DelayJitter:     0,
 		ConstantRatePPS: 1000,
 	})
 	defer cd.Stop()

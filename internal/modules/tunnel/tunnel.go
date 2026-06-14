@@ -1,9 +1,8 @@
-﻿package tunnel
+package tunnel
 
 import (
 	"bufio"
 	"context"
-	"crypto/rand"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -22,7 +21,6 @@ import (
 	"whispera/internal/core/base"
 	"whispera/internal/core/events"
 	"whispera/internal/core/interfaces"
-	whisperdns "whispera/internal/dns"
 	"whispera/internal/logger"
 	"whispera/internal/modules/killswitch"
 	asnbypass "whispera/internal/modules/transport/asn_bypass"
@@ -34,24 +32,15 @@ import (
 
 var log = logger.Module("tunnel")
 
-var dohResolver = whisperdns.NewResolver(whisperdns.DefaultConfig())
-
 var _ interfaces.Module = (*Manager)(nil)
 
-func dohDialer() *net.Dialer {
-	return &net.Dialer{
-		Timeout: 10 * time.Second,
-		Resolver: &net.Resolver{
-			PreferGo: true,
-			Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
-				ips, err := dohResolver.Resolve(ctx, strings.Split(address, ":")[0])
-				if err != nil || len(ips) == 0 {
-					return (&net.Dialer{Timeout: 3 * time.Second}).DialContext(ctx, network, address)
-				}
-				return (&net.Dialer{Timeout: 3 * time.Second}).DialContext(ctx, network, ips[0].String()+":53")
-			},
-		},
-	}
+type ackStripConn struct {
+	net.Conn
+	stream    net.Conn
+	once      sync.Once
+	ackErr    error
+	onClose   func()
+	closeOnce sync.Once
 }
 
 func safeGo(name string, fn func()) {
@@ -83,60 +72,6 @@ func isConnResetOrBroken(err error) bool {
 		return strings.Contains(msg, "broken pipe") || strings.Contains(msg, "connection reset")
 	}
 	return false
-}
-
-func isHandshakeError(err error) bool {
-	if err == nil {
-		return false
-	}
-	s := err.Error()
-	return strings.Contains(s, "handshake") ||
-		strings.Contains(s, "tls") ||
-		strings.Contains(s, "certificate") ||
-		strings.Contains(s, "x509")
-}
-
-func isTimeoutError(err error) bool {
-	if err == nil {
-		return false
-	}
-	s := err.Error()
-	return strings.Contains(s, "timeout") ||
-		strings.Contains(s, "deadline exceeded") ||
-		strings.Contains(s, "i/o timeout")
-}
-
-func ClassifyConnError(err error) string {
-	if err == nil {
-		return ""
-	}
-	s := err.Error()
-	switch {
-	case strings.Contains(s, "connection refused"):
-		return "сервер недоступен (порт закрыт)"
-	case strings.Contains(s, "no route to host"), strings.Contains(s, "network unreachable"):
-		return "нет маршрута до сервера"
-	case strings.Contains(s, "connection reset"):
-		return "соединение сброшено (DPI или firewall)"
-	case strings.Contains(s, "broken pipe"):
-		return "соединение оборвалось"
-	case strings.Contains(s, "timeout"), strings.Contains(s, "i/o timeout"):
-		return "превышено время ожидания"
-	case strings.Contains(s, "handshake"):
-		return "ошибка TLS-рукопожатия (возможно DPI)"
-	case strings.Contains(s, "certificate"), strings.Contains(s, "x509"):
-		return "ошибка сертификата"
-	case strings.Contains(s, "EOF"):
-		return "соединение закрыто сервером"
-	case strings.Contains(s, "context canceled"):
-		return "отменено"
-	case strings.Contains(s, "context deadline exceeded"):
-		return "превышен дедлайн подключения"
-	case strings.Contains(s, "too many open files"):
-		return "достигнут лимит файловых дескрипторов"
-	default:
-		return s
-	}
 }
 
 type TunnelState int
@@ -187,17 +122,6 @@ type MLOptions struct {
 	SNIDomainsURL   string
 }
 
-type SocialOptions struct {
-	VKToken         string
-	VKGroupID       int64
-	VKBotUserToken  string
-	VKBotGroupToken string
-	TGBotToken      string
-	TGGroupChatID   int64
-	TGSessionID     string
-	CDNWorkerURL    string
-}
-
 type Config struct {
 	ServerAddr           string
 	ServerAddrTCP        string
@@ -223,13 +147,9 @@ type Config struct {
 	ResidentialProxies []string
 	EnableJA3Randomize bool
 
-	EnableChatFSM        bool
-	ChatFSMCoverInterval time.Duration
 	ChameleonOptions
 	MLOptions
-	SocialOptions
 
-	RussianService    string
 	BehavioralProfile string
 
 	ServerList []string
@@ -245,11 +165,11 @@ type Config struct {
 
 	CustomDialFn func(ctx context.Context) (net.Conn, error)
 
-	DesyncConfig    *evasion.DesyncConfig
-	CustomSNI   string
-	NoSNI       bool
-	BridgeAddr  string
-	RateLimitKB int
+	DesyncConfig *evasion.DesyncConfig
+	CustomSNI    string
+	NoSNI        bool
+	BridgeAddr   string
+	RateLimitKB  int
 
 	EnableIPSpoof  bool
 	SpoofSourceIPs []string
@@ -572,19 +492,7 @@ func New(cfg *Config) (*Manager, error) {
 		}
 	}
 
-	sniPool := m.russianSNIs
-	if len(sniPool) == 0 {
-		sniPool = defaultSNIPool
-	}
-	m.sniAgent = mlpkg.NewRLSNIAgent(cfg.SNIModelDir, sniPool)
-	if cfg.SNIDomainsURL != "" {
-		m.sniAgent.StartAutoFetch(cfg.SNIDomainsURL)
-	}
-
 	m.connAgent = mlpkg.NewRLConnAgent(cfg.SNIModelDir)
-
-	m.transportAgent = mlpkg.NewRLTransportAgent(cfg.SNIModelDir, nil)
-
 	m.kaAgent = mlpkg.NewRLKeepaliveAgent(cfg.SNIModelDir)
 	m.boAgent = mlpkg.NewRLBackoffAgent(cfg.SNIModelDir)
 	m.jitterAgent = mlpkg.NewRLJitterAgent(cfg.SNIModelDir)
@@ -643,19 +551,6 @@ func New(cfg *Config) (*Manager, error) {
 	return m, nil
 }
 
-func (m *Manager) Init(ctx context.Context, cfg interfaces.ModuleConfig) error {
-	if err := m.Module.Init(ctx, cfg); err != nil {
-		return err
-	}
-	if tunnelCfg, ok := cfg.(*Config); ok {
-		m.config = tunnelCfg
-		if m.config.VKToken != "" || m.config.Transport == "vk" {
-			m.config.EnableRotation = false
-		}
-	}
-	return nil
-}
-
 func (m *Manager) Start() error {
 	if err := m.Module.Start(); err != nil {
 		return err
@@ -669,7 +564,6 @@ func (m *Manager) Start() error {
 }
 
 func (m *Manager) Stop() error {
-	m.stopRotation()
 	m.stopRekey()
 	m.Disconnect()
 	m.PublishEvent(events.EventTypeModuleStopped, nil)
@@ -697,12 +591,6 @@ func (m *Manager) SetDependencies(
 	m.handshake = handshake
 	m.dataPlane = dataPlane
 	m.crypto = crypto
-}
-
-func (m *Manager) SetObfuscator(o interfaces.Obfuscator) {
-	m.obfuscator = o
-	if o != nil {
-	}
 }
 
 func (m *Manager) Connect(ctx context.Context) error {
@@ -852,7 +740,6 @@ func (m *Manager) connectInternal(ctx context.Context, isRotation bool) error {
 
 	if !isRotation {
 		m.startKeepalive()
-		m.startRotation()
 		m.startRekey()
 		m.startConnAgent()
 		m.startConnRateSampler()
@@ -952,7 +839,6 @@ func (m *Manager) removeDeadConn(mc *managedConn) {
 
 func (m *Manager) Disconnect() {
 	m.stopKeepalive()
-	m.stopRotation()
 	m.stopConnAgent()
 	m.stopConnRateSampler()
 
@@ -1106,21 +992,6 @@ func (m *Manager) Reconnect(ctx context.Context) error {
 			dialDur := time.Duration(dialLatency) * time.Millisecond
 			if strings.Contains(errStr, "reset") {
 				m.tspuDetector.RecordRST(m.currentSNI, dialDur)
-			} else if isTimeoutError(err) {
-				sni := m.currentSNI
-				addr := m.config.ServerAddr
-				detector := m.tspuDetector
-				go func() {
-					tcpStart := time.Now()
-					probeCtx, probeCancel := context.WithTimeout(context.Background(), 2*time.Second)
-					defer probeCancel()
-					c, tcpErr := (&net.Dialer{}).DialContext(probeCtx, "tcp", addr)
-					tcpDur := time.Since(tcpStart)
-					if tcpErr == nil {
-						c.Close()
-						detector.RecordZombieTCP(sni, tcpDur, dialDur)
-					}
-				}()
 			}
 			if dpiType, conf := m.tspuDetector.DetectTSPU(); dpiType != mlpkg.DPITypeNone && conf >= 0.65 {
 				if cm := mlpkg.TSPUCountermeasure(dpiType); cm != "" && cm != m.config.Transport {
@@ -1578,15 +1449,6 @@ func (m *Manager) OpenStream(ctx context.Context, proto byte, addr string, port 
 	return &ackStripConn{Conn: proxyStream, stream: stream, onClose: onClose}, nil
 }
 
-type ackStripConn struct {
-	net.Conn
-	stream    net.Conn
-	once      sync.Once
-	ackErr    error
-	onClose   func()
-	closeOnce sync.Once
-}
-
 func (c *ackStripConn) Read(b []byte) (int, error) {
 	c.once.Do(func() {
 		c.Conn.SetReadDeadline(time.Now().Add(10 * time.Second))
@@ -1894,39 +1756,6 @@ func sortInt64(a []int64) {
 	}
 }
 
-func (m *Manager) startRotation() {
-	m.stopRotation()
-	if !m.config.EnableRotation {
-		return
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	m.rotationCancel = cancel
-
-	const safetyInterval = 6 * time.Hour
-	m.rotationTicker = time.NewTicker(safetyInterval)
-
-	go func() {
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-m.rotationTicker.C:
-				m.RotateSNI()
-			}
-		}
-	}()
-}
-
-func (m *Manager) stopRotation() {
-	if m.rotationCancel != nil {
-		m.rotationCancel()
-	}
-	if m.rotationTicker != nil {
-		m.rotationTicker.Stop()
-	}
-}
-
 func (m *Manager) startConnAgent() {
 	m.stopConnAgent()
 	if m.connAgent == nil {
@@ -1945,7 +1774,7 @@ func (m *Manager) startConnAgent() {
 			case <-stop:
 				return
 			case <-ticker.C:
-				m.connAgentTick()
+
 			}
 		}
 	}()
@@ -1962,169 +1791,6 @@ func (m *Manager) stopConnAgent() {
 	}
 }
 
-func (m *Manager) connAgentTick() {
-	if !m.IsConnected() {
-		return
-	}
-
-	if m.config.EnableChameleon {
-		return
-	}
-
-	const preWarmBefore = 90 * time.Second
-
-	m.connMu.RLock()
-	poolSize := len(m.activePool)
-	needsRotation := false
-	for _, c := range m.activePool {
-		if c.maxAge > 0 && time.Since(c.createdAt) >= c.maxAge-preWarmBefore {
-			needsRotation = true
-			break
-		}
-		if c.maxUploadB > 0 {
-			_, _, _, tx := c.session.Stats()
-			if int64(tx) >= c.maxUploadB {
-				needsRotation = true
-				break
-			}
-		}
-	}
-	m.connMu.RUnlock()
-
-	if poolSize == 0 {
-		return
-	}
-
-	if needsRotation {
-		ctx, cancel := context.WithTimeout(context.Background(), m.config.ConnectionTimeout)
-		defer cancel()
-		if err := m.connectInternal(ctx, true); err != nil {
-		}
-		return
-	}
-
-	rttNs := atomic.LoadInt64(&m.qualityRTTEWMA)
-	rttMs := float64(rttNs) / 1e6
-	missedKAs := int(atomic.LoadInt32(&m.missedKAs))
-
-	cbFail := m.cb.Failures()
-
-	errorRate := 0.0
-	if cbFail > 0 {
-		errorRate = math.Min(float64(cbFail)/10.0, 1.0)
-	}
-
-	dnTotal := atomic.LoadUint64(&m.bytesDown)
-	upTotal := atomic.LoadUint64(&m.bytesUp)
-	var dnRate, upRate float64
-	now := time.Now()
-	if !m.gpLastSample.IsZero() {
-		if dt := now.Sub(m.gpLastSample).Seconds(); dt > 0 {
-			dnRate = float64(dnTotal-m.gpLastDn) / dt
-			upRate = float64(upTotal-m.gpLastUp) / dt
-		}
-	}
-	m.gpLastDn = dnTotal
-	m.gpLastUp = upTotal
-	m.gpLastSample = now
-
-	view := mlpkg.ConnPoolView{
-		Size:       poolSize,
-		RTTMs:      rttMs,
-		ErrorRate:  errorRate,
-		MissedKAs:  missedKAs,
-		CBFailures: cbFail,
-		BytesDnSec: dnRate,
-		BytesUpSec: upRate,
-	}
-
-	action, decision := m.connAgent.Decide(view)
-
-	switch action {
-	case mlpkg.ConnActionOpen:
-		go func() {
-			ctx, cancel := context.WithTimeout(context.Background(), m.config.ConnectionTimeout)
-			defer cancel()
-			if err := m.openPoolConn(ctx); err != nil {
-				m.connAgent.RecordOutcome(decision, 0.0)
-			} else {
-				quality := m.connQuality()
-				m.connAgent.RecordOutcome(decision, quality)
-			}
-		}()
-
-	case mlpkg.ConnActionCloseWorst:
-		closed := m.closeWorstPoolConn()
-		if closed {
-			m.connAgent.RecordOutcome(decision, m.connQuality())
-		} else {
-			m.connAgent.RecordOutcome(decision, m.connQuality())
-		}
-
-	default:
-		m.connAgent.RecordOutcome(decision, m.connQuality())
-	}
-}
-
-func (m *Manager) connQuality() float64 {
-	rttNs := atomic.LoadInt64(&m.qualityRTTEWMA)
-	rttMs := float64(rttNs) / 1e6
-	rttScore := 1.0 - math.Min(rttMs/500.0, 1.0)
-
-	missed := float64(atomic.LoadInt32(&m.missedKAs))
-	kaScore := 1.0 - math.Min(missed/5.0, 1.0)
-
-	quality := (rttScore + kaScore) / 2.0
-
-	if m.chunkAgent != nil {
-		upBytes := float64(atomic.LoadUint64(&m.bytesUp))
-		dnBytes := float64(atomic.LoadUint64(&m.bytesDown))
-		m.chunkAgent.RecordOutcome(quality)
-		_ = upBytes
-		_ = dnBytes
-	}
-
-	return quality
-}
-
-func (m *Manager) openPoolConn(_ context.Context) error {
-	capN := 0
-	if m.config.EnableChameleon {
-		capN = m.poolConnCap()
-	}
-	if capN > 0 {
-		m.connMu.RLock()
-		full := len(m.activePool) >= capN
-		m.connMu.RUnlock()
-		if full {
-			return nil
-		}
-	}
-
-	return nil
-}
-
-func (m *Manager) closeWorstPoolConn() bool {
-	m.connMu.Lock()
-	defer m.connMu.Unlock()
-
-	if len(m.activePool) <= 1 {
-		return false
-	}
-
-	worst := m.activePool[0]
-	m.activePool = m.activePool[1:]
-
-	if m.activeConn == worst {
-		m.activeConn = m.activePool[0]
-	}
-
-	m.drainingConns = append(m.drainingConns, worst)
-	go m.monitorDrainingConn(worst)
-
-	return true
-}
-
 const (
 	chScaleGrowPerConn   = 1.0 * 1024 * 1024
 	chScaleShrinkPerConn = 256 * 1024
@@ -2133,16 +1799,9 @@ const (
 	browserConnBudget    = 2
 	chGameLaneReserve    = 1
 	gameIdleTimeout      = 15 * time.Second
+	protoTCP             = 0x06
 	protoUDP             = 0x11
 )
-
-func (m *Manager) poolConnCap() int {
-	lim := browserConnBudget - chGameLaneReserve
-	if n := m.config.ChameleonMux; n > 0 && n < lim {
-		lim = n
-	}
-	return lim
-}
 
 func (m *Manager) chameleonDial() (func(context.Context) (net.Conn, error), bool) {
 	if !m.config.EnableChameleon || len(m.config.ChameleonSecret) == 0 {
@@ -2290,17 +1949,11 @@ func (m *Manager) evalScale() {
 	if base < 1 {
 		base = 16
 	}
-	ceiling := chScaleMaxConns
-	if m.config.EnableChameleon {
-		ceiling = m.poolConnCap()
-		if base > ceiling {
-			base = ceiling
-		}
-	}
+
 	perConn := rate / float64(poolSize)
 
 	switch {
-	case perConn >= chScaleGrowPerConn && poolSize < ceiling:
+	case perConn >= chScaleGrowPerConn:
 		if atomic.LoadInt32(&m.chScaleOpening) != 0 {
 			return
 		}
@@ -2308,17 +1961,13 @@ func (m *Manager) evalScale() {
 		if grow < 1 {
 			grow = 1
 		}
-		if poolSize+grow > ceiling {
-			grow = ceiling - poolSize
-		}
+
 		atomic.StoreInt32(&m.chScaleOpening, int32(grow))
 		for i := 0; i < grow; i++ {
 			safeGo("chScaleOpen", func() {
 				defer atomic.AddInt32(&m.chScaleOpening, -1)
-				ctx, cancel := context.WithTimeout(context.Background(), m.config.ConnectionTimeout)
+				_, cancel := context.WithTimeout(context.Background(), m.config.ConnectionTimeout)
 				defer cancel()
-				if err := m.openPoolConn(ctx); err != nil {
-				}
 			})
 		}
 	case perConn < chScaleShrinkPerConn && poolSize > base:
@@ -2382,72 +2031,21 @@ func (m *Manager) onStateTransition(old, new TunnelState) {
 }
 
 func (m *Manager) DialStream(ctx context.Context, network, addr string) (net.Conn, error) {
-	if !m.IsConnected() {
-		return nil, fmt.Errorf("tunnel not connected")
+	host, portStr, err := net.SplitHostPort(addr)
+	if err != nil {
+		return nil, fmt.Errorf("dial stream: invalid addr %q: %w", addr, err)
 	}
-
-	var streamID uint16
-	for i := 0; i < 100; i++ {
-		randBytes := make([]byte, 2)
-		if _, err := rand.Read(randBytes); err != nil {
-			return nil, err
-		}
-		candidate := binary.BigEndian.Uint16(randBytes)
-		if candidate == 0 {
-			continue
-		}
-		if !m.streamExists(candidate) {
-			streamID = candidate
-			break
-		}
-	}
-	if streamID == 0 {
-		return nil, fmt.Errorf("failed to allocate stream ID")
-	}
-
-	ch := make(chan *buf.Buffer, 4096)
-	m.streamStore(streamID, ch)
-
-	var proto byte = 0x06
-	if network == "udp" {
-		proto = 0x11
-	}
-
-	host, portStr, _ := net.SplitHostPort(addr)
 	var port uint16
-	fmt.Sscanf(portStr, "%d", &port)
-
-	connectPayload := make([]byte, 1+2+len(host)+2)
-	connectPayload[0] = proto
-	binary.BigEndian.PutUint16(connectPayload[1:3], uint16(len(host)))
-	copy(connectPayload[3:], host)
-	binary.BigEndian.PutUint16(connectPayload[3+len(host):], port)
-
-	frame := make([]byte, FrameHeaderSize+len(connectPayload))
-	binary.BigEndian.PutUint16(frame[0:2], streamID)
-	frame[2] = FrameTypeConnect
-	frame[3] = 0x00
-	binary.BigEndian.PutUint32(frame[4:8], uint32(len(connectPayload)))
-	copy(frame[8:], connectPayload)
-
-	if err := m.Send(frame); err != nil {
-		m.streamDelete(streamID)
-		return nil, err
+	if _, err := fmt.Sscanf(portStr, "%d", &port); err != nil || port == 0 {
+		return nil, fmt.Errorf("dial stream: invalid port in %q", addr)
 	}
 
-	m.connMu.RLock()
-	localAddr := m.activeConn.LocalAddr()
-	remoteAddr := m.activeConn.RemoteAddr()
-	m.connMu.RUnlock()
+	proto := byte(protoTCP)
+	if network == "udp" {
+		proto = protoUDP
+	}
 
-	return &StreamConn{
-		streamID: streamID,
-		manager:  m,
-		readCh:   ch,
-		done:     make(chan struct{}),
-		local:    localAddr,
-		remote:   remoteAddr,
-	}, nil
+	return m.OpenStream(ctx, proto, host, port)
 }
 
 type StreamConn struct {

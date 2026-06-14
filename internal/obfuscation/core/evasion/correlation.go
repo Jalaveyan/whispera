@@ -17,10 +17,10 @@ type CorrelationDefense struct {
 	mixEnabled     bool
 	sessionSeed    [16]byte
 
-	sendBucket   *leakyBucket
-	recvBucket   *leakyBucket
-	delayBuffer  chan delayedPacket
-	stopCh       chan struct{}
+	sendBucket  *leakyBucket
+	recvBucket  *leakyBucket
+	delayBuffer chan delayedPacket
+	stopCh      chan struct{}
 }
 
 func (cd *CorrelationDefense) sessionBucketSizes() []int {

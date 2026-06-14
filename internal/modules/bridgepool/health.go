@@ -153,4 +153,3 @@ func (h *HealthMonitor) CheckSingle(bridgeID string) (bool, int, error) {
 	h.checkBridge(bridge)
 	return bridge.IsAlive, bridge.Latency, nil
 }
-

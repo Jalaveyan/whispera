@@ -577,8 +577,6 @@ func startControlServer(ctx context.Context) {
 		json.NewEncoder(w).Encode(map[string]bool{"ok": true})
 	})
 
-	
-
 	mux.HandleFunc("/connections/split", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		entries := pool.List()

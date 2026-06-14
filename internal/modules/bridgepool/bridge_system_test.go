@@ -1,12 +1,10 @@
 package bridgepool
 
-
 import (
 	"fmt"
 	"testing"
 	"time"
 )
-
 
 func newTestRegistry() *Registry {
 	return NewRegistry("")
@@ -24,7 +22,6 @@ func makeBridge(id, addr string, bt BridgeType) *BridgeInfo {
 		MaxUsers:   100,
 	}
 }
-
 
 func TestBridgeRegistration(t *testing.T) {
 	r := newTestRegistry()
@@ -71,7 +68,6 @@ func TestBridgeDuplicateID(t *testing.T) {
 	}
 }
 
-
 func TestBridgeStatusUpdate(t *testing.T) {
 	r := newTestRegistry()
 	r.RegisterBridge(makeBridge("br-stat", "1.2.3.4:8443", BridgeOperator))
@@ -113,7 +109,6 @@ func TestGetAliveBridges(t *testing.T) {
 		}
 	}
 }
-
 
 func TestIssueValidateAccessKey(t *testing.T) {
 	r := newTestRegistry()
@@ -196,7 +191,6 @@ func TestCleanExpiredAccessKeys(t *testing.T) {
 	}
 }
 
-
 func TestWhiteBridgeFiltering(t *testing.T) {
 	r := newTestRegistry()
 	r.RegisterBridge(makeBridge("op-1", "1.1.1.1:8443", BridgeOperator))
@@ -214,7 +208,6 @@ func TestWhiteBridgeFiltering(t *testing.T) {
 		}
 	}
 }
-
 
 func TestGetBridgesForUser(t *testing.T) {
 	r := newTestRegistry()
@@ -265,7 +258,6 @@ func bridgeIDs(bridges []*BridgeInfo) []string {
 	return ids
 }
 
-
 func TestBridgeLoadTracking(t *testing.T) {
 	r := newTestRegistry()
 	r.RegisterBridge(makeBridge("br-load", "1.2.3.4:8443", BridgeOperator))
@@ -279,7 +271,6 @@ func TestBridgeLoadTracking(t *testing.T) {
 		t.Errorf("cur_users should be 75, got %d", b.CurUsers)
 	}
 }
-
 
 func TestBridgeStats(t *testing.T) {
 	r := newTestRegistry()
@@ -299,7 +290,6 @@ func TestBridgeStats(t *testing.T) {
 	}
 }
 
-
 func TestAdminSSHKey(t *testing.T) {
 	r := newTestRegistry()
 	r.SetAdminSSHKey("ssh-ed25519 AAAA... admin@whispera")
@@ -309,7 +299,6 @@ func TestAdminSSHKey(t *testing.T) {
 		t.Errorf("admin SSH key mismatch: %s", got)
 	}
 }
-
 
 func TestBridgeFailoverRecovery(t *testing.T) {
 	r := newTestRegistry()

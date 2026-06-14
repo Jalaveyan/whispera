@@ -52,7 +52,6 @@ var (
 	socksAddr        = flag.String("socks", "127.0.0.1:10800", "SOCKS5 listen address for hev-socks5-tunnel")
 	connKey          = flag.String("key", "", "Connection key (whispera://...)")
 	transport        = flag.String("transport", "tcp", "Transport mode: auto|tcp|udp")
-	obfsLevel        = flag.Int("obfs-level", 5, "Obfuscation threat level (0-10)")
 	asnBypass        = flag.Bool("asn-bypass", false, "Enable ASN bypass for VPN/datacenter IP evasion")
 	tlsFingerprint   = flag.String("tls-fingerprint", "chrome", "TLS fingerprint for ASN bypass: chrome, firefox, safari, ios, android")
 	enableKillSwitch = flag.Bool("kill-switch", false, "Enable kill switch to prevent traffic leaks")
@@ -60,15 +59,12 @@ var (
 	userKey          = flag.String("user-key", "", "User private key (base64) for ML-mode auth — sets PSK without a full connection key")
 	noInternalTun    = flag.Bool("no-tun", true, "Disable internal TUN (use external like Mihomo)")
 	russianService   = flag.String("russian-service", "", "Enable Russian Service masquerading (e.g. vk_video)")
-	vkToken          = flag.String("vk-token", "", "VK User Access Token for WebRTC Tunneling")
 	serverList       = flag.String("servers", "", "Comma-separated server addresses for latency-based routing")
 	rekeyInterval    = flag.Duration("rekey", 10*time.Minute, "Session rekeying interval (0 = disabled)")
 	mlServerURL      = flag.String("ml-server", "", "ML server URL (e.g. https://127.0.0.1:8000)")
 	mlTokenFlag      = flag.String("ml-token", "", "ML API auth token")
 	controlPort      = flag.String("control-port", "10801", "Control server port (default 10801)")
 	dnsUpstream      = flag.String("dns", "", "DNS upstream: host:port for UDP (8.8.8.8:53), https://... for DoH (https://1.1.1.1/dns-query). Empty = 1.1.1.1:53. 'system' = ISP resolver")
-	enableMITM       = flag.Bool("mitm", false, "Enable local TLS inspection proxy (MITM)")
-	mitmAddr         = flag.String("mitm-addr", "127.0.0.1:10899", "MITM proxy listen address")
 	spoofIPs         = flag.String("spoof-ips", "", "Comma-separated source IPs for IP spoofing (requires multiple local IPs)")
 	adminTokenFlag   = flag.String("admin-token", "", "Admin token required for privileged control endpoints (e.g. /spoof). Empty = no auth")
 	tlsFragSize      = flag.Int("tls-fragment", 0, "TLS ClientHello fragment size in bytes (0=default 40, range 16-200). Smaller = harder for DPI but more RTT")
@@ -269,7 +265,7 @@ func main() {
 	bypassDNS := &net.Resolver{
 		PreferGo: true,
 		Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
-			d := net.Dialer{Timeout: 5 * time.Second}
+			d := net.Dialer{Timeout: 1 * time.Second}
 			return d.DialContext(ctx, "udp", *bypassDNS)
 		},
 	}
@@ -303,7 +299,7 @@ func main() {
 		Debug:         true,
 		VPNServerAddr: cfg.Server,
 		MTU:           cfg.MTU,
-		BypassFunc: stm.ShouldBypass,
+		BypassFunc:    stm.ShouldBypass,
 		BlockTorrents: true,
 	})
 	generateSocksAuth()
@@ -453,10 +449,6 @@ func main() {
 				ChameleonSNI:     cfg.ChameleonSNI,
 				ChameleonCertPin: cfg.ChameleonCertPin,
 			},
-			RussianService: cfg.RussianService,
-			SocialOptions: tunnel.SocialOptions{
-				VKToken: *vkToken,
-			},
 			ServerList:      srvList,
 			RekeyInterval:   *rekeyInterval,
 			TransportConfig: cfg.TransportConfig,
@@ -518,10 +510,6 @@ func main() {
 				MLToken:     resolveMLToken(cfg),
 				SNIModelDir: sniModelDir(),
 			},
-			SocialOptions: tunnel.SocialOptions{
-				VKToken: *vkToken,
-			},
-			RussianService:    cfg.RussianService,
 			ServerList:        srvList,
 			RekeyInterval:     *rekeyInterval,
 			TransportConfig:   tc,
@@ -566,10 +554,8 @@ func main() {
 		}
 
 		newCtx, newCancel := context.WithCancel(ctx)
-		e.mu.Lock()
 		e.mgr = newMgr
 		e.cancel = newCancel
-		e.mu.Unlock()
 
 		connStart := time.Now()
 		if err := newMgr.Connect(newCtx); err != nil {
@@ -697,7 +683,7 @@ func main() {
 	for _, tr := range transports {
 		knownTransports[tr] = true
 	}
-	for _, extra := range []string{"tcp", "udp", "websocket", "grpc", "xhttp", "quic"} {
+	for _, extra := range []string{"tcp", "udp", "websocket", "grpc", "quic"} {
 		if !knownTransports[extra] {
 			agentCfg.Candidates = append(agentCfg.Candidates, proxyagent.TransportCandidate{
 				Name:     extra,
@@ -727,7 +713,6 @@ func main() {
 		stdlog.Printf("IP spoofing enabled: %v", spoofList)
 	}
 
-
 	reconnectEntry = func(e *TransportEntry) {
 		restartEntry(e, buildBaseCfg(e))
 	}
@@ -753,10 +738,6 @@ func main() {
 				MLServerURL: cfg.MLServerURL,
 				MLToken:     resolveMLToken(cfg),
 			},
-			SocialOptions: tunnel.SocialOptions{
-				VKToken: *vkToken,
-			},
-			RussianService:  cfg.RussianService,
 			RekeyInterval:   *rekeyInterval,
 			TransportConfig: cfg.TransportConfig,
 			ForceSNI:        getGlobalSNI(),
@@ -856,7 +837,7 @@ func main() {
 	}
 
 	if err := tunnelMod.Connect(ctx); err != nil {
-		stdlog.Printf("WARNING: Failed to connect to VPN server via %s: %s", transports[0], tunnel.ClassifyConnError(err))
+		stdlog.Printf("WARNING: Failed to connect to proxy server via:")
 		primaryEntry.mu.Lock()
 		primaryEntry.Status = connStatusFailed
 		primaryEntry.Error = err.Error()
@@ -877,7 +858,7 @@ func main() {
 		primaryEntry.Status = connStatusConnected
 		primaryEntry.ConnectedAt = time.Now()
 		primaryEntry.mu.Unlock()
-		stdlog.Printf("Connected to VPN server via %s", transports[0])
+		stdlog.Printf("Connected to proxy server via %s", transports[0])
 
 		if *weightsURL != "" {
 			go fetchAndApplyMLWeights(ctx, tunnelMod, *weightsURL, *mlTokenFlag)
@@ -890,14 +871,14 @@ func main() {
 			stdlog.Printf("External TUN mode: Mihomo will handle TUN/routing")
 			stdlog.Printf("SOCKS5 proxy ready for Mihomo at %s", *socksAddr)
 			if host, _, err := net.SplitHostPort(serverAddress); err == nil {
-				vpnServerIP := net.ParseIP(host)
-				vpnPort := 8443
+				proxyServerIP := net.ParseIP(host)
+				proxyPort := 8443
 				if p, err := net.DefaultResolver.LookupPort(context.Background(), "tcp", "8443"); err == nil {
-					vpnPort = p
+					proxyPort = p
 				}
 
-				if ks != nil && vpnServerIP != nil {
-					ks.SetVPNServer(vpnServerIP, vpnPort)
+				if ks != nil && proxyServerIP != nil {
+					ks.SetVPNServer(proxyServerIP, proxyPort)
 					if err := ks.Enable(); err != nil {
 						stdlog.Printf("WARNING: Failed to enable kill switch: %v", err)
 					} else {
@@ -909,14 +890,13 @@ func main() {
 			if host, _, err := net.SplitHostPort(serverAddress); err == nil {
 				stdlog.Printf("VPN server IP for routing: %s", host)
 			}
-			stdlog.Printf("WARNING: Internal HevTunnel support removed. Use --no-tun=true (default) with Mihomo.")
 		}
 	}
 
 	stdlog.Printf("SOCKS5 proxy listening on %s", *socksAddr)
 
 	go func() {
-		ticker := time.NewTicker(3 * time.Second)
+		ticker := time.NewTicker(1 * time.Second)
 		defer ticker.Stop()
 		var primaryReconnecting int32
 		for {
@@ -935,21 +915,16 @@ func main() {
 
 				isRST := wasConnected && (currentMgr == nil || !currentMgr.IsConnected())
 				if isRST {
-					primaryEntry.mu.Lock()
 					primaryEntry.Status = connStatusRST
 					primaryEntry.Error = "connection reset by peer"
-					primaryEntry.mu.Unlock()
 					stdlog.Printf("Transport watchdog: primary %s got RST", transports[0])
 				}
 
 				activated := false
 				entries := pool.List()
 				for _, e := range entries {
-					e.mu.Lock()
 					status := e.Status
 					mgr := e.mgr
-					e.mu.Unlock()
-
 					if status == connStatusConnected && mgr != nil && mgr.IsConnected() && mgr != currentMgr {
 						socksMod.SetTunnel(mgr)
 						stdlog.Printf("Transport watchdog: switched SOCKS to %s", e.Transport)
@@ -967,13 +942,14 @@ func main() {
 						e.mu.Unlock()
 
 						if status == connStatusStandby && mgr != nil {
+
 							stdlog.Printf("Transport watchdog: activating standby transport %s", tr)
+
 							go func(entry *TransportEntry) {
-								entry.mu.Lock()
+
 								entry.Status = connStatusConnecting
-								entry.mu.Unlock()
 								restartEntry(entry, buildBaseCfg(entry))
-								entry.mu.Lock()
+
 								if entry.Status == connStatusConnected && entry.mgr != nil && entry.mgr.IsConnected() {
 									socksMod.SetTunnel(entry.mgr)
 									stdlog.Printf("Transport watchdog: standby %s now active", entry.Transport)
@@ -985,13 +961,12 @@ func main() {
 					}
 				}
 
-				primaryEntry.mu.Lock()
 				enabled := primaryEntry.Enabled
-				primaryEntry.mu.Unlock()
+
 				if enabled && atomic.CompareAndSwapInt32(&primaryReconnecting, 0, 1) {
 					go func() {
 						defer atomic.StoreInt32(&primaryReconnecting, 0)
-						time.Sleep(2 * time.Second)
+						time.Sleep(1 * time.Second)
 
 						if globalAgent != nil {
 							if recTr, _ := globalAgent.SelectTransport(); recTr != "" {
@@ -1038,23 +1013,14 @@ func main() {
 				return
 			case <-ticker.C:
 				eng := mlpkg.GetNativeEngine()
-				snIs := eng.GetSNIPool()
 				allMgrs := []*tunnel.Manager{tunnelMod}
 				for _, e := range pool.List() {
-					e.mu.Lock()
+
 					m := e.mgr
-					e.mu.Unlock()
+
 					if m != nil && m != tunnelMod {
 						allMgrs = append(allMgrs, m)
 					}
-				}
-				for _, sni := range snIs {
-					for _, m := range allMgrs {
-						m.AddRussianSNI(sni)
-					}
-				}
-				if len(snIs) > 0 {
-					stdlog.Printf("SNI sync: fed %d Russian SNIs into %d tunnel managers", len(snIs), len(allMgrs))
 				}
 
 				dpiType, conf := eng.GetCurrentDPILevel()
@@ -1081,7 +1047,7 @@ func main() {
 	}()
 
 	go func() {
-		ticker := time.NewTicker(30 * time.Second)
+		ticker := time.NewTicker(10 * time.Second)
 		defer ticker.Stop()
 		const heapThreshold = 150 << 20
 		for {
@@ -1105,9 +1071,12 @@ func main() {
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		<-sigChan
+		<-ctx.Done()
 	}()
 
-	<-ctx.Done()
+	go func() {
+		close(sigChan)
+	}()
 }
 
 func sniModelDir() string {
@@ -1116,7 +1085,7 @@ func sniModelDir() string {
 
 func fetchAndApplyMLWeights(ctx context.Context, mgr *tunnel.Manager, weightsURL, token string) {
 	httpClient := &http.Client{
-		Timeout: 15 * time.Second,
+		Timeout: 1 * time.Second,
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{InsecureSkipVerify: false},
 		},

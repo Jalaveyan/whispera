@@ -71,19 +71,25 @@ func (b *Buffer) Extend(n int) []byte {
 
 func (b *Buffer) Write(p []byte) (int, error) {
 	free := cap(b.v) - b.end
+
 	if free == 0 {
 		return 0, io.ErrShortBuffer
 	}
+
 	n := copy(b.v[b.end:], p)
+
 	b.end += n
+
 	if n < len(p) {
 		return n, io.ErrShortBuffer
 	}
+
 	return n, nil
 }
 
 func (b *Buffer) ReadFrom(r io.Reader) (int64, error) {
 	n, err := r.Read(b.v[b.end:cap(b.v)])
+
 	if n > 0 {
 		b.end += n
 	}
@@ -94,8 +100,11 @@ func (b *Buffer) Read(p []byte) (int, error) {
 	if b.IsEmpty() {
 		return 0, io.EOF
 	}
+
 	n := copy(p, b.v[b.start:b.end])
+
 	b.start += n
+
 	return n, nil
 }
 
@@ -103,21 +112,29 @@ func (b *Buffer) WriteByte(c byte) error {
 	if b.IsFull() {
 		return io.ErrShortBuffer
 	}
+
 	b.v[b.end] = c
+
 	b.end++
+
 	return nil
 }
 
 func (b *Buffer) WriteString(s string) (int, error) {
 	free := cap(b.v) - b.end
+
 	if free == 0 {
 		return 0, io.ErrShortBuffer
 	}
+
 	n := copy(b.v[b.end:], s)
+
 	b.end += n
+
 	if n < len(s) {
 		return n, io.ErrShortBuffer
 	}
+
 	return n, nil
 }
 
@@ -197,8 +214,11 @@ func (sw *singleWriter) WriteMultiBuffer(mb MultiBuffer) error {
 	if len(mb) == 0 {
 		return nil
 	}
+
 	if len(mb) == 1 {
+
 		b := mb[0]
+
 		for !b.IsEmpty() {
 			n, err := sw.w.Write(b.Bytes())
 			if err != nil {
@@ -209,26 +229,33 @@ func (sw *singleWriter) WriteMultiBuffer(mb MultiBuffer) error {
 		return nil
 	}
 	if _, ok := sw.w.(*net.TCPConn); ok {
+
 		bufs := make(net.Buffers, 0, len(mb))
+
 		for _, b := range mb {
 			if !b.IsEmpty() {
 				bufs = append(bufs, b.Bytes())
 			}
 		}
+
 		if _, err := bufs.WriteTo(sw.w); err != nil {
 			return err
 		}
 		for _, b := range mb {
 			b.start = b.end
 		}
+
 		return nil
 	}
 	for _, b := range mb {
 		for !b.IsEmpty() {
+
 			n, err := sw.w.Write(b.Bytes())
+
 			if err != nil {
 				return err
 			}
+
 			b.Advance(n)
 		}
 	}
@@ -238,13 +265,16 @@ func (sw *singleWriter) WriteMultiBuffer(mb MultiBuffer) error {
 func Copy(reader Reader, writer Writer) (int64, error) {
 	var total int64
 	for {
+
 		mb, err := reader.ReadMultiBuffer()
+
 		if !mb.IsEmpty() {
 			total += mb.Len()
 			if werr := writer.WriteMultiBuffer(mb); werr != nil {
 				return total, werr
 			}
 		}
+
 		if err != nil {
 			if err == io.EOF {
 				return total, nil

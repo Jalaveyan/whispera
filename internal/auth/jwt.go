@@ -53,10 +53,10 @@ func (c *Claims) HasRole(required Role) bool {
 }
 
 type JWTManager struct {
-	mu             sync.RWMutex
-	signingKey     []byte
-	revokedJTIs    map[string]time.Time
-	refreshTokens  map[string]*refreshEntry
+	mu            sync.RWMutex
+	signingKey    []byte
+	revokedJTIs   map[string]time.Time
+	refreshTokens map[string]*refreshEntry
 }
 
 type refreshEntry struct {
@@ -138,18 +138,20 @@ func (m *JWTManager) RefreshAccessToken(refreshToken string) (newAccess, newRefr
 
 func (m *JWTManager) ValidateAccessToken(tokenStr string) (*Claims, error) {
 	claims, err := m.decode(tokenStr)
+
 	if err != nil {
 		return nil, err
 	}
+
 	if claims.Type != "access" {
 		return nil, fmt.Errorf("not an access token")
 	}
 	if claims.IsExpired() {
 		return nil, fmt.Errorf("token expired")
 	}
-	m.mu.RLock()
+
 	_, revoked := m.revokedJTIs[claims.Jti]
-	m.mu.RUnlock()
+
 	if revoked {
 		return nil, fmt.Errorf("token revoked")
 	}
@@ -157,10 +159,13 @@ func (m *JWTManager) ValidateAccessToken(tokenStr string) (*Claims, error) {
 }
 
 func (m *JWTManager) RevokeAccessToken(tokenStr string) {
+
 	claims, err := m.decode(tokenStr)
+
 	if err != nil {
 		return
 	}
+
 	m.mu.Lock()
 	m.revokedJTIs[claims.Jti] = time.Unix(claims.Exp, 0)
 	m.mu.Unlock()
@@ -183,37 +188,47 @@ func (m *JWTManager) RevokeAllUserTokens(userID string) {
 }
 
 func (m *JWTManager) encode(claims *Claims) (string, error) {
+
 	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"HS256","typ":"JWT"}`))
 	payload, err := json.Marshal(claims)
+
 	if err != nil {
 		return "", err
 	}
+
 	payloadB64 := base64.RawURLEncoding.EncodeToString(payload)
 	sigInput := header + "." + payloadB64
 	sig := m.sign([]byte(sigInput))
 	sigB64 := base64.RawURLEncoding.EncodeToString(sig)
+
 	return sigInput + "." + sigB64, nil
 }
 
 func (m *JWTManager) decode(tokenStr string) (*Claims, error) {
 	parts := strings.SplitN(tokenStr, ".", 3)
+
 	if len(parts) != 3 {
 		return nil, fmt.Errorf("malformed token")
 	}
 	sigInput := parts[0] + "." + parts[1]
 	sig, err := base64.RawURLEncoding.DecodeString(parts[2])
+
 	if err != nil {
 		return nil, fmt.Errorf("invalid signature encoding")
 	}
 	expected := m.sign([]byte(sigInput))
+
 	if subtle.ConstantTimeCompare(sig, expected) != 1 {
 		return nil, fmt.Errorf("invalid signature")
 	}
 	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+
 	if err != nil {
 		return nil, fmt.Errorf("invalid payload encoding")
 	}
+
 	var claims Claims
+
 	if err := json.Unmarshal(payload, &claims); err != nil {
 		return nil, fmt.Errorf("invalid claims")
 	}
@@ -228,10 +243,12 @@ func (m *JWTManager) sign(data []byte) []byte {
 
 func (m *JWTManager) cleanupLoop() {
 	ticker := time.NewTicker(10 * time.Minute)
+
 	defer ticker.Stop()
+
 	for range ticker.C {
 		now := time.Now()
-		m.mu.Lock()
+
 		for jti, exp := range m.revokedJTIs {
 			if now.After(exp) {
 				delete(m.revokedJTIs, jti)
@@ -242,7 +259,6 @@ func (m *JWTManager) cleanupLoop() {
 				delete(m.refreshTokens, k)
 			}
 		}
-		m.mu.Unlock()
 	}
 }
 
@@ -261,18 +277,25 @@ var Permissions = map[Role][]string{
 
 func HasPermission(role Role, perm string) bool {
 	perms, ok := Permissions[role]
+
 	if !ok {
 		return false
 	}
+
 	for _, p := range perms {
+
 		if p == "*" {
 			return true
 		}
+
 		if p == perm {
 			return true
 		}
+
 		if strings.HasSuffix(p, ".*") {
+
 			prefix := strings.TrimSuffix(p, ".*")
+
 			if strings.HasPrefix(perm, prefix+".") {
 				return true
 			}

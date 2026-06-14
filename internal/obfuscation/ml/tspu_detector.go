@@ -7,7 +7,6 @@ import (
 	"time"
 )
 
-
 const (
 	DPITypeNone           = 0
 	DPITypeHTTPInspection = 1
@@ -70,7 +69,7 @@ type rstEvent struct {
 }
 
 type bwSample struct {
-	Transport string
+	Transport   string
 	BytesPerSec float64
 	Timestamp   time.Time
 }
@@ -360,11 +359,11 @@ func (d *TSPUDetector) GetTSPUFeatures() []float64 {
 
 func (d *TSPUDetector) Stats() map[string]interface{} {
 	return map[string]interface{}{
-		"rst_detections":     atomic.LoadInt64(&d.rstDetections),
+		"rst_detections":      atomic.LoadInt64(&d.rstDetections),
 		"throttle_detections": atomic.LoadInt64(&d.throttleDetections),
-		"replay_detections":  atomic.LoadInt64(&d.replayDetections),
-		"zombie_detections":  atomic.LoadInt64(&d.zombieDetections),
-		"total_checks":       atomic.LoadInt64(&d.totalChecks),
+		"replay_detections":   atomic.LoadInt64(&d.replayDetections),
+		"zombie_detections":   atomic.LoadInt64(&d.zombieDetections),
+		"total_checks":        atomic.LoadInt64(&d.totalChecks),
 	}
 }
 

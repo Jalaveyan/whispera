@@ -219,7 +219,6 @@ func (t *Transport) HealthCheck() interfaces.HealthStatus {
 	return status
 }
 
-
 type TunnelServiceServer interface {
 	Tunnel(TunnelService_TunnelServer) error
 }

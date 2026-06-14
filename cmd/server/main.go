@@ -107,14 +107,13 @@ var (
 	printVersion   = flag.Bool("version", false, "Print version and exit")
 	validateConfig = flag.Bool("validate-config", false, "Validate configuration and exit")
 	pprofAddr      = flag.String("pprof", "localhost:6060", "Pprof server listen address")
-	p2pAddr        = flag.String("p2p-addr", "", "P2P relay listen address (e.g. :8445), empty = disabled")
-	p2pSecret      = flag.String("p2p-secret", "", "P2P relay HMAC secret; auto-generated if empty")
 	clusterAddr    = flag.String("cluster-addr", ":8082", "Bridge cluster HTTP listen address (served by bridge agent)")
 	selfAddr       = flag.String("self-addr", "", "Public address of this bridge node (host:port), used in cluster election")
 )
 
 var globalBridgePool *bridgepool.Registry
 var globalWiraidEngine *wiraid.Engine
+
 var globalKeyLimits = keylimits.New(keylimits.Limits{
 	MaxActiveSessions: 10,
 	GlobalCap:         10000,
@@ -193,24 +192,25 @@ func createHandshakeHandler(privateKeyStr string, serverConfig *modconfig.Server
 		MaxPending:       1000,
 		EnableAntiReplay: true,
 	})
+
 	if err != nil {
 		return nil
 	}
 
 	h.SetDependencies(globalCryptoProvider, globalSessionMgr)
 
-	privKey, err := base64.StdEncoding.DecodeString(privateKeyStr)
+	privateKey, err := base64.StdEncoding.DecodeString(privateKeyStr)
 
-	if err != nil || len(privKey) != 32 {
+	if err != nil || len(privateKey) != 32 {
 		return nil
 	}
 
-	pubKey, err := curve25519.X25519(privKey, curve25519.Basepoint)
+	publicKey, err := curve25519.X25519(privateKey, curve25519.Basepoint)
 	if err != nil {
 		return nil
 	}
 
-	h.SetStaticKeys(pubKey, privKey)
+	h.SetStaticKeys(publicKey, privateKey)
 	return h
 }
 
@@ -230,21 +230,7 @@ func StartInbound(inbound modconfig.InboundConfig, serverConfig *modconfig.Serve
 		}
 	}
 
-	if network == "udp" {
-		return nil
-	}
-
-	selfManaged := network == "h2c" || network == "shadowsocks" ||
-		network == "obfs4"
-
 	var listener net.Listener
-	if !selfManaged {
-		var err error
-		listener, err = (&net.ListenConfig{}).Listen(context.Background(), "tcp", listenAddr)
-		if err != nil {
-			return fmt.Errorf("failed to listen on %s: %w", listenAddr, err)
-		}
-	}
 
 	var hsHandler *handshake.Handler
 
@@ -288,7 +274,7 @@ func StartInbound(inbound modconfig.InboundConfig, serverConfig *modconfig.Serve
 			}
 
 			var peek [3]byte
-			conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+			conn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
 			n, _ := io.ReadFull(conn, peek[:])
 			conn.SetReadDeadline(time.Time{})
 
@@ -333,6 +319,7 @@ func StopInbound(tag string) error {
 
 func StartReverseInbound(inbound modconfig.InboundConfig, serverConfig *modconfig.ServerConfig, stopCh <-chan struct{}) {
 	remoteAddr := inbound.RemoteAddr
+
 	if remoteAddr == "" {
 		return
 	}
@@ -352,7 +339,8 @@ func StartReverseInbound(inbound modconfig.InboundConfig, serverConfig *modconfi
 		default:
 		}
 
-		conn, err := (&net.Dialer{Timeout: 10 * time.Second}).DialContext(context.Background(), "tcp", remoteAddr)
+		conn, err := (&net.Dialer{Timeout: 1 * time.Second}).DialContext(context.Background(), "tcp", remoteAddr)
+
 		if err != nil {
 			select {
 			case <-stopCh:
@@ -388,39 +376,43 @@ func acceptBackoff(d *time.Duration) {
 }
 
 func main() {
+
 	if len(os.Args) > 1 {
+
 		cmd := strings.TrimSpace(os.Args[1])
+
 		switch cmd {
 		case "x25519":
-			priv := make([]byte, 32)
-			if _, err := rand.Read(priv); err != nil {
+			private := make([]byte, 32)
+			if _, err := rand.Read(private); err != nil {
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 				os.Exit(1)
 			}
-			pub, err := curve25519.X25519(priv, curve25519.Basepoint)
+			public, err := curve25519.X25519(private, curve25519.Basepoint)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 				os.Exit(1)
 			}
-			fmt.Printf("Private Key: %s\n", base64.StdEncoding.EncodeToString(priv))
-			fmt.Printf("Public Key:  %s\n", base64.StdEncoding.EncodeToString(pub))
+			fmt.Printf("Private Key: %s\n", base64.StdEncoding.EncodeToString(private))
+			fmt.Printf("Public Key:  %s\n", base64.StdEncoding.EncodeToString(public))
 			os.Exit(0)
 		case "pubkey":
 			if len(os.Args) < 3 {
-				fmt.Fprintln(os.Stderr, "Usage: whispera pubkey <private_key>")
+				fmt.Fprintln(os.Stderr, "whispera pubkey <private_key>")
 				os.Exit(1)
 			}
-			privKeyStr := strings.TrimSpace(os.Args[2])
-			var priv []byte
+			privateKeyString := strings.TrimSpace(os.Args[2])
+
+			var private []byte
 			var err error
 
-			priv, err = base64.StdEncoding.DecodeString(privKeyStr)
+			private, err = base64.StdEncoding.DecodeString(privateKeyString)
 
-			if err != nil || len(priv) != 32 {
+			if err != nil || len(private) != 32 {
 				fmt.Fprintf(os.Stderr, "Error: invalid private key (must be 32 bytes Base64)\n")
 				os.Exit(1)
 			}
-			pub, _ := curve25519.X25519(priv, curve25519.Basepoint)
+			pub, _ := curve25519.X25519(private, curve25519.Basepoint)
 			fmt.Println(base64.StdEncoding.EncodeToString(pub))
 			os.Exit(0)
 		case "create-admin":
@@ -432,17 +424,19 @@ func main() {
 			createAdminCmd.Parse(os.Args[2:])
 
 			if *email == "" || *password == "" || *dbURL == "" {
-				fmt.Fprintln(os.Stderr, "Usage: whispera create-admin -email <email> -password <pass> -db <postgres_url>")
+				fmt.Fprintln(os.Stderr, "whispera create-admin -email <email> -password <pass> -db <postgres_url>")
 				os.Exit(1)
 			}
 
 			cfg := db.DefaultConfig()
 			cfg.URL = *dbURL
 			database, err := db.New(cfg)
+
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Failed to connect to DB: %v\n", err)
 				os.Exit(1)
 			}
+
 			defer database.Close()
 
 			ctx := context.Background()
@@ -560,13 +554,14 @@ func main() {
 	}
 
 	if globalServerConfig != nil && globalServerConfig.Bridge.AutoRegister && globalServerConfig.UpstreamServer != "" {
+
 		go func() {
-			time.Sleep(2 * time.Second)
+
+			time.Sleep(1 * time.Second)
+
 			registerBridgeWithMainServer()
 		}()
 	}
-
-	setupEventHandlers(manager)
 
 	if *validateConfig {
 		os.Exit(0)
@@ -617,19 +612,7 @@ func createModules(manager *lifecycle.Manager, ctx context.Context) error {
 	}
 
 	if serverConfig.API.AdminUsername == "admin" && serverConfig.API.AdminPassword == "admin" {
-		fmt.Println("")
-		fmt.Println("╔══════════════════════════════════════════════════════════════╗")
-		fmt.Println("║  ⚠️  WARNING: DEFAULT ADMIN CREDENTIALS DETECTED!           ║")
-		fmt.Println("║  Username: admin / Password: admin                          ║")
-		fmt.Println("║                                                             ║")
-		fmt.Println("║  Change admin_username and admin_password in config.yaml     ║")
-		fmt.Println("║  before deploying to production!                            ║")
-		fmt.Println("╚══════════════════════════════════════════════════════════════╝")
-		fmt.Println("")
-	}
-
-	if serverConfig.Cache.RedisURL != "" {
-	} else {
+		fmt.Println("The default login and username are not secure and need to be changed:")
 	}
 
 	if serverConfig.Database.PostgresURL != "" {
@@ -644,12 +627,12 @@ func createModules(manager *lifecycle.Manager, ctx context.Context) error {
 
 		database, err := db.New(dbCfg)
 		if err != nil {
+			return err
 		} else {
 			db.SetGlobal(database)
 		}
 	} else {
 	}
-
 	server.Global.SetCallbacks(
 		func(inbound modconfig.InboundConfig) error {
 			if inbound.Mode == "reverse" {
@@ -688,9 +671,12 @@ func createModules(manager *lifecycle.Manager, ctx context.Context) error {
 
 		bridge.OnFailover(func(active bool) {
 			if active {
+				return
 			} else {
+				fmt.Printf("bridge is offline\n")
 			}
 		})
+
 		globalBridge = bridge
 
 		if err := bridge.Start(serverConfig.Server.ListenAddr); err != nil {
@@ -702,6 +688,7 @@ func createModules(manager *lifecycle.Manager, ctx context.Context) error {
 		agentCfg.UpstreamServer = serverConfig.UpstreamServer
 		agentCfg.RegistrationToken = serverConfig.Bridge.RegistrationToken
 		agentCfg.ClusterListenAddr = *clusterAddr
+
 		if *selfAddr != "" {
 			agentCfg.SelfAddress = *selfAddr
 		} else {
@@ -735,10 +722,13 @@ func createModules(manager *lifecycle.Manager, ctx context.Context) error {
 		SessionTimeout:  serverConfig.Session.SessionTimeout.D(),
 		CleanupInterval: serverConfig.Session.CleanupInterval.D(),
 	})
+
 	if err != nil {
 		return err
 	}
+
 	globalSessionMgr = sessionMgr
+
 	if err := manager.Register(sessionMgr); err != nil {
 		return err
 	}
@@ -748,9 +738,11 @@ func createModules(manager *lifecycle.Manager, ctx context.Context) error {
 		EnableCache: true,
 		CacheSize:   10000,
 	})
+
 	if err != nil {
 		return err
 	}
+
 	if err := manager.Register(routerEngine); err != nil {
 		return err
 	}
@@ -776,33 +768,37 @@ func createModules(manager *lifecycle.Manager, ctx context.Context) error {
 		MaxPending:       1000,
 		EnableAntiReplay: true,
 	})
+
 	if err != nil {
 		return err
 	}
+
 	handshakeHandler.SetDependencies(cryptoProvider, sessionMgr)
 
 	if serverConfig.Server.PrivateKey != "" {
-		var privKey []byte
-		var err error
 
-		privKey, err = base64.StdEncoding.DecodeString(serverConfig.Server.PrivateKey)
+		var privateKey []byte
+
+		privateKey, err = base64.StdEncoding.DecodeString(serverConfig.Server.PrivateKey)
 
 		if err != nil {
-			log.Fatalf("Invalid private key in config: %v (must be Base64)", err)
+			log.Fatalf("Invalid private key in config: %v (only Base64)", err)
 		}
-		if len(privKey) != 32 {
-			log.Fatalf("Private key must be 32 bytes (Base64)")
+		if len(privateKey) != 32 {
+			log.Fatalf("Private key only 32 bytes (Base64)")
 		}
 
-		pubKey, err := curve25519.X25519(privKey, curve25519.Basepoint)
+		publicKey, err := curve25519.X25519(privateKey, curve25519.Basepoint)
+
 		if err != nil {
 			log.Fatalf("Failed to derive public key: %v", err)
 		}
 
-		handshakeHandler.SetStaticKeys(pubKey, privKey)
+		handshakeHandler.SetStaticKeys(publicKey, privateKey)
 	}
 
 	globalHandshake = handshakeHandler
+
 	if err := manager.Register(handshakeHandler); err != nil {
 		return err
 	}
@@ -814,11 +810,13 @@ func createModules(manager *lifecycle.Manager, ctx context.Context) error {
 		EnableNAT:           true,
 		EnableFragmentation: true,
 	})
+
 	if err != nil {
 		return err
 	}
 
 	globalDataPlane = dataPlaneProcessor
+
 	if err := manager.Register(dataPlaneProcessor); err != nil {
 		return err
 	}
@@ -829,11 +827,14 @@ func createModules(manager *lifecycle.Manager, ctx context.Context) error {
 		WorkerCount:   serverConfig.Transport.UDP.Workers,
 		BufferSize:    serverConfig.Transport.UDP.BufferSize,
 	})
+
 	if err != nil {
 		return err
 	}
+
 	udpTransport.OnPacket(handlePacket)
 	globalUDPTransport = udpTransport
+
 	if err := manager.Register(udpTransport); err != nil {
 		return err
 	}
@@ -845,9 +846,11 @@ func createModules(manager *lifecycle.Manager, ctx context.Context) error {
 		UpstreamProxy:  serverConfig.Relay.UpstreamProxy,
 		PaddingMaxSize: serverConfig.Obfuscation.Padding.MaxSize,
 	})
+
 	if err != nil {
 		return err
 	}
+
 	relayServer.SetTransport(func(data []byte, addr net.Addr) error {
 		payload := data
 		if globalObfuscator != nil {
@@ -866,21 +869,28 @@ func createModules(manager *lifecycle.Manager, ctx context.Context) error {
 			return err
 		}
 		return nil
+
 	})
+
 	relayServer.SetRawPacketHandler(func(data []byte) error {
 		if globalDataPlane != nil {
 			return globalDataPlane.InjectPacket(data)
 		}
 		return fmt.Errorf("dataplane not available")
 	})
+
 	globalRelay = relayServer
 	relayServer.SetRouter(routerEngine)
+
 	if om := dataPlaneProcessor.GetOutboundManager(); om != nil {
 		relayServer.SetOutboundDial(om.Dial)
+
 		if serverConfig != nil {
 			om.UpdateOutbounds(serverConfig.Outbounds)
 		}
+
 		outboundsCh := configProvider.Watch("outbounds")
+
 		go func() {
 			for val := range outboundsCh {
 				if outbounds, ok := val.([]modconfig.OutboundConfig); ok {
@@ -889,6 +899,7 @@ func createModules(manager *lifecycle.Manager, ctx context.Context) error {
 			}
 		}()
 	}
+
 	if err := manager.Register(relayServer); err != nil {
 		return err
 	}
@@ -916,6 +927,7 @@ func createModules(manager *lifecycle.Manager, ctx context.Context) error {
 				MaxConns:     10000,
 				BufferSize:   32 * 1024,
 			})
+
 			if err != nil {
 				return err
 			}
@@ -925,14 +937,14 @@ func createModules(manager *lifecycle.Manager, ctx context.Context) error {
 
 			go func() {
 				time.Sleep(1 * time.Second)
-				backoffTCP := 10 * time.Millisecond
+				backoffTCP := 1 * time.Millisecond
 				for {
 					conn, err := tcpTransport.Accept()
 					if err != nil {
 						acceptBackoff(&backoffTCP)
 						continue
 					}
-					backoffTCP = 10 * time.Millisecond
+					backoffTCP = 1 * time.Millisecond
 					go handleTCPConnection(conn, globalHandshake)
 				}
 			}()
@@ -965,55 +977,68 @@ func createModules(manager *lifecycle.Manager, ctx context.Context) error {
 			AdminPasswordHash: serverConfig.API.AdminPasswordHash,
 			LoginRateLimit:    serverConfig.API.LoginRateLimit,
 		})
+
 		if err != nil {
 			return err
 		}
+
 		apiServer.SetRegistry(manager.Registry())
 		apiServer.SetKeyLimits(globalKeyLimits)
 		globalBridgePool = apiServer.BridgePool()
+
 		if err := manager.Register(apiServer); err != nil {
 			return err
 		}
 
 		apiServer.Handle("/api/bridge/failover", func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
+
 			if globalBridge == nil {
 				json.NewEncoder(w).Encode(map[string]interface{}{"mode": "master", "failover": false})
 				return
 			}
+
 			json.NewEncoder(w).Encode(map[string]interface{}{
-				"mode":            "bridge",
-				"upstream_alive":  globalBridge.IsUpstreamAlive(),
-				"failover_active": globalBridge.IsFailoverActive(),
-				"active_conns":    globalBridge.GetActiveConnections(),
+				"mode":               "bridge",
+				"upstream_alive":     globalBridge.IsUpstreamAlive(),
+				"failover_active":    globalBridge.IsFailoverActive(),
+				"active_connections": globalBridge.GetActiveConnections(),
 			})
 		})
 
 		apiServer.Handle("/api/ml/weights", func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
+
 			snap := mlpkg.GetGlobalSnapshot()
+
 			if snap == nil {
 				w.WriteHeader(http.StatusServiceUnavailable)
 				fmt.Fprintf(w, `{"error":"weights not ready yet"}`)
 				return
 			}
+
 			data, err := json.Marshal(snap)
+
 			if err != nil {
 				w.WriteHeader(http.StatusInternalServerError)
 				return
 			}
+
 			w.Write(data)
 		})
 
 		wiraidBaseDir := os.Getenv("WHISPERA_WIRAID_DIR")
+
 		if wiraidBaseDir == "" {
 			wiraidBaseDir = "/var/lib/whispera/wiraid"
 		}
+
 		if os.Getenv("WHISPERA_PUBLIC_HOST") == "" && serverConfig.Server.PublicURL != "" {
 			if u, err := url.Parse(serverConfig.Server.PublicURL); err == nil && u.Hostname() != "" {
 				os.Setenv("WHISPERA_PUBLIC_HOST", u.Hostname())
 			}
 		}
+
 		if eng, err := wiraid.NewEngine(wiraidBaseDir); err != nil {
 		} else {
 			globalWiraidEngine = eng
@@ -1031,34 +1056,36 @@ func createModules(manager *lifecycle.Manager, ctx context.Context) error {
 
 	if serverConfig.Chameleon.Enabled && (serverConfig.Chameleon.TLSCert != "" || serverConfig.Chameleon.Domain != "") {
 		ganIface := serverConfig.Chameleon.GANIface
+
 		if ganIface == "" {
 			ganIface = defaultRouteIface()
 		}
-		if ganIface == "" {
-			ganIface = "eth0"
-		}
+
 		ganPort := serverConfig.Chameleon.GANPort
+
 		if ganPort == 0 {
 			if _, p, err := net.SplitHostPort(serverConfig.Chameleon.ListenAddr); err == nil {
 				ganPort, _ = strconv.Atoi(p)
 			}
 		}
+
 		if ganPort == 0 {
 			ganPort = 443
 		}
+
 		ganMaxPadding := serverConfig.Chameleon.GANMaxPadding
+
 		if ganMaxPadding == 0 {
 			ganMaxPadding = 4096
 		}
+
 		ganModelDir := os.Getenv("WHISPERA_ML_MODEL_DIR")
 		if ganModelDir == "" {
 			ganModelDir = "./ml_models"
 		}
+
 		ganSavePath := filepath.Join(ganModelDir, "gan_state.json")
 		ganRunner := mlpkg.NewGANRunner(ganIface, ganPort, ganSavePath)
-		if err := ganRunner.Start(); err != nil {
-		} else {
-		}
 
 		cCfg := &chameleon.ServerConfig{
 			GANDecide: func(iatMean, sizeMean, upRatio float64) chameleon.GANAction {
@@ -1093,10 +1120,6 @@ func createModules(manager *lifecycle.Manager, ctx context.Context) error {
 				return entries
 			},
 			OnConn: func(conn net.Conn, userID string) {
-				if globalRelay == nil {
-					conn.Close()
-					return
-				}
 				mlpkg.FlowRegistry.RegisterConn(conn.LocalAddr(), conn.RemoteAddr(), mlpkg.FlowTunnel)
 				tracked := stats.WrapConn(conn, userID)
 				go func() {
@@ -1105,23 +1128,22 @@ func createModules(manager *lifecycle.Manager, ctx context.Context) error {
 				}()
 			},
 		}
-		if serverConfig.Chameleon.Secret != "" {
-			if decoded, err := base64.StdEncoding.DecodeString(serverConfig.Chameleon.Secret); err == nil && len(decoded) == 32 {
-				cCfg.SharedSecret = decoded
-			}
-		}
 		cCfg.QUICListenAddr = serverConfig.Chameleon.QUICListenAddr
 		go func() {
 			if err := chameleon.ListenAndServe(ctx, cCfg); err != nil {
+				return
 			}
 		}()
 	}
 
 	if serverConfig.Bot.Enabled {
 		if db.IsEnabled() {
-			fmt.Println("[DEBUG] Whispera Server: starting Telegram bot module")
+			fmt.Println("[DEBUG] Whispera: starting Telegram bot")
+
 			botModule, err := bot.New(&serverConfig.Bot, db.Global())
+
 			if err != nil {
+				return err
 			} else {
 				if globalWiraidEngine != nil {
 					botModule.SetWiraidEngine(globalWiraidEngine)
@@ -1133,17 +1155,18 @@ func createModules(manager *lifecycle.Manager, ctx context.Context) error {
 					return err
 				}
 			}
-		} else {
 		}
 	}
 
 	if serverConfig.Correlation.Enabled {
+
 		corrCfg := &evasion.CorrelationConfig{
 			Enabled:         true,
 			PaddingEnabled:  serverConfig.Correlation.PaddingEnabled,
 			MixEnabled:      serverConfig.Correlation.JitterEnabled,
 			ConstantRatePPS: serverConfig.Correlation.RateBytesPerSec,
 		}
+
 		if serverConfig.Correlation.MaxJitterMs > 0 {
 			corrCfg.DelayJitter = time.Duration(serverConfig.Correlation.MaxJitterMs) * time.Millisecond
 		} else {
@@ -1152,53 +1175,72 @@ func createModules(manager *lifecycle.Manager, ctx context.Context) error {
 		if corrCfg.ConstantRatePPS <= 0 {
 			corrCfg.ConstantRatePPS = 100
 		}
+
 		globalCorrelation = evasion.NewCorrelationDefense(corrCfg)
+
 		manager.OnShutdown(func() { globalCorrelation.Stop() })
 	}
 
 	{
 		listenAddr := ":8000"
+
 		if serverConfig.ML.ListenAddr != "" {
 			listenAddr = serverConfig.ML.ListenAddr
 		}
-		mlCfg := &mlserver.Config{
+
+		mlConfig := &mlserver.Config{
 			ListenAddr: listenAddr,
 			Token:      serverConfig.API.AuthToken,
 			DataDir:    "./ml_data",
 		}
-		mlSrv, err := mlserver.New(mlCfg)
+
+		mlServer, err := mlserver.New(mlConfig)
+
 		if err != nil {
+			return err
 		} else {
-			if err := manager.Register(mlSrv); err != nil {
+
+			if err := manager.Register(mlServer); err != nil {
 				return err
 			}
-			localML := "http://127.0.0.1" + listenAddr
+
+			localML := "http://" + listenAddr /// todo
+
 			if !strings.HasPrefix(listenAddr, ":") {
 				localML = "http://" + listenAddr
 			}
+
 			os.Setenv("WHISPERA_ML_SERVER", localML)
 		}
 	}
 
 	if serverConfig.Update.Enabled && serverConfig.Update.ManifestURL != "" {
-		updCfg := &update.Config{
+
+		updateConfig := &update.Config{
 			ManifestURL:    serverConfig.Update.ManifestURL,
 			CurrentVersion: Version,
 			CheckInterval:  serverConfig.Update.CheckInterval.D(),
 		}
-		if updCfg.CheckInterval <= 0 {
-			updCfg.CheckInterval = 1 * time.Hour
+
+		if updateConfig.CheckInterval <= 0 {
+			updateConfig.CheckInterval = 1 * time.Hour
 		}
+
 		binaryPath, _ := os.Executable()
-		updCfg.BinaryPath = binaryPath
-		globalUpdater = update.NewUpdater(updCfg)
+
+		updateConfig.BinaryPath = binaryPath
+
+		globalUpdater = update.NewUpdater(updateConfig)
+
 		globalUpdater.OnUpdateAvailable(func(v update.VersionInfo) {
 		})
 		globalUpdater.OnUpdateApplied(func(oldV, newV string) {
 		})
 		globalUpdater.OnUpdateFailed(func(v string, err error) {
 		})
+
 		globalUpdater.Start()
+
 		manager.OnShutdown(func() { globalUpdater.Stop() })
 	}
 
@@ -1206,24 +1248,23 @@ func createModules(manager *lifecycle.Manager, ctx context.Context) error {
 }
 
 func handlePacket(data []byte, addr net.Addr) {
-	if *debug {
-	}
+
 	ctx := context.Background()
 
 	if len(data) >= 32 && len(data) <= 96 && globalHandshake != nil {
+
 		if !udpIPRateAllow(addr) {
 			return
 		}
+
 		sess, err := globalHandshake.HandleHandshake(ctx, data, addr)
+
 		if err == nil && sess != nil {
-			if *debug {
-			}
+
 			if response := globalHandshake.BuildResponse(sess); response != nil {
 				if globalUDPTransport != nil {
 					if _, err := globalUDPTransport.WriteTo(response, addr); err != nil {
-						if *debug {
-						}
-					} else if *debug {
+						return
 					}
 				}
 			}
@@ -1235,36 +1276,42 @@ func handlePacket(data []byte, addr net.Addr) {
 		return
 	}
 
-	sess, ok := globalSessionMgr.GetSessionByAddr(addr)
-	if !ok {
-		if *debug {
-		}
-		return
-	}
+	sess, _ := globalSessionMgr.GetSessionByAddr(addr)
 
 	payload := data
+
 	if globalObfuscator != nil {
+
 		deobfuscated, _, err := globalObfuscator.Process(data, interfaces.DirectionInbound)
+
 		if err == nil && len(deobfuscated) > 0 {
 			payload = deobfuscated
 		}
 	}
 
 	if globalCorrelation != nil {
+
 		payload = globalCorrelation.ProcessInbound(payload)
+
 		if len(payload) == 0 {
 			return
 		}
+
 		if len(payload) >= 1 && payload[0] == 0xFF {
 			return
 		}
 	}
 
 	if len(payload) >= 8 && globalRelay != nil {
+
 		frameType := payload[2]
+
 		if frameType >= 0x01 && frameType <= 0x08 {
+
 			dataLen := uint32(payload[4])<<24 | uint32(payload[5])<<16 | uint32(payload[6])<<8 | uint32(payload[7])
+
 			if int(dataLen) <= len(payload)-8 {
+
 				writer := &UDPResponseWriter{
 					transport:  globalUDPTransport,
 					addr:       addr,
@@ -1280,10 +1327,8 @@ func handlePacket(data []byte, addr net.Addr) {
 				}
 
 				if err := globalRelay.ProcessFrame(payload, sess, writer); err != nil {
-					if *debug {
-					}
+					return
 				}
-				return
 			}
 		}
 	}
@@ -1294,40 +1339,44 @@ func handlePacket(data []byte, addr net.Addr) {
 			Payload:   payload,
 			SrcAddr:   addr,
 		}
+
 		if err := globalDataPlane.ProcessInbound(context.Background(), packet, sess); err != nil {
-			if *debug {
-			}
+			return
 		}
 	}
 }
 
 func handleTCPConnection(conn net.Conn, hsHandler *handshake.Handler) {
+
 	defer conn.Close()
 
 	addr := conn.RemoteAddr()
-	if *debug {
-	}
 
-	conn.SetReadDeadline(time.Now().Add(10 * time.Second))
+	conn.SetReadDeadline(time.Now().Add(1 * time.Second))
+
 	var firstByte [1]byte
+
 	if _, err := io.ReadFull(conn, firstByte[:]); err != nil {
-		if *debug {
-		}
 		return
 	}
 	conn.SetReadDeadline(time.Time{})
 
 	if hsHandler != nil && firstByte[0] == byte(handshake.HandshakeTypeInit) {
+
 		rest := make([]byte, 63)
+
 		if _, err := io.ReadFull(conn, rest); err != nil {
-			if *debug {
-			}
 			return
 		}
+
 		padLen := int(rest[62])
+
 		buf := append(firstByte[:], rest...)
+
 		if padLen > 0 && padLen <= 32 {
+
 			extra := make([]byte, padLen)
+
 			if _, err := io.ReadFull(conn, extra); err == nil {
 				buf = append(buf, extra...)
 			}
@@ -1335,17 +1384,15 @@ func handleTCPConnection(conn net.Conn, hsHandler *handshake.Handler) {
 
 		sess, err := hsHandler.HandleHandshake(context.Background(), buf, addr)
 		if err != nil {
-			if *debug {
-			}
 			return
 		}
-		if *debug {
-		}
+
 		if response := hsHandler.BuildResponse(sess); response != nil {
 			if _, err := conn.Write(response); err != nil {
 				return
 			}
 		}
+
 		if globalRelay != nil {
 			globalRelay.ServeTunnel(stats.WrapConn(conn, addr.String()), false)
 		}
@@ -1354,8 +1401,7 @@ func handleTCPConnection(conn net.Conn, hsHandler *handshake.Handler) {
 			"remote", addr.String(),
 			"first_byte", fmt.Sprintf("0x%02x", firstByte[0]),
 		)
-		if *debug {
-		}
+
 		if globalRelay != nil {
 			globalRelay.ServeTunnel(stats.WrapConn(&prependConn{Conn: conn, prepend: []byte{firstByte[0]}}, addr.String()), false)
 		}
@@ -1371,83 +1417,56 @@ type UDPResponseWriter struct {
 }
 
 func (w *UDPResponseWriter) Write(data []byte) error {
+
 	payload := data
+
 	if w.obfuscator != nil {
+
 		obfuscated, _, err := w.obfuscator.Process(data, interfaces.DirectionOutbound)
 		if err != nil {
 			return fmt.Errorf("obfuscation failed: %w", err)
 		}
+
 		payload = obfuscated
 	}
+
 	if w.transport == nil {
-		return fmt.Errorf("UDP transport not available")
+		return fmt.Errorf("UDP not available")
 	}
+
 	n, err := w.transport.WriteTo(payload, w.addr)
+
 	if err == nil && n > 0 && w.UserID != "" {
 		stats.AddTx(w.UserID, int64(n))
 	}
+
 	return err
 }
 
 func (w *UDPResponseWriter) RemoteAddr() net.Addr { return w.addr }
 
-type TCPResponseWriter struct {
-	conn       net.Conn
-	obfuscator interfaces.Obfuscator
-	debug      bool
-	UserID     string
-}
-
-func setupEventHandlers(manager *lifecycle.Manager) {
-	eventBus := manager.Events()
-
-	moduleStopped := eventBus.Subscribe("module.stopped")
-	go func() {
-		for range moduleStopped {
-		}
-	}()
-
-	handshakeEvents := eventBus.Subscribe("handshake.*")
-	go func() {
-		count := 0
-		for range handshakeEvents {
-			count++
-		}
-	}()
-
-	manager.OnStart(func() error {
-		return nil
-	})
-
-	manager.OnReload(func() error {
-		return nil
-	})
-
-	manager.OnShutdown(func() {
-	})
-}
-
 func registerBridgeWithMainServer() {
+
 	cfg := globalServerConfig
+
 	if cfg == nil {
 		return
 	}
 
-	publicIP := getPublicIP()
-	if publicIP == "" {
-		return
-	}
-
 	port := "443"
+
 	if len(cfg.Inbounds) > 0 {
+
 		port = fmt.Sprintf("%d", cfg.Inbounds[0].Port)
+
 	} else if cfg.Server.ListenAddr != "" {
+
 		if _, p, err := net.SplitHostPort(cfg.Server.ListenAddr); err == nil {
 			port = p
 		}
 	}
 
-	address := fmt.Sprintf("%s:%s", publicIP, port)
+	address := fmt.Sprintf("%s:%s", port)
 
 	reqBody := map[string]string{
 		"address":    address,
@@ -1459,59 +1478,41 @@ func registerBridgeWithMainServer() {
 	}
 
 	data, err := json.Marshal(reqBody)
-	if err != nil {
-		return
-	}
-
-	client := &http.Client{Timeout: 30 * time.Second}
-	url := fmt.Sprintf("https://%s/api/bridge-register", cfg.UpstreamServer)
-	req1, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, url, bytes.NewReader(data))
-	req1.Header.Set("Content-Type", "application/json")
-	resp, err := client.Do(req1)
-	if err != nil {
-		url = fmt.Sprintf("http://%s/api/bridge-register", cfg.UpstreamServer)
-		req2, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, url, bytes.NewReader(data))
-		req2.Header.Set("Content-Type", "application/json")
-		resp, err = client.Do(req2)
-	}
 
 	if err != nil {
 		return
 	}
-	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		return
-	}
-
-}
-
-func getPublicIP() string {
 	client := &http.Client{Timeout: 5 * time.Second}
-	services := []string{
-		"https://2ip.ru/api/self",
-		"https://ifconfig.me",
-		"https://icanhazip.com",
-		"https://api.ipify.org",
+
+	url := fmt.Sprintf("https://%s/api/bridge-register", cfg.UpstreamServer)
+
+	requestContentType, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, url, bytes.NewReader(data))
+
+	requestContentType.Header.Set("Content-Type", "application/json")
+
+	responce, err := client.Do(requestContentType)
+
+	if err != nil {
+
+		url = fmt.Sprintf("http://%s/api/bridge-register", cfg.UpstreamServer)
+
+		newRequest, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, url, bytes.NewReader(data))
+
+		newRequest.Header.Set("Content-Type", "application/json")
+
+		responce, err = client.Do(newRequest)
 	}
 
-	for _, svc := range services {
-		req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, svc, nil)
-		resp, err := client.Do(req)
-		if err != nil {
-			continue
-		}
-		defer resp.Body.Close()
-
-		buf := make([]byte, 64)
-		n, _ := resp.Body.Read(buf)
-		ip := strings.TrimSpace(string(buf[:n]))
-
-		if net.ParseIP(ip) != nil {
-			return ip
-		}
+	if err != nil {
+		return
 	}
-	return ""
+
+	defer responce.Body.Close()
+
+	if responce.StatusCode != http.StatusOK {
+		return
+	}
 }
 
 type wiraidProxyDialer struct {
@@ -1519,13 +1520,20 @@ type wiraidProxyDialer struct {
 }
 
 func (d *wiraidProxyDialer) Dial(network, addr string) (net.Conn, error) {
+
 	host, portStr, err := net.SplitHostPort(addr)
+
 	if err == nil {
+
 		var port64 uint64
+
 		fmt.Sscanf(portStr, "%d", &port64)
+
 		if socksAddr, ok := d.eng.MatchRoute(host, uint16(port64)); ok {
-			socks, err2 := proxy.SOCKS5("tcp", socksAddr, nil, proxy.Direct)
-			if err2 == nil {
+
+			socks, errSocks := proxy.SOCKS5("tcp", socksAddr, nil, proxy.Direct)
+
+			if errSocks == nil {
 				return socks.Dial(network, addr)
 			}
 		}

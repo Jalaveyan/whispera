@@ -78,7 +78,7 @@ func (om *OutboundManager) AddOutbound(cfg config.OutboundConfig) error {
 	}
 
 	if russiaMode {
-		tCfg.Transport = "cdnworker,russian,asn_bypass"
+		tCfg.Transport = "asn_bypass"
 	}
 
 	if secret, ok := cfg.Settings["chameleon_secret"].(string); ok && secret != "" {
@@ -113,7 +113,6 @@ func (om *OutboundManager) AddOutbound(cfg config.OutboundConfig) error {
 	if err := cryptoMod.Start(); err != nil {
 		return fmt.Errorf("outbound %s: crypto start: %w", cfg.Tag, err)
 	}
-
 
 	sessMod, err := session.New(&session.Config{MaxSessions: 10})
 	if err != nil {

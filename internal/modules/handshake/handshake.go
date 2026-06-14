@@ -90,10 +90,10 @@ type PendingHandshake struct {
 
 type Handler struct {
 	*base.Module
-	config *Config
+	config         *Config
 	crypto         interfaces.CryptoProvider
 	sessionManager interfaces.SessionManager
-	rateLimiter *base.RateLimiter
+	rateLimiter    *base.RateLimiter
 
 	mu      sync.RWMutex
 	pending map[string]*PendingHandshake
@@ -101,9 +101,9 @@ type Handler struct {
 	replayMu    sync.RWMutex
 	replayCache map[string]time.Time
 
-	staticPubKey  []byte
-	staticPrivKey []byte
-	deviceID      [16]byte
+	staticPubKey        []byte
+	staticPrivKey       []byte
+	deviceID            [16]byte
 	handshakesStarted   uint64
 	handshakesCompleted uint64
 	handshakesFailed    uint64

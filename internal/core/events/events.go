@@ -1,4 +1,3 @@
-
 package events
 
 import (
@@ -6,57 +5,40 @@ import (
 	"time"
 )
 
-
 type Event struct {
-
 	Type string
-
 
 	Source string
 
-
 	Timestamp time.Time
 
-
 	Data interface{}
-
 
 	Metadata map[string]interface{}
 }
 
-
 type EventHandler func(event Event)
 
-
 type EventBus interface {
-
 	Publish(event Event) error
-
 
 	PublishAsync(event Event)
 
-
 	Subscribe(eventType string) <-chan Event
-
 
 	SubscribeFunc(eventType string, handler EventHandler) (unsubscribe func())
 
-
 	SubscribeAll() <-chan Event
-
 
 	Unsubscribe(eventType string, ch <-chan Event)
 
-
 	Close()
 }
-
 
 type subscription struct {
 	ch      chan Event
 	handler EventHandler
 }
-
 
 type eventBus struct {
 	mu          sync.RWMutex
@@ -66,7 +48,6 @@ type eventBus struct {
 	closed      bool
 	wg          sync.WaitGroup
 }
-
 
 func NewEventBus(bufferSize int) EventBus {
 	if bufferSize < 1 {
@@ -79,7 +60,6 @@ func NewEventBus(bufferSize int) EventBus {
 	}
 }
 
-
 func (eb *eventBus) Publish(event Event) error {
 	eb.mu.RLock()
 	defer eb.mu.RUnlock()
@@ -91,7 +71,6 @@ func (eb *eventBus) Publish(event Event) error {
 	if event.Timestamp.IsZero() {
 		event.Timestamp = time.Now()
 	}
-
 
 	if subs, ok := eb.subscribers[event.Type]; ok {
 		for _, sub := range subs {
@@ -120,7 +99,6 @@ func (eb *eventBus) Publish(event Event) error {
 	return nil
 }
 
-
 func (eb *eventBus) PublishAsync(event Event) {
 	eb.wg.Add(1)
 	go func() {
@@ -128,7 +106,6 @@ func (eb *eventBus) PublishAsync(event Event) {
 		_ = eb.Publish(event)
 	}()
 }
-
 
 func (eb *eventBus) Subscribe(eventType string) <-chan Event {
 	eb.mu.Lock()
@@ -140,14 +117,12 @@ func (eb *eventBus) Subscribe(eventType string) <-chan Event {
 	return ch
 }
 
-
 func (eb *eventBus) SubscribeFunc(eventType string, handler EventHandler) func() {
 	eb.mu.Lock()
 	defer eb.mu.Unlock()
 
 	sub := subscription{handler: handler}
 	eb.subscribers[eventType] = append(eb.subscribers[eventType], sub)
-
 
 	return func() {
 		eb.mu.Lock()
@@ -163,7 +138,6 @@ func (eb *eventBus) SubscribeFunc(eventType string, handler EventHandler) func()
 	}
 }
 
-
 func (eb *eventBus) SubscribeAll() <-chan Event {
 	eb.mu.Lock()
 	defer eb.mu.Unlock()
@@ -173,7 +147,6 @@ func (eb *eventBus) SubscribeAll() <-chan Event {
 	eb.allSubs = append(eb.allSubs, sub)
 	return ch
 }
-
 
 func (eb *eventBus) Unsubscribe(eventType string, ch <-chan Event) {
 	eb.mu.Lock()
@@ -188,7 +161,6 @@ func (eb *eventBus) Unsubscribe(eventType string, ch <-chan Event) {
 		}
 	}
 
-
 	for i, sub := range eb.allSubs {
 		if sub.ch == ch {
 			close(sub.ch)
@@ -197,7 +169,6 @@ func (eb *eventBus) Unsubscribe(eventType string, ch <-chan Event) {
 		}
 	}
 }
-
 
 func (eb *eventBus) Close() {
 	eb.mu.Lock()
@@ -208,9 +179,7 @@ func (eb *eventBus) Close() {
 	}
 	eb.closed = true
 
-
 	eb.wg.Wait()
-
 
 	for _, subs := range eb.subscribers {
 		for _, sub := range subs {
@@ -225,7 +194,6 @@ func (eb *eventBus) Close() {
 		}
 	}
 }
-
 
 const (
 	EventTypeSessionCreated = "session.created"
@@ -250,10 +218,10 @@ const (
 	EventTypeHealthChanged = "health.changed"
 )
 
-
 var (
 	ErrEventBusClosed = &EventBusError{Message: "event bus is closed"}
 )
+
 type EventBusError struct {
 	Message string
 }
@@ -261,7 +229,6 @@ type EventBusError struct {
 func (e *EventBusError) Error() string {
 	return e.Message
 }
-
 
 func NewEvent(eventType, source string, data interface{}) Event {
 	return Event{
@@ -272,7 +239,6 @@ func NewEvent(eventType, source string, data interface{}) Event {
 		Metadata:  make(map[string]interface{}),
 	}
 }
-
 
 func (e Event) WithMetadata(key string, value interface{}) Event {
 	if e.Metadata == nil {
