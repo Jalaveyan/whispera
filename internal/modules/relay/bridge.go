@@ -1,4 +1,4 @@
-package relay
+﻿package relay
 
 import (
 	"context"
@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"whispera/internal/buf"
-	"whispera/internal/logger"
+	"whispera/internal/log"
 )
 
 type Bridge struct {

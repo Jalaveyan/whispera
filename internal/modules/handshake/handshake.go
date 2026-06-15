@@ -239,7 +239,7 @@ func (h *Handler) HandleHandshake(ctx context.Context, data []byte, addr net.Add
 	return session, nil
 }
 
-func (h *Handler) handleInit(ctx context.Context, data []byte, addr net.Addr) (interfaces.Session, error) {
+func (h *Handler) handleInit(_ context.Context, data []byte, addr net.Addr) (interfaces.Session, error) {
 	h.mu.RLock()
 	crypto := h.crypto
 	sessionMgr := h.sessionManager
@@ -313,7 +313,7 @@ func (h *Handler) BuildResponse(session interfaces.Session) []byte {
 	return nil
 }
 
-func (h *Handler) handleResponse(ctx context.Context, data []byte, addr net.Addr) (interfaces.Session, error) {
+func (h *Handler) handleResponse(_ context.Context, _ []byte, addr net.Addr) (interfaces.Session, error) {
 	h.mu.RLock()
 	pending, ok := h.pending[addr.String()]
 	h.mu.RUnlock()
@@ -335,7 +335,7 @@ func (h *Handler) handleResponse(ctx context.Context, data []byte, addr net.Addr
 	return session, nil
 }
 
-func (h *Handler) handleRekey(ctx context.Context, data []byte, addr net.Addr) (interfaces.Session, error) {
+func (h *Handler) handleRekey(_ context.Context, _ []byte, addr net.Addr) (interfaces.Session, error) {
 	h.mu.RLock()
 	sessionMgr := h.sessionManager
 	h.mu.RUnlock()

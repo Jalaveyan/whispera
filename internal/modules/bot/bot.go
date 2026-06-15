@@ -1,4 +1,4 @@
-package bot
+﻿package bot
 
 import (
 	"context"
@@ -15,7 +15,7 @@ import (
 	"whispera/internal/core/interfaces"
 	"whispera/internal/core/registry"
 	"whispera/internal/db"
-	"whispera/internal/logger"
+	"whispera/internal/log"
 	"whispera/internal/modules/bridgepool"
 	"whispera/internal/modules/config"
 	"whispera/pkg/wiraid"

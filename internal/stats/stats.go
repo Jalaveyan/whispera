@@ -1,4 +1,4 @@
-package stats
+﻿package stats
 
 import (
 	"fmt"
@@ -7,7 +7,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"whispera/internal/logger"
+	"whispera/internal/log"
 )
 
 type TrafficStats struct {

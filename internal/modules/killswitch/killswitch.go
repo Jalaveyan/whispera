@@ -1,13 +1,12 @@
-package killswitch
+﻿package killswitch
 
 import (
+	"whispera/internal/log"
 	"context"
 	"fmt"
 	"net"
 	"sync"
 	"time"
-
-	"whispera/internal/logger"
 )
 
 var log = logger.Module("killswitch")

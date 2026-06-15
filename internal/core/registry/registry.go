@@ -110,7 +110,6 @@ func (r *registry) Register(module interfaces.Module) error {
 		state:  ModuleStateUninitialized,
 	}
 
-	log.Printf("[Registry] Registered module: %s (v%s)", name, module.Version())
 	return nil
 }
 
@@ -178,15 +177,11 @@ func (r *registry) StartAll(ctx context.Context) error {
 	}
 	r.order = order
 
-	log.Printf("[Registry] Starting %d modules in order: %v", len(order), order)
-
 	for _, name := range order {
 		entry := r.modules[name]
 		if entry.state == ModuleStateRunning {
 			continue
 		}
-
-		log.Printf("[Registry] Starting module: %s", name)
 
 		if entry.state == ModuleStateUninitialized {
 			if err := entry.module.Init(ctx, nil); err != nil {
@@ -211,7 +206,6 @@ func (r *registry) StartAll(ctx context.Context) error {
 		log.Printf("[Registry] Module started: %s", name)
 	}
 
-	log.Printf("[Registry] All %d modules started successfully", len(order))
 	return nil
 }
 
@@ -224,8 +218,6 @@ func (r *registry) StopAll(ctx context.Context) error {
 		stopOrder[len(r.order)-1-i] = name
 	}
 
-	log.Printf("[Registry] Stopping %d modules in order: %v", len(stopOrder), stopOrder)
-
 	var lastErr error
 	for _, name := range stopOrder {
 		entry := r.modules[name]
@@ -234,34 +226,28 @@ func (r *registry) StopAll(ctx context.Context) error {
 		}
 
 		entry.state = ModuleStateStopping
-		log.Printf("[Registry] Stopping module: %s", name)
 
 		if err := entry.module.Stop(); err != nil {
 			entry.state = ModuleStateError
 			entry.err = err
 			lastErr = err
-			log.Printf("[Registry] Error stopping module %s: %v", name, err)
 			continue
 		}
 
 		entry.state = ModuleStateStopped
 		r.publishEvent(events.EventTypeModuleStopped, name, nil)
-		log.Printf("[Registry] Module stopped: %s", name)
 	}
 
 	if lastErr != nil {
 		return fmt.Errorf("errors occurred while stopping modules: %w", lastErr)
 	}
 
-	log.Printf("[Registry] All modules stopped")
 	return nil
 }
 
 func (r *registry) Reload(ctx context.Context, cfg interface{}) error {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-
-	log.Printf("[Registry] Reloading configuration for %d modules", len(r.modules))
 
 	r.publishEvent(events.EventTypeConfigReloaded, "registry", cfg)
 	return nil

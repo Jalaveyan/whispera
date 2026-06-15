@@ -5,7 +5,6 @@ import (
 	crand "crypto/rand"
 	"encoding/binary"
 	"errors"
-	"fmt"
 	"io"
 	"net"
 	"sync"
@@ -136,7 +135,6 @@ func (c *Conn) Grow(ctx context.Context, dial DialFunc) error {
 	case <-c.closed:
 		return ErrClosed
 	default:
-		fmt.Println("growing connection")
 	}
 
 	if c.Width() >= maxBondMembers {

@@ -1,4 +1,4 @@
-package relay
+﻿package relay
 
 import (
 	"context"
@@ -19,7 +19,7 @@ import (
 	"whispera/internal/core/base"
 	"whispera/internal/core/interfaces"
 	"whispera/internal/core/registry"
-	"whispera/internal/logger"
+	"whispera/internal/log"
 	"whispera/internal/modules/transport"
 	"whispera/internal/mux"
 
@@ -422,13 +422,6 @@ func (s *Server) serveTunnel(conn net.Conn, streamObf bool, usePadding bool) {
 	for {
 		stream, err := session.AcceptStream()
 		if err != nil {
-			errStr := err.Error()
-			isNormal := strings.Contains(errStr, "keepalive timeout") ||
-				strings.Contains(errStr, "session closed") ||
-				strings.Contains(errStr, "EOF") ||
-				strings.Contains(errStr, "client disconnected") ||
-				strings.Contains(errStr, "padded_conn:") ||
-				isNormalConnClose(err)
 			if firstStream {
 				readBytes := atomic.LoadInt64(&bc.n)
 				logger.Trace().Warnw("ended_before_first_stream",
@@ -441,8 +434,6 @@ func (s *Server) serveTunnel(conn net.Conn, streamObf bool, usePadding bool) {
 					"err", err.Error(),
 					"err_type", fmt.Sprintf("%T", err),
 				)
-			} else if isNormal {
-			} else {
 			}
 			return
 		}
@@ -722,12 +713,6 @@ func (s *Server) handleProxyStream(tunnelID uint64, clientID string, stream net.
 		"err_dir", firstDir,
 		"err", errField,
 	)
-	if firstErr != nil {
-		if isNormalConnClose(firstErr) {
-		} else {
-		}
-	} else if dur > 5*time.Second || up+down > 0 {
-	}
 }
 
 func Factory(cfg interface{}) (interfaces.Module, error) {

@@ -3,7 +3,6 @@ package db
 import (
 	"context"
 	"fmt"
-	"log"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -58,8 +57,6 @@ func New(cfg *Config) (*DB, error) {
 		pool.Close()
 		return nil, fmt.Errorf("ping database: %w", err)
 	}
-
-	log.Printf("[DB] Connected to PostgreSQL (max: %d conns)", cfg.MaxConns)
 
 	db := &DB{pool: pool}
 

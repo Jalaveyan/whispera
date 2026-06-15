@@ -1,4 +1,4 @@
-package dataplane
+﻿package dataplane
 
 import (
 	"context"
@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"whispera/internal/logger"
+	"whispera/internal/log"
 	"whispera/internal/modules/bridgepool"
 	"whispera/internal/modules/config"
 	"whispera/internal/modules/crypto"
@@ -344,7 +344,6 @@ func (om *OutboundManager) ForwardPacket(packet []byte, tag string) error {
 
 func (om *OutboundManager) UpdateOutbounds(configs []config.OutboundConfig) {
 	if err := validateChainGraph(configs); err != nil {
-		om.log.Error("Outbound chain graph rejected: %v", err)
 		return
 	}
 

@@ -68,8 +68,6 @@ func (m *Manager) Start() error {
 		return fmt.Errorf("lifecycle manager already running")
 	}
 
-	log.Println("[Lifecycle] Starting application...")
-
 	for _, cb := range m.onStart {
 		if err := cb(); err != nil {
 			return fmt.Errorf("pre-start callback failed: %w", err)
@@ -81,7 +79,6 @@ func (m *Manager) Start() error {
 	}
 
 	m.running = true
-	log.Println("[Lifecycle] Application started successfully")
 	return nil
 }
 
@@ -98,8 +95,6 @@ func (m *Manager) Stop() error {
 	if !m.running {
 		return nil
 	}
-
-	log.Println("[Lifecycle] Stopping application...")
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), m.shutdownTimeout)
 	defer shutdownCancel()
@@ -138,7 +133,6 @@ func (m *Manager) Stop() error {
 	m.eventBus.Close()
 
 	m.running = false
-	log.Println("[Lifecycle] Application stopped")
 	return nil
 }
 
@@ -155,7 +149,6 @@ func (m *Manager) Run() error {
 		case sig := <-sigChan:
 			switch sig {
 			case syscall.SIGHUP:
-				log.Println("[Lifecycle] Received SIGHUP, reloading configuration...")
 				if err := m.Reload(); err != nil {
 					log.Printf("[Lifecycle] Reload error: %v", err)
 				}
@@ -167,7 +160,6 @@ func (m *Manager) Run() error {
 				case err := <-done:
 					return err
 				case <-time.After(m.shutdownTimeout + 15*time.Second):
-					log.Printf("[Lifecycle] shutdown exceeded %s — forcing exit", m.shutdownTimeout+15*time.Second)
 					os.Exit(0)
 					return nil
 				}
@@ -182,8 +174,6 @@ func (m *Manager) Reload() error {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	log.Println("[Lifecycle] Reloading configuration...")
-
 	for _, cb := range m.onReload {
 		if err := cb(); err != nil {
 			return fmt.Errorf("reload callback failed: %w", err)
@@ -194,7 +184,6 @@ func (m *Manager) Reload() error {
 		return fmt.Errorf("registry reload failed: %w", err)
 	}
 
-	log.Println("[Lifecycle] Configuration reloaded successfully")
 	return nil
 }
 

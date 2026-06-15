@@ -1,4 +1,4 @@
-package proxy
+﻿package proxy
 
 import (
 	"context"
@@ -7,11 +7,10 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"strings"
 	"sync"
 	"time"
 
-	"whispera/internal/logger"
+	"whispera/internal/log"
 )
 
 const (
@@ -139,35 +138,24 @@ func (s *SOCKS5Server) handleConnection(conn net.Conn) {
 
 	conn.SetDeadline(time.Now().Add(30 * time.Second))
 
-	fmt.Printf("[SOCKS5] New connection from %s\n", conn.RemoteAddr())
-
 	if err := s.handleHandshake(conn); err != nil {
-		fmt.Printf("[SOCKS5] Handshake failed: %v\n", err)
 		return
 	}
 
 	addr, port, err := s.handleRequest(conn)
 	if err != nil {
-		fmt.Printf("[SOCKS5] Request failed: %v\n", err)
 		return
 	}
 
 	conn.SetDeadline(time.Time{})
 
-	fmt.Printf("[SOCKS5] Request: addr=%s port=%d\n", addr, port)
-
 	if addr == "" {
-		fmt.Printf("[SOCKS5] UDP ASSOCIATE handled\n")
 		buf := make([]byte, 1)
 		_, _ = conn.Read(buf)
 		return
 	}
 
-	if err := s.handler(conn, addr, port); err != nil {
-		if err != io.EOF && err.Error() != "EOF" && !strings.Contains(err.Error(), "i/o timeout") && !strings.Contains(err.Error(), "use of closed network connection") {
-			fmt.Printf("[SOCKS5] Handler failed: %v\n", err)
-		}
-	}
+	_ = s.handler(conn, addr, port)
 }
 
 func (s *SOCKS5Server) handleHandshake(conn net.Conn) error {
@@ -232,10 +220,6 @@ func (s *SOCKS5Server) handleRequest(conn net.Conn) (string, uint16, error) {
 	if _, err := io.ReadFull(conn, header); err != nil {
 		return "", 0, err
 	}
-
-	fmt.Printf("[SOCKS5] Raw header bytes: [%02x %02x %02x %02x] (VER=%d CMD=%d RSV=%d ATYP=%d)\n",
-		header[0], header[1], header[2], header[3],
-		header[0], header[1], header[2], header[3])
 
 	if header[0] != socks5Version {
 		return "", 0, fmt.Errorf("unsupported SOCKS version: %d", header[0])

@@ -2,7 +2,6 @@ package bond
 
 import (
 	"context"
-	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -88,7 +87,6 @@ func StartScaler(ctx context.Context, c *Conn, dial DialFunc, opts ScalerOpts) (
 			case <-ctx.Done():
 				return
 			case <-t.C:
-				fmt.Println("[scaler] starting")
 			}
 
 			if growing.Load() != 0 {

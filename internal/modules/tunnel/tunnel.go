@@ -1,6 +1,7 @@
-package tunnel
+﻿package tunnel
 
 import (
+	"whispera/internal/log"
 	"bufio"
 	"context"
 	"encoding/binary"
@@ -21,7 +22,6 @@ import (
 	"whispera/internal/core/base"
 	"whispera/internal/core/events"
 	"whispera/internal/core/interfaces"
-	"whispera/internal/logger"
 	"whispera/internal/modules/killswitch"
 	asnbypass "whispera/internal/modules/transport/asn_bypass"
 	"whispera/internal/modules/transport/chameleon"
@@ -480,9 +480,7 @@ func New(cfg *Config) (*Manager, error) {
 			PersistRules: false,
 		}
 
-		ks, err := killswitch.New(ksConfig)
-		if err != nil {
-		} else {
+		if ks, err := killswitch.New(ksConfig); err == nil {
 			m.killSwitch = ks
 			ks.OnStateChange(func(state killswitch.State) {
 				m.PublishEvent("killswitch.state_changed", map[string]interface{}{
@@ -575,9 +573,7 @@ func (m *Manager) PreWarm() {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		if err := m.Connect(ctx); err != nil {
-		} else {
-		}
+		_ = m.Connect(ctx)
 	})
 }
 
@@ -594,10 +590,7 @@ func (m *Manager) SetDependencies(
 }
 
 func (m *Manager) Connect(ctx context.Context) error {
-	if current, blocked := m.sm.CompareAndSet(StateConnecting, StateConnecting, StateConnected); blocked {
-		if current == StateConnected {
-		} else {
-		}
+	if _, blocked := m.sm.CompareAndSet(StateConnecting, StateConnecting, StateConnected); blocked {
 		return nil
 	}
 

@@ -2,9 +2,6 @@ package main
 
 import (
 	"context"
-	"crypto/rand"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -13,237 +10,12 @@ import (
 	"net/http"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
-	"whispera/internal/modules/config"
-	"whispera/internal/modules/dns"
+	"golang.org/x/net/proxy"
+
 	"whispera/internal/modules/proxyagent"
-	"whispera/internal/modules/socks5"
-	"whispera/internal/modules/tunnel"
 )
-
-type connStatus string
-
-const (
-	connStatusConnecting   connStatus = "connecting"
-	connStatusConnected    connStatus = "connected"
-	connStatusDisconnected connStatus = "disconnected"
-	connStatusFailed       connStatus = "failed"
-	connStatusStandby      connStatus = "standby"
-	connStatusRST          connStatus = "rst"
-)
-
-type TransportEntry struct {
-	ID          string     `json:"id"`
-	Transport   string     `json:"transport"`
-	Server      string     `json:"server"`
-	Status      connStatus `json:"status"`
-	Enabled     bool       `json:"enabled"`
-	Obfuscated  bool       `json:"obfuscated"`
-	Mux         bool       `json:"mux"`
-	RateLimitKB int        `json:"rate_limit_kb"`
-	SNI         string     `json:"sni"`
-	Bridge      string     `json:"bridge"`
-	BytesUp     uint64     `json:"bytes_up"`
-	BytesDown   uint64     `json:"bytes_down"`
-	ConnectedAt time.Time  `json:"connected_at,omitempty"`
-	Error       string     `json:"error,omitempty"`
-
-	EncapsulatedIn string `json:"encapsulated_in,omitempty"`
-
-	ForceObfuscation bool `json:"force_obfuscation"`
-
-	BehavioralProfile string `json:"behavioral_profile,omitempty"`
-
-	NoSNI bool `json:"no_sni"`
-
-	mgr    *tunnel.Manager
-	cancel context.CancelFunc
-	mu     sync.Mutex
-
-	onEncapsulate func(outerID string)
-}
-
-type TransportPool struct {
-	mu      sync.RWMutex
-	entries map[string]*TransportEntry
-	counter uint64
-}
-
-var globalForceSNI atomic.Value
-
-func getGlobalSNI() string {
-	if v := globalForceSNI.Load(); v != nil {
-		return v.(string)
-	}
-	return ""
-}
-
-var globalRegion atomic.Value
-
-func getGlobalRegion() string {
-	if v := globalRegion.Load(); v != nil {
-		return v.(string)
-	}
-	return "auto"
-}
-
-var cfgRegions map[string][]string
-
-var pool = &TransportPool{
-	entries: make(map[string]*TransportEntry),
-}
-
-var reconnectEntry func(e *TransportEntry)
-
-var controlAddr = "127.0.0.1:10801"
-
-var adminToken string
-
-var globalAgent *proxyagent.ProxyAgent
-
-var globalDNS *dns.Resolver
-var globalMultiRouter *socks5.MultiRouter
-var globalSubscriptionMgr *config.SubscriptionManager
-
-var globalLogBuf *ringLogBuffer
-
-type ringLogBuffer struct {
-	mu   sync.Mutex
-	buf  []string
-	cap_ int
-}
-
-func newRingLogBuffer(capacity int) *ringLogBuffer {
-	return &ringLogBuffer{buf: make([]string, 0, capacity), cap_: capacity}
-}
-
-func (r *ringLogBuffer) Write(p []byte) (int, error) {
-	line := strings.TrimRight(string(p), "\n")
-	r.mu.Lock()
-	if len(r.buf) >= r.cap_ {
-		r.buf = r.buf[1:]
-	}
-	r.buf = append(r.buf, line)
-	r.mu.Unlock()
-	return len(p), nil
-}
-
-func (r *ringLogBuffer) Lines() []string {
-	r.mu.Lock()
-	out := make([]string, len(r.buf))
-	copy(out, r.buf)
-	r.mu.Unlock()
-	return out
-}
-
-var socksUser string
-var socksPass string
-
-func generateSocksAuth() {
-	if *connKey != "" {
-		socksUser = "whisp"
-		h := sha256.Sum256([]byte(*connKey))
-		socksPass = hex.EncodeToString(h[:])
-		return
-	}
-	b := make([]byte, 16)
-	rand.Read(b)
-	socksUser = "w"
-	socksPass = hex.EncodeToString(b)
-}
-
-var newMultiBridgeTunnel func(ctx context.Context, bridgeID, bridgeAddr string, rules []string)
-
-func (p *TransportPool) Add(entry *TransportEntry) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.entries[entry.ID] = entry
-}
-
-func (p *TransportPool) Get(id string) (*TransportEntry, bool) {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-	e, ok := p.entries[id]
-	return e, ok
-}
-
-func (p *TransportPool) List() []*TransportEntry {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-	out := make([]*TransportEntry, 0, len(p.entries))
-	for _, e := range p.entries {
-		out = append(out, e)
-	}
-	return out
-}
-
-func (p *TransportPool) NextID() string {
-	n := atomic.AddUint64(&p.counter, 1)
-	return fmt.Sprintf("conn-%d", n)
-}
-
-func (p *TransportPool) AnyConnected() bool {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-	for _, e := range p.entries {
-		if e.Status == connStatusConnected && e.Enabled {
-			return true
-		}
-	}
-	return false
-}
-
-type entryView struct {
-	ID                string     `json:"id"`
-	Transport         string     `json:"transport"`
-	Server            string     `json:"server"`
-	Status            connStatus `json:"status"`
-	Enabled           bool       `json:"enabled"`
-	Obfuscated        bool       `json:"obfuscated"`
-	Mux               bool       `json:"mux"`
-	RateLimitKB       int        `json:"rate_limit_kb"`
-	SNI               string     `json:"sni"`
-	Bridge            string     `json:"bridge"`
-	BytesUp           uint64     `json:"bytes_up"`
-	BytesDown         uint64     `json:"bytes_down"`
-	ConnectedAt       time.Time  `json:"connected_at,omitempty"`
-	Error             string     `json:"error,omitempty"`
-	EncapsulatedIn    string     `json:"encapsulated_in,omitempty"`
-	ForceObfuscation  bool       `json:"force_obfuscation"`
-	BehavioralProfile string     `json:"behavioral_profile,omitempty"`
-	NoSNI             bool       `json:"no_sni"`
-	QualityRTTMs      int64      `json:"quality_rtt_ms,omitempty"`
-	QualityMissedKAs  int        `json:"quality_missed_kas,omitempty"`
-}
-
-func toView(e *TransportEntry) entryView {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	var qualityRTT int64
-	var missedKAs int
-	if e.mgr != nil {
-		e.BytesUp, e.BytesDown = e.mgr.Stats()
-		e.ForceObfuscation = e.mgr.IsForceObfuscation()
-		rtt, missed := e.mgr.GetQualityMetrics()
-		qualityRTT = rtt.Milliseconds()
-		missedKAs = missed
-	}
-	return entryView{
-		ID: e.ID, Transport: e.Transport, Server: e.Server,
-		Status: e.Status, Enabled: e.Enabled, Obfuscated: e.Obfuscated,
-		Mux: e.Mux, RateLimitKB: e.RateLimitKB, SNI: e.SNI, Bridge: e.Bridge,
-		BytesUp: e.BytesUp, BytesDown: e.BytesDown,
-		ConnectedAt: e.ConnectedAt, Error: e.Error,
-		EncapsulatedIn:    e.EncapsulatedIn,
-		ForceObfuscation:  e.ForceObfuscation,
-		BehavioralProfile: e.BehavioralProfile,
-		NoSNI:             e.NoSNI,
-		QualityRTTMs:      qualityRTT,
-		QualityMissedKAs:  missedKAs,
-	}
-}
 
 func startControlServer(ctx context.Context) {
 	mux := http.NewServeMux()
@@ -767,11 +539,8 @@ func startControlServer(ctx context.Context) {
 
 	mux.HandleFunc("/regions", func(w http.ResponseWriter, r *http.Request) {
 		if len(cfgRegions) == 0 {
-			writeJSON := func(v interface{}) {
-				w.Header().Set("Content-Type", "application/json")
-				json.NewEncoder(w).Encode(v)
-			}
-			writeJSON(map[string]interface{}{"region": getGlobalRegion(), "regions": map[string]interface{}{}})
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]interface{}{"region": getGlobalRegion(), "regions": map[string]interface{}{}})
 			return
 		}
 		type regionInfo struct {
@@ -874,4 +643,136 @@ func startControlServer(ctx context.Context) {
 		}
 	}()
 	stdlog.Printf("Control server listening on %s", controlAddr)
+}
+
+type SpeedResult struct {
+	LatencyMs    float64 `json:"latency_ms"`
+	DownloadMbps float64 `json:"download_mbps"`
+	UploadMbps   float64 `json:"upload_mbps"`
+	ServerIP     string  `json:"server_ip,omitempty"`
+	DownloadMB   int     `json:"download_mb"`
+	UploadMB     int     `json:"upload_mb"`
+	Error        string  `json:"error,omitempty"`
+}
+
+func runSpeedTest(ctx context.Context, proxyAddr, target, token string, downloadMB, uploadMB int) SpeedResult {
+	res := SpeedResult{DownloadMB: downloadMB, UploadMB: uploadMB}
+
+	if downloadMB <= 0 {
+		downloadMB = 10
+		res.DownloadMB = downloadMB
+	}
+	if uploadMB <= 0 {
+		uploadMB = 5
+		res.UploadMB = uploadMB
+	}
+
+	client, err := buildSOCKS5Client(proxyAddr)
+	if err != nil {
+		res.Error = fmt.Sprintf("socks5 dial: %v", err)
+		return res
+	}
+
+	latencies := make([]time.Duration, 0, 5)
+	for range 5 {
+		start := time.Now()
+		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, target+"/api/v1/speed/ping", nil)
+		resp, err := client.Do(req)
+		if err != nil {
+			res.Error = fmt.Sprintf("ping: %v", err)
+			return res
+		}
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+		latencies = append(latencies, time.Since(start))
+	}
+	res.LatencyMs = medianMs(latencies)
+
+	authHdr := "Bearer " + token
+
+	dlURL := fmt.Sprintf("%s/api/v1/speed/download?mb=%d", target, downloadMB)
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, dlURL, nil)
+	req.Header.Set("Authorization", authHdr)
+
+	dlStart := time.Now()
+	resp, err := client.Do(req)
+	if err != nil {
+		res.Error = fmt.Sprintf("download: %v", err)
+		return res
+	}
+	if resp.TLS != nil && len(resp.TLS.PeerCertificates) > 0 {
+		res.ServerIP = resp.TLS.PeerCertificates[0].Subject.CommonName
+	}
+	n, _ := io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	dlElapsed := time.Since(dlStart)
+	if dlElapsed > 0 && n > 0 {
+		res.DownloadMbps = float64(n) / dlElapsed.Seconds() / (1024 * 1024)
+	}
+
+	ulBytes := int64(uploadMB) << 20
+	body := io.LimitReader(zeroReader{}, ulBytes)
+	req, _ = http.NewRequestWithContext(ctx, http.MethodPost, target+"/api/v1/speed/upload", body)
+	req.Header.Set("Authorization", authHdr)
+	req.Header.Set("Content-Type", "application/octet-stream")
+	req.ContentLength = ulBytes
+
+	ulStart := time.Now()
+	resp, err = client.Do(req)
+	if err != nil {
+		res.Error = fmt.Sprintf("upload: %v", err)
+		return res
+	}
+	var ulResp struct {
+		Mbps float64 `json:"mbps"`
+	}
+	json.NewDecoder(resp.Body).Decode(&ulResp)
+	resp.Body.Close()
+	ulElapsed := time.Since(ulStart)
+	if ulResp.Mbps > 0 {
+		res.UploadMbps = ulResp.Mbps
+	} else if ulElapsed > 0 {
+		res.UploadMbps = float64(ulBytes) / ulElapsed.Seconds() / (1024 * 1024)
+	}
+
+	return res
+}
+
+func buildSOCKS5Client(proxyAddr string) (*http.Client, error) {
+	dialer, err := proxy.SOCKS5("tcp", proxyAddr, nil, proxy.Direct)
+	if err != nil {
+		return nil, err
+	}
+	transport := &http.Transport{
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			return dialer.Dial(network, addr)
+		},
+		TLSHandshakeTimeout: 1 * time.Second,
+	}
+	return &http.Client{
+		Transport: transport,
+		Timeout:   1 * time.Second,
+	}, nil
+}
+
+func medianMs(ds []time.Duration) float64 {
+	if len(ds) == 0 {
+		return 0
+	}
+	min := ds[0]
+	for _, d := range ds[1:] {
+		if d < min {
+			min = d
+		}
+	}
+	return float64(min.Milliseconds())
+}
+
+type zeroReader struct{}
+
+func (zeroReader) Read(p []byte) (int, error) {
+	for i := range p {
+		p[i] = 0
+	}
+	return len(p), nil
 }

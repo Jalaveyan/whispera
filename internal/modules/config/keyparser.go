@@ -542,14 +542,10 @@ func parseSSKey(raw string) (*ConnectionKey, error) {
 
 func mapXRayTransport(t string) string {
 	switch strings.ToLower(t) {
-	case "ws", "websocket":
-		return "websocket"
 	case "grpc":
 		return "grpc"
 	case "quic":
 		return "quic"
-	case "h2", "http":
-		return "h2c"
 	case "tcp", "":
 		return "tcp"
 	default:

@@ -1,6 +1,7 @@
-package mlserver
+﻿package mlserver
 
 import (
+	"whispera/internal/log"
 	"context"
 	"crypto/tls"
 	"encoding/json"
@@ -19,7 +20,6 @@ import (
 	"whispera/internal/core/base"
 	"whispera/internal/core/interfaces"
 	"whispera/internal/core/registry"
-	"whispera/internal/logger"
 	"whispera/internal/obfuscation/core/evasion"
 	"whispera/internal/obfuscation/ml"
 )

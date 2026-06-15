@@ -1,5 +1,5 @@
 package ml
 
-import "whispera/internal/logger"
+import "whispera/internal/log"
 
 var log = logger.Module("ml")

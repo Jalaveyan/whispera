@@ -1,4 +1,4 @@
-package ml
+﻿package ml
 
 import (
 	"math"
@@ -8,7 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"whispera/internal/logger"
+	"whispera/internal/log"
 	"whispera/internal/obfuscation/ml/gnet"
 )
 

@@ -690,7 +690,7 @@ func (s *Stream) readRelayUDP() {
 
 			packet, err := SealUDPData(buf[:Headroom+n], s.ID, atyp, addr.IP.String(), uint16(addr.Port), Headroom)
 			if err != nil {
-				fmt.Printf("[RELAY] UDP Seal Error: %v\n", err)
+				log.Printf("[RELAY] UDP seal error: %v", err)
 				packetPool.Put(buf)
 				return
 			}
@@ -941,7 +941,7 @@ func (s *Stream) flushEarlyData() {
 
 	_, err := conn.Write(s.earlyDataBuf)
 	if err != nil {
-		fmt.Printf("[0-RTT] Early data flush error: %v\n", err)
+		log.Printf("[0-RTT] early data flush error: %v", err)
 	}
 
 	atomic.AddUint64(&s.bytesOut, uint64(len(s.earlyDataBuf)))

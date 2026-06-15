@@ -1,4 +1,4 @@
-package ml
+﻿package ml
 
 import (
 	"encoding/json"
@@ -9,7 +9,7 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"whispera/internal/logger"
+	"whispera/internal/log"
 	"whispera/internal/obfuscation/ml/gnet"
 )
 

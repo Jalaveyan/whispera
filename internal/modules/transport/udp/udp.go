@@ -112,38 +112,24 @@ func (t *Transport) Init(ctx context.Context, cfg interfaces.ModuleConfig) error
 }
 
 func (t *Transport) Start() error {
-	fmt.Printf("[UDP] Start() called, ListenAddr=%s\n", t.config.ListenAddr)
-
 	if err := t.Module.Start(); err != nil {
-		fmt.Printf("[UDP] Module.Start() failed: %v\n", err)
 		return err
 	}
 
-	fmt.Printf("[UDP] Resolving address: %s\n", t.config.ListenAddr)
 	addr, err := net.ResolveUDPAddr("udp", t.config.ListenAddr)
 	if err != nil {
-		fmt.Printf("[UDP] ResolveUDPAddr failed: %v\n", err)
 		t.SetHealthy(false, fmt.Sprintf("failed to resolve address: %v", err))
 		return fmt.Errorf("failed to resolve UDP address: %w", err)
 	}
-	fmt.Printf("[UDP] Resolved to: %v\n", addr)
 
-	fmt.Printf("[UDP] Calling net.ListenUDP on %v\n", addr)
 	conn, err := net.ListenUDP("udp", addr)
 	if err != nil {
-		fmt.Printf("[UDP] ListenUDP FAILED: %v\n", err)
 		t.SetHealthy(false, fmt.Sprintf("failed to listen: %v", err))
 		return fmt.Errorf("failed to listen on UDP: %w", err)
 	}
 
-	if err := conn.SetReadBuffer(32 * 1024 * 1024); err != nil {
-		fmt.Printf("[UDP] Failed to set ReadBuffer: %v\n", err)
-	}
-	if err := conn.SetWriteBuffer(32 * 1024 * 1024); err != nil {
-		fmt.Printf("[UDP] Failed to set WriteBuffer: %v\n", err)
-	}
-
-	fmt.Printf("[UDP] SUCCESS! Listening on UDP %s\n", conn.LocalAddr().String())
+	_ = conn.SetReadBuffer(32 * 1024 * 1024)
+	_ = conn.SetWriteBuffer(32 * 1024 * 1024)
 
 	t.mu.Lock()
 	t.conn = conn
@@ -158,7 +144,6 @@ func (t *Transport) Start() error {
 		"listen_addr": t.config.ListenAddr,
 	})
 
-	fmt.Printf("[UDP] Start() completed successfully\n")
 	return nil
 }
 
@@ -254,8 +239,6 @@ func (t *Transport) OnPacket(handler func(data []byte, addr net.Addr)) {
 }
 
 func (t *Transport) readLoop() {
-	fmt.Printf("[UDP] readLoop started (Zero-Alloc Mode)\n")
-
 	for t.IsRunning() {
 		buf := t.bufferPool.Get().([]byte)
 		buf = buf[:cap(buf)]
@@ -268,10 +251,8 @@ func (t *Transport) readLoop() {
 				return
 			}
 			if netErr, ok := err.(net.Error); ok && netErr.Temporary() {
-				fmt.Printf("[UDP] Temporary read error: %v\n", err)
 				continue
 			}
-			fmt.Printf("[UDP] Read error: %v\n", err)
 			t.metrics.Increment("read_errors")
 			time.Sleep(100 * time.Millisecond)
 			continue

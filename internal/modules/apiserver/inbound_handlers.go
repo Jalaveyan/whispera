@@ -144,10 +144,6 @@ func (s *Server) handleAddInbound(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := startDynamicInbound(req); err != nil {
-		if isAddrInUseErr(err) {
-		} else {
-		}
-
 		s.jsonOK(w, map[string]interface{}{
 			"success":          true,
 			"message":          "Inbound saved, restart required to activate",

@@ -1,6 +1,7 @@
-package main
+﻿package main
 
 import (
+	"whispera/internal/log"
 	"bytes"
 	"context"
 	"crypto/rand"
@@ -32,7 +33,6 @@ import (
 	"whispera/internal/core/interfaces"
 	"whispera/internal/core/lifecycle"
 	"whispera/internal/db"
-	"whispera/internal/logger"
 	bridgeagent "whispera/internal/modules/bridge"
 	"whispera/internal/obfuscation/core/evasion"
 	"whispera/internal/stats"
@@ -181,40 +181,6 @@ func udpIPRateAllow(addr net.Addr) bool {
 	return true
 }
 
-func createHandshakeHandler(privateKeyStr string, serverConfig *modconfig.ServerConfig) *handshake.Handler {
-	if privateKeyStr == "" {
-		return nil
-	}
-
-	h, err := handshake.New(&handshake.Config{
-		RateLimit:        100,
-		RateBurst:        50,
-		Timeout:          serverConfig.Session.SessionTimeout.D(),
-		MaxPending:       1000,
-		EnableAntiReplay: true,
-	})
-
-	if err != nil {
-		return nil
-	}
-
-	h.SetDependencies(globalCryptoProvider, globalSessionMgr)
-
-	privateKey, err := base64.StdEncoding.DecodeString(privateKeyStr)
-
-	if err != nil || len(privateKey) != 32 {
-		return nil
-	}
-
-	publicKey, err := curve25519.X25519(privateKey, curve25519.Basepoint)
-	if err != nil {
-		return nil
-	}
-
-	h.SetStaticKeys(publicKey, privateKey)
-	return h
-}
-
 func StartInbound(inbound modconfig.InboundConfig, serverConfig *modconfig.ServerConfig) error {
 	listenersMutex.Lock()
 	defer listenersMutex.Unlock()
@@ -223,7 +189,6 @@ func StartInbound(inbound modconfig.InboundConfig, serverConfig *modconfig.Serve
 	}
 
 	listenAddr := fmt.Sprintf("%s:%d", inbound.Listen, inbound.Port)
-	network := inbound.StreamSettings.Network
 
 	if serverConfig.Chameleon.Enabled {
 		if _, chmPort, err := net.SplitHostPort(serverConfig.Chameleon.ListenAddr); err == nil && chmPort != "" && strconv.Itoa(inbound.Port) == chmPort {
@@ -231,35 +196,9 @@ func StartInbound(inbound modconfig.InboundConfig, serverConfig *modconfig.Serve
 		}
 	}
 
-	var listener net.Listener
-
-	l, err := net.Listen("tcp", listenAddr)
+	listener, err := net.Listen("tcp", listenAddr)
 	if err != nil {
 		return fmt.Errorf("listen %s: %w", listenAddr, err)
-	}
-	listener = l
-
-	var hsHandler *handshake.Handler
-
-	if network == "ws" {
-		path := inbound.StreamSettings.WS.Path
-		if path == "" {
-			path = "/ws"
-		}
-		_ = path
-	}
-
-	{
-		privKey := serverConfig.Server.PrivateKey
-		if privKey != "" {
-			hsHandler = createHandshakeHandler(privKey, serverConfig)
-			if hsHandler == nil {
-				if listener != nil {
-					listener.Close()
-				}
-				return fmt.Errorf("failed to create handshake handler for %s", inbound.Tag)
-			}
-		}
 	}
 
 	activeListeners[inbound.Tag] = listener
@@ -300,7 +239,7 @@ func StartInbound(inbound modconfig.InboundConfig, serverConfig *modconfig.Serve
 				continue
 			}
 
-			go handleTCPConnection(pConn, hsHandler)
+			go handleTCPConnection(pConn, globalHandshake)
 		}
 	}()
 
@@ -324,16 +263,11 @@ func StopInbound(tag string) error {
 	return nil
 }
 
-func StartReverseInbound(inbound modconfig.InboundConfig, serverConfig *modconfig.ServerConfig, stopCh <-chan struct{}) {
+func StartReverseInbound(inbound modconfig.InboundConfig, stopCh <-chan struct{}) {
 	remoteAddr := inbound.RemoteAddr
 
 	if remoteAddr == "" {
 		return
-	}
-
-	var hsHandler *handshake.Handler
-	if serverConfig.Server.PrivateKey != "" {
-		hsHandler = createHandshakeHandler(serverConfig.Server.PrivateKey, serverConfig)
 	}
 
 	backoff := 2 * time.Second
@@ -363,15 +297,14 @@ func StartReverseInbound(inbound modconfig.InboundConfig, serverConfig *modconfi
 		backoff = 2 * time.Second
 
 		if globalRelay != nil {
-			if hsHandler != nil {
-				handleTCPConnection(conn, hsHandler)
+			if globalHandshake != nil {
+				handleTCPConnection(conn, globalHandshake)
 			} else {
 				globalRelay.ServeTunnel(stats.WrapConn(conn, conn.RemoteAddr().String()), false)
 			}
 		} else {
 			conn.Close()
 		}
-
 	}
 }
 
@@ -410,10 +343,7 @@ func main() {
 			}
 			privateKeyString := strings.TrimSpace(os.Args[2])
 
-			var private []byte
-			var err error
-
-			private, err = base64.StdEncoding.DecodeString(privateKeyString)
+			private, err := base64.StdEncoding.DecodeString(privateKeyString)
 
 			if err != nil || len(private) != 32 {
 				fmt.Fprintf(os.Stderr, "Error: invalid private key (must be 32 bytes Base64)\n")
@@ -525,7 +455,7 @@ func main() {
 	}()
 
 	if *debug {
-		logger.SetLevel(logger.LevelDebug)
+		log.SetLevel(logger.LevelDebug)
 	}
 
 	if *printVersion {
@@ -553,9 +483,7 @@ func main() {
 		if prefix == "" {
 			prefix = "whispera"
 		}
-		natsBus, err := events.NewNATSEventBus(globalServerConfig.NATS.URL, prefix)
-		if err != nil {
-		} else {
+		if natsBus, err := events.NewNATSEventBus(globalServerConfig.NATS.URL, prefix); err == nil {
 			manager.Registry().SetEventBus(natsBus)
 		}
 	}
@@ -597,8 +525,7 @@ func createModules(manager *lifecycle.Manager, ctx context.Context) error {
 
 	var serverConfig *modconfig.ServerConfig
 	if *configFile != "" {
-		if err := configProvider.Load(*configFile); err != nil {
-		}
+		_ = configProvider.Load(*configFile)
 		serverConfig = configProvider.GetConfig()
 	} else {
 		serverConfig = modconfig.DefaultServerConfig()
@@ -635,15 +562,13 @@ func createModules(manager *lifecycle.Manager, ctx context.Context) error {
 		database, err := db.New(dbCfg)
 		if err != nil {
 			return err
-		} else {
-			db.SetGlobal(database)
 		}
-	} else {
+		db.SetGlobal(database)
 	}
 	server.Global.SetCallbacks(
 		func(inbound modconfig.InboundConfig) error {
 			if inbound.Mode == "reverse" {
-				go StartReverseInbound(inbound, serverConfig, ctx.Done())
+				go StartReverseInbound(inbound, ctx.Done())
 				return nil
 			}
 			return StartInbound(inbound, serverConfig)
@@ -677,9 +602,7 @@ func createModules(manager *lifecycle.Manager, ctx context.Context) error {
 		}
 
 		bridge.OnFailover(func(active bool) {
-			if active {
-				return
-			} else {
+			if !active {
 				fmt.Printf("bridge is offline\n")
 			}
 		})
@@ -702,10 +625,6 @@ func createModules(manager *lifecycle.Manager, ctx context.Context) error {
 			agentCfg.SelfAddress = serverConfig.Server.ListenAddr
 		}
 		globalBridgeAgent = bridgeagent.NewAgent(agentCfg)
-		globalBridgeAgent.OnConfigUpdate(func(cfg map[string]interface{}) {
-		})
-		globalBridgeAgent.OnAlert(func(alertType, message string) {
-		})
 		globalBridgeAgent.Start()
 
 		select {}
@@ -764,14 +683,11 @@ func initCore(m *lifecycle.Manager, sc *modconfig.ServerConfig) error {
 	if geo := sc.Routing.Geo; geo.Enabled {
 		dir := "/var/lib/whispera/geo"
 		if geo.GeoIPFile != "" {
-			if err := routerEngine.LoadGeoIPFile(geo.GeoIPFile); err != nil {
-			}
+			_ = routerEngine.LoadGeoIPFile(geo.GeoIPFile)
 		} else if geo.GeoSiteFile != "" {
-			if err := routerEngine.LoadGeoSiteFile(geo.GeoSiteFile); err != nil {
-			}
+			_ = routerEngine.LoadGeoSiteFile(geo.GeoSiteFile)
 		} else {
-			if err := routerEngine.LoadGeoData(dir); err != nil {
-			}
+			_ = routerEngine.LoadGeoData(dir)
 		}
 	}
 
@@ -884,9 +800,7 @@ func initTransports(m *lifecycle.Manager, sc *modconfig.ServerConfig, ctx contex
 
 	if om := globalDataPlane.GetOutboundManager(); om != nil {
 		relayServer.SetOutboundDial(om.Dial)
-		if sc != nil {
-			om.UpdateOutbounds(sc.Outbounds)
-		}
+		om.UpdateOutbounds(sc.Outbounds)
 		outboundsCh := cfgProvider.Watch("outbounds")
 		go func() {
 			for val := range outboundsCh {
@@ -905,7 +819,7 @@ func initTransports(m *lifecycle.Manager, sc *modconfig.ServerConfig, ctx contex
 		for _, inbound := range sc.Inbounds {
 			if inbound.Mode == "reverse" {
 				ib := inbound
-				go StartReverseInbound(ib, sc, ctx.Done())
+				go StartReverseInbound(ib, ctx.Done())
 				continue
 			}
 			if inbound.Port == 0 {
@@ -1111,15 +1025,10 @@ func initOptional(m *lifecycle.Manager, sc *modconfig.ServerConfig, ctx context.
 			},
 		}
 		cCfg.QUICListenAddr = sc.Chameleon.QUICListenAddr
-		go func() {
-			if err := chameleon.ListenAndServe(ctx, cCfg); err != nil {
-				return
-			}
-		}()
+		go func() { _ = chameleon.ListenAndServe(ctx, cCfg) }()
 	}
 
 	if sc.Bot.Enabled && db.IsEnabled() {
-		fmt.Println("[DEBUG] Whispera: starting Telegram bot")
 		botModule, err := bot.New(&sc.Bot, db.Global())
 		if err != nil {
 			return err
@@ -1154,28 +1063,22 @@ func initOptional(m *lifecycle.Manager, sc *modconfig.ServerConfig, ctx context.
 		m.OnShutdown(func() { globalCorrelation.Stop() })
 	}
 
-	{
-		mlListenAddr := ":8000"
-		if sc.ML.ListenAddr != "" {
-			mlListenAddr = sc.ML.ListenAddr
-		}
-		mlServer, err := mlserver.New(&mlserver.Config{
-			ListenAddr: mlListenAddr,
-			Token:      sc.API.AuthToken,
-			DataDir:    "./ml_data",
-		})
-		if err != nil {
-			return err
-		}
-		if err := m.Register(mlServer); err != nil {
-			return err
-		}
-		localML := "http://" + mlListenAddr
-		if !strings.HasPrefix(mlListenAddr, ":") {
-			localML = "http://" + mlListenAddr
-		}
-		os.Setenv("WHISPERA_ML_SERVER", localML)
+	mlListenAddr := ":8000"
+	if sc.ML.ListenAddr != "" {
+		mlListenAddr = sc.ML.ListenAddr
 	}
+	mlServer, err := mlserver.New(&mlserver.Config{
+		ListenAddr: mlListenAddr,
+		Token:      sc.API.AuthToken,
+		DataDir:    "./ml_data",
+	})
+	if err != nil {
+		return err
+	}
+	if err := m.Register(mlServer); err != nil {
+		return err
+	}
+	os.Setenv("WHISPERA_ML_SERVER", "http://"+mlListenAddr)
 
 	if sc.Update.Enabled && sc.Update.ManifestURL != "" {
 		updateConfig := &update.Config{
@@ -1189,9 +1092,6 @@ func initOptional(m *lifecycle.Manager, sc *modconfig.ServerConfig, ctx context.
 		binaryPath, _ := os.Executable()
 		updateConfig.BinaryPath = binaryPath
 		globalUpdater = update.NewUpdater(updateConfig)
-		globalUpdater.OnUpdateAvailable(func(v update.VersionInfo) {})
-		globalUpdater.OnUpdateApplied(func(oldV, newV string) {})
-		globalUpdater.OnUpdateFailed(func(v string, err error) {})
 		globalUpdater.Start()
 		m.OnShutdown(func() { globalUpdater.Stop() })
 	}

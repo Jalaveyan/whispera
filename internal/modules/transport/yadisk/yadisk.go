@@ -1,6 +1,7 @@
-package yadisk
+﻿package yadisk
 
 import (
+	"whispera/internal/log"
 	"bytes"
 	"context"
 	"fmt"
@@ -14,7 +15,6 @@ import (
 	"whispera/internal/core/base"
 	"whispera/internal/core/interfaces"
 	"whispera/internal/core/registry"
-	"whispera/internal/logger"
 )
 
 func init() {
@@ -170,10 +170,8 @@ func (t *Transport) sendLoop() {
 			seq := atomic.AddUint64(&t.writeSeq, 1) - 1
 			path := fmt.Sprintf("%s/%010d", t.writeDir, seq)
 			ctx, cancel := context.WithTimeout(context.Background(), chunkTimeout)
-			err := t.putFile(ctx, path, data)
+			_ = t.putFile(ctx, path, data)
 			cancel()
-			if err != nil {
-			}
 		}
 	}
 }
@@ -253,8 +251,8 @@ func (t *Transport) getFile(ctx context.Context, path string) ([]byte, error) {
 func (t *Transport) deleteFile(ctx context.Context, path string) {
 	req, _ := http.NewRequestWithContext(ctx, "DELETE", webdavBase+path, nil)
 	t.auth(req)
-	resp, err := t.client.Do(req)
-	if err == nil {
+	resp, _ := t.client.Do(req)
+	if resp != nil {
 		resp.Body.Close()
 	}
 }

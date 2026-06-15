@@ -1,6 +1,7 @@
-package chameleon
+﻿package chameleon
 
 import (
+	"whispera/internal/log"
 	"context"
 	crand "crypto/rand"
 	"crypto/sha256"
@@ -21,8 +22,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"whispera/internal/logger"
 
 	quicgo "github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/http3"

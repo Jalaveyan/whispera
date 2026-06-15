@@ -1,6 +1,7 @@
-package apiserver
+﻿package apiserver
 
 import (
+	"whispera/internal/log"
 	"context"
 	"crypto/hmac"
 	"crypto/rand"
@@ -31,7 +32,6 @@ import (
 	"whispera/internal/core/registry"
 	"whispera/internal/db"
 	"whispera/internal/ipdetect"
-	"whispera/internal/logger"
 	"whispera/internal/modules/bridgepool"
 	"whispera/internal/modules/config"
 	"whispera/internal/modules/dhcp"
@@ -412,13 +412,12 @@ func (s *Server) Start() error {
 
 	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", s.config.ListenAddr)
 	if err != nil {
-		errMsg := fmt.Sprintf("Failed to bind API server to %s: %v", s.config.ListenAddr, err)
-		fmt.Printf("[ERROR] %s\n", errMsg)
+		errMsg := fmt.Sprintf("failed to bind to %s: %v", s.config.ListenAddr, err)
 		s.SetHealthy(false, errMsg)
 		return fmt.Errorf("failed to bind API server to %s: %w", s.config.ListenAddr, err)
 	}
 
-	fmt.Printf("[INFO] API Server listening on %s\n", s.config.ListenAddr)
+	log.Printf("listening on %s", s.config.ListenAddr)
 
 	go func() {
 		var serveErr error
@@ -428,7 +427,7 @@ func (s *Server) Start() error {
 			serveErr = s.server.Serve(ln)
 		}
 		if serveErr != nil && serveErr != http.ErrServerClosed {
-			fmt.Printf("[ERROR] API Server error: %v\n", serveErr)
+			log.Error("HTTP server error: %v", serveErr)
 			s.SetHealthy(false, fmt.Sprintf("HTTP server error: %v", serveErr))
 		}
 	}()
@@ -814,7 +813,7 @@ func (s *Server) recoveryMiddleware(next http.Handler) http.Handler {
 			if err := recover(); err != nil {
 				stack := make([]byte, 4096)
 				n := runtime.Stack(stack, false)
-				fmt.Printf("[PANIC] API Server: %v\n%s\n", err, stack[:n])
+				log.Error("panic: %v\n%s", err, stack[:n])
 
 				w.WriteHeader(http.StatusInternalServerError)
 				json.NewEncoder(w).Encode(map[string]string{
@@ -1531,9 +1530,7 @@ func loadOrCreateSessionToken() string {
 		return base64.StdEncoding.EncodeToString([]byte("fallback-token"))
 	}
 	token := base64.StdEncoding.EncodeToString(tokenBytes)
-	if err := os.WriteFile(sessionTokenFile, []byte(token), 0600); err != nil {
-	} else {
-	}
+	_ = os.WriteFile(sessionTokenFile, []byte(token), 0600)
 	return token
 }
 

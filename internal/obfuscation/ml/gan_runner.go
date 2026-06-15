@@ -44,7 +44,6 @@ func (r *GANRunner) Stop() {
 	if r.savePath != "" {
 		if err := r.gan.Save(r.savePath); err != nil {
 			log.Error("GAN: save state failed: %v", err)
-		} else {
 		}
 	}
 	if r.simCancel != nil {

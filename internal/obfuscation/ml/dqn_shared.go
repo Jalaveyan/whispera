@@ -7,7 +7,6 @@ import (
 	"whispera/internal/obfuscation/ml/gnet"
 )
 
-// ── Adam optimizer constants ───────────────────────────────────────────────────
 
 const (
 	adamBeta1 = 0.9
@@ -15,21 +14,16 @@ const (
 	adamEps   = 1e-8
 	gradClip  = 1.0
 
-	// Prioritized Experience Replay
-	perAlpha = 0.6 // priority exponent: 0=uniform, 1=fully prioritized
+	perAlpha = 0.6
 
-	// Entropy regularization coefficient added to the Bellman target.
 	defaultEntropyCoeff = 0.01
 
-	// Boltzmann temperature decay per training step.
 	TempDecay = 0.9998
 	MinTemp   = 0.1
 	InitTemp  = 2.0
 )
 
-// ── Adam State ─────────────────────────────────────────────────────────────────
 
-// AdamState holds per-layer first and second moment estimates for Adam optimizer.
 type AdamState struct {
 	MW [][]float64
 	VW [][]float64
@@ -54,7 +48,6 @@ func NewAdamState(net *gnet.GorgoniaNet) *AdamState {
 	return s
 }
 
-// dqnBackpropAdam runs one backward pass through net using Adam optimizer.
 func dqnBackpropAdam(net *gnet.GorgoniaNet, s *AdamState, acts [][]float64, dOut []float64, lr float64) []float64 {
 	s.T++
 	t := float64(s.T)
@@ -118,14 +111,11 @@ func dqnBackpropAdam(net *gnet.GorgoniaNet, s *AdamState, acts [][]float64, dOut
 	return delta
 }
 
-// ── Prioritized Experience Replay ─────────────────────────────────────────────
 
-// PrioritizedReplayBuffer samples experiences proportional to |TD error|^alpha.
-// Uses a sum-tree for O(log n) add and sample operations.
 type PrioritizedReplayBuffer struct {
 	data    []Experience
-	tree    []float64 // sum-tree: tree[1]=total; leaves at [cap..2*cap-1]
-	cap     int       // always a power of 2
+	tree    []float64
+	cap     int
 	size    int
 	head    int
 	maxPrio float64
@@ -174,8 +164,6 @@ func (b *PrioritizedReplayBuffer) UpdatePriority(idx int, tdError float64) {
 	b.setTree(idx, math.Pow(prio, perAlpha))
 }
 
-// Sample draws n stratified samples proportional to priority.
-// Returns (batch, indices, ok); ok=false if buffer is too small.
 func (b *PrioritizedReplayBuffer) Sample(n int) ([]Experience, []int, bool) {
 	if b.size < n*2 {
 		return nil, nil, false
@@ -219,12 +207,7 @@ func (b *PrioritizedReplayBuffer) findLeaf(val float64) int {
 
 func (b *PrioritizedReplayBuffer) Size() int { return b.size }
 
-// ── Training ───────────────────────────────────────────────────────────────────
 
-// dqnTrainBatchAdamPER performs one minibatch DQN update with:
-//   - Prioritized replay (updates buffer priorities with TD errors)
-//   - Adam optimizer
-//   - Entropy regularization bonus on the Bellman target
 func dqnTrainBatchAdamPER(
 	q, target *gnet.GorgoniaNet,
 	adam *AdamState,
@@ -269,7 +252,6 @@ func dqnTrainBatchAdamPER(
 	}
 }
 
-// ── Helpers ────────────────────────────────────────────────────────────────────
 
 func softmaxVec(v []float64) []float64 {
 	if len(v) == 0 {

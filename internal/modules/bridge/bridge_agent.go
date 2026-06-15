@@ -1,6 +1,7 @@
-package bridge
+﻿package bridge
 
 import (
+	"whispera/internal/log"
 	"bytes"
 	"context"
 	"crypto/tls"
@@ -14,7 +15,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"whispera/internal/logger"
 	"whispera/internal/obfuscation/ml/gnet"
 )
 

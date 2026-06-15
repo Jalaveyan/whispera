@@ -359,14 +359,10 @@ func (d *Dialer) dialDirect(ctx context.Context, network, addr string) (net.Conn
 }
 
 func (d *Dialer) dialTLSMasquerade(ctx context.Context, network, addr string) (net.Conn, error) {
-	fmt.Printf("[ASN-BYPASS] dialTLSMasquerade starting for %s\n", addr)
-
 	tcpConn, err := d.dialDirect(ctx, network, addr)
 	if err != nil {
-		fmt.Printf("[ASN-BYPASS] TCP dial failed: %v\n", err)
 		return nil, fmt.Errorf("tcp dial failed: %w", err)
 	}
-	fmt.Printf("[ASN-BYPASS] TCP connection established to %s\n", addr)
 
 	fingerprint := d.getUTLSFingerprint()
 
@@ -411,15 +407,11 @@ func (d *Dialer) dialTLSMasquerade(ctx context.Context, network, addr string) (n
 		_ = uconn.Handshake()
 	}()
 
-	fmt.Printf("[ASN-BYPASS] Waiting for ClientHello generation...\n")
 	clientHello, err := interceptor.WaitForBytes(5 * time.Second)
 	if err != nil {
-		fmt.Printf("[ASN-BYPASS] ClientHello generation failed: %v\n", err)
 		tcpConn.Close()
 		return nil, fmt.Errorf("failed to generate ClientHello: %w", err)
 	}
-
-	fmt.Printf("[ASN-BYPASS] ClientHello generated (%d bytes), sending to server...\n", len(clientHello))
 
 	if d.config.EnableTLSFragmentation && len(clientHello) > 5 {
 		if err := d.writeFragmentedTLS(tcpConn, clientHello); err != nil {
@@ -427,15 +419,11 @@ func (d *Dialer) dialTLSMasquerade(ctx context.Context, network, addr string) (n
 			return nil, fmt.Errorf("write fragmented client hello failed: %w", err)
 		}
 	} else if _, err := tcpConn.Write(clientHello); err != nil {
-		fmt.Printf("[ASN-BYPASS] Write ClientHello failed: %v\n", err)
 		tcpConn.Close()
 		return nil, fmt.Errorf("write client hello failed: %w", err)
 	}
-	fmt.Printf("[ASN-BYPASS] ClientHello sent - server authenticated via HMAC in SessionID\n")
 
 	tcpConn.SetReadDeadline(time.Time{})
-
-	fmt.Printf("[ASN-BYPASS] TLS masquerade SUCCESS - connection ready\n")
 
 	return tcpConn, nil
 }

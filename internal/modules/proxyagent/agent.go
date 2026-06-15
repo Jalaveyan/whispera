@@ -1,6 +1,7 @@
-package proxyagent
+﻿package proxyagent
 
 import (
+	"whispera/internal/log"
 	"context"
 	"crypto/rand"
 	"encoding/binary"
@@ -9,8 +10,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"whispera/internal/logger"
 )
 
 var log = logger.Module("proxy-agent")

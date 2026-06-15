@@ -350,7 +350,7 @@ func (e *Engine) matchDomain(cond *interfaces.RuleCondition) bool {
 	return false
 }
 
-func (e *Engine) matchProtocol(packet *interfaces.Packet, cond *interfaces.RuleCondition) bool {
+func (e *Engine) matchProtocol(_ *interfaces.Packet, _ *interfaces.RuleCondition) bool {
 	return false
 }
 

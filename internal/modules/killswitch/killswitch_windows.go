@@ -177,7 +177,5 @@ func (w *WindowsKillSwitch) cleanupRules() {
 
 func (w *WindowsKillSwitch) deleteRule(name string) {
 	cmd := exec.CommandContext(context.Background(), "netsh", "advfirewall", "firewall", "delete", "rule", fmt.Sprintf("name=%s", name))
-	if err := cmd.Run(); err != nil {
-	} else {
-	}
+	_ = cmd.Run()
 }

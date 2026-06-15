@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"io/ioutil"
 	"log"
 	"net"
 	"net/http"
@@ -76,7 +75,7 @@ func findConnectionKey() string {
 		return key
 	}
 	if *configFile != "" {
-		data, err := ioutil.ReadFile(*configFile)
+		data, err := os.ReadFile(*configFile)
 		if err == nil {
 			return strings.TrimSpace(string(data))
 		}
@@ -91,7 +90,7 @@ func findConnectionKey() string {
 	}
 
 	for _, path := range keyPaths {
-		data, err := ioutil.ReadFile(path)
+		data, err := os.ReadFile(path)
 		if err == nil {
 			key := strings.TrimSpace(string(data))
 			if strings.HasPrefix(key, "whispera://") {
@@ -165,7 +164,7 @@ auto_reconnect: true
 		ck.DomainFrontHost,
 	)
 
-	ioutil.WriteFile(cfgPath, []byte(cfg), 0600)
+	os.WriteFile(cfgPath, []byte(cfg), 0600)
 	log.Printf("Config written to: %s", cfgPath)
 
 	return cfgPath
@@ -179,36 +178,40 @@ func startClient(cfgPath, key string) {
 		log.Fatal("Client binary not found")
 	}
 
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(sigCh)
+	go func() {
+		select {
+		case <-sigCh:
+			log.Println("Shutting down...")
+			cancel()
+		case <-ctx.Done():
+			return
+		}
+	}()
+
 	args := []string{"-config", cfgPath, "-key", key}
 	if *verbose {
 		args = append(args, "-verbose")
 	}
 
-	cmd := exec.CommandContext(context.Background(), clientPath, args...)
+	cmd := exec.CommandContext(ctx, clientPath, args...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
-	go func() {
-		<-sigCh
-		log.Println("Shutting down...")
-		if cmd.Process != nil {
-			cmd.Process.Signal(syscall.SIGTERM)
-		}
-	}()
-
-	err := cmd.Start()
-	if err != nil {
+	if err := cmd.Start(); err != nil {
 		log.Fatalf("Failed to start client: %v", err)
 	}
-
 	log.Printf("Client started (PID: %d)", cmd.Process.Pid)
 
 	waitForSOCKS()
 
 	if *tunMode {
-		startTUN()
+		startTUN(ctx)
 	}
 
 	if *checkIP {
@@ -260,25 +263,25 @@ func waitForSOCKS() {
 	addr := fmt.Sprintf("127.0.0.1:%d", *socksPort)
 	log.Printf("Waiting for SOCKS5 proxy on %s...", addr)
 
-	for i := 0; i < 30; i++ {
+	for range 30 {
 		conn, err := (&net.Dialer{Timeout: time.Second}).DialContext(context.Background(), "tcp", addr)
 		if err == nil {
 			conn.Close()
-			log.Println("✓ SOCKS5 proxy is ready")
+			log.Println("SOCKS5 proxy is ready")
 			return
 		}
 		time.Sleep(time.Second)
 	}
 
-	log.Println("⚠ SOCKS5 proxy not responding (continuing anyway)")
+	log.Println("SOCKS5 proxy not responding (continuing anyway)")
 }
 
-func startTUN() {
+func startTUN(ctx context.Context) {
 	log.Println("Starting TUN mode...")
 
 	tunPath := findTUNBinary()
 	if tunPath == "" {
-		log.Println("⚠ TUN binary not found, skipping TUN mode")
+		log.Println("TUN binary not found, skipping TUN mode")
 		return
 	}
 
@@ -297,19 +300,19 @@ tunnel:
   mtu: 1500
 `, *socksPort)
 
-	ioutil.WriteFile(tunConfig, []byte(cfg), 0600)
+	os.WriteFile(tunConfig, []byte(cfg), 0600)
 
-	cmd := exec.CommandContext(context.Background(), tunPath, tunConfig)
+	cmd := exec.CommandContext(ctx, tunPath, tunConfig)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
 	err := cmd.Start()
 	if err != nil {
-		log.Printf("⚠ Failed to start TUN: %v", err)
+		log.Printf("Failed to start TUN: %v", err)
 		return
 	}
 
-	log.Printf("✓ TUN started (PID: %d)", cmd.Process.Pid)
+	log.Printf("TUN started (PID: %d)", cmd.Process.Pid)
 }
 
 func findTUNBinary() string {
@@ -364,7 +367,7 @@ func checkExternalIP() {
 	}
 	json.NewDecoder(resp.Body).Decode(&result)
 
-	log.Printf("✓ External IP: %s", result.IP)
+	log.Printf("External IP: %s", result.IP)
 }
 
 func runDaemon(cfgPath, key string) {

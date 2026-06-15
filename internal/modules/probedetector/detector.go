@@ -1,6 +1,7 @@
-package probedetector
+﻿package probedetector
 
 import (
+	"whispera/internal/log"
 	"context"
 	"crypto/rand"
 	"fmt"
@@ -11,8 +12,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"whispera/internal/logger"
 )
 
 var log = logger.Module("probedetector")
@@ -379,9 +378,7 @@ func (d *Detector) CheckConnection(clientAddr, sni string) (allowed bool, reason
 	}
 
 	if d.cfg.CheckSNIOwnership && len(d.ownIPs) > 0 {
-		resolvedIPs, err := d.resolveSNI(sniNorm)
-		if err != nil {
-		} else {
+		if resolvedIPs, err := d.resolveSNI(sniNorm); err == nil {
 			overlap := false
 			for _, resolved := range resolvedIPs {
 				if _, owned := d.ownIPs[resolved]; owned {

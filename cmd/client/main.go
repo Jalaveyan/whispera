@@ -1,6 +1,7 @@
-package main
+﻿package main
 
 import (
+	"whispera/internal/log"
 	"context"
 	"crypto/tls"
 	"encoding/base64"
@@ -26,7 +27,6 @@ import (
 	"whispera/internal/auth"
 	"whispera/internal/client/bridge"
 	"whispera/internal/core/lifecycle"
-	"whispera/internal/logger"
 	mlpkg "whispera/internal/obfuscation/ml"
 
 	"whispera/internal/modules/config"
@@ -179,7 +179,7 @@ func main() {
 		logWriter = rb
 	}
 	stdlog.SetOutput(logWriter)
-	logger.SetOutput(logWriter)
+	log.SetOutput(logWriter)
 	log = logger.Module("client")
 	stdlog.Printf("Whispera Client v%s starting...", Version)
 
@@ -1069,14 +1069,10 @@ func main() {
 
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-	go func() {
-		<-sigChan
-		<-ctx.Done()
-	}()
-
-	go func() {
-		close(sigChan)
-	}()
+	select {
+	case <-sigChan:
+	case <-ctx.Done():
+	}
 }
 
 func sniModelDir() string {

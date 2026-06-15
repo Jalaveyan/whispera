@@ -1,4 +1,4 @@
-package dhcp
+﻿package dhcp
 
 import (
 	"fmt"
@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"whispera/internal/core/base"
-	"whispera/internal/logger"
+	"whispera/internal/log"
 )
 
 const (

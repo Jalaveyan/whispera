@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"time"
 )
 
 type migration struct {
@@ -127,8 +126,6 @@ func (db *DB) Migrate(ctx context.Context) error {
 			continue
 		}
 
-		log.Printf("[DB] Running migration %d: %s", m.Version, m.Description)
-		start := time.Now()
 
 		tx, err := db.pool.Begin(ctx)
 		if err != nil {
@@ -149,7 +146,6 @@ func (db *DB) Migrate(ctx context.Context) error {
 			return fmt.Errorf("commit migration %d: %w", m.Version, err)
 		}
 
-		log.Printf("[DB] Migration %d applied in %v", m.Version, time.Since(start))
 		applied++
 	}
 

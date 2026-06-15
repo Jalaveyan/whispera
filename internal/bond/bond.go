@@ -3,7 +3,6 @@ package bond
 import (
 	"encoding/binary"
 	"errors"
-	"fmt"
 	"io"
 	"net"
 	"sync"
@@ -99,7 +98,6 @@ func (c *Conn) AddMember(m net.Conn) bool {
 		m.Close()
 		return false
 	default:
-		fmt.Println("adding member")
 	}
 
 	cur := c.loadMembers()
@@ -294,7 +292,6 @@ func (c *Conn) Write(p []byte) (int, error) {
 	case <-c.closed:
 		return 0, c.loadErr()
 	default:
-		fmt.Println("writing...", len(p))
 	}
 	total := 0
 

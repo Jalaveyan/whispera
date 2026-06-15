@@ -3,7 +3,6 @@ package bridgepool
 import (
 	"context"
 	"crypto/tls"
-	"log"
 	"net"
 	"sync"
 	"time"
@@ -40,7 +39,6 @@ func (h *HealthMonitor) Start() {
 
 	h.wg.Add(1)
 	go h.loop()
-	log.Println("[BridgePool] Health monitor started")
 }
 
 func (h *HealthMonitor) Stop() {
@@ -54,7 +52,6 @@ func (h *HealthMonitor) Stop() {
 
 	close(h.stop)
 	h.wg.Wait()
-	log.Println("[BridgePool] Health monitor stopped")
 }
 
 func (h *HealthMonitor) loop() {
@@ -81,8 +78,6 @@ func (h *HealthMonitor) checkAll() {
 		return
 	}
 
-	log.Printf("[BridgePool] Checking health of %d bridges (lazy mode)", len(bridges))
-
 	firstAlive := make(chan *BridgeInfo, 1)
 	sem := make(chan struct{}, 10)
 
@@ -98,13 +93,6 @@ func (h *HealthMonitor) checkAll() {
 				}
 			}
 		}(bridge)
-	}
-
-	select {
-	case first := <-firstAlive:
-		log.Printf("[BridgePool] First alive bridge: %s (%dms) - continuing in background", first.ID, first.Latency)
-	case <-time.After(h.timeout * 2):
-		log.Printf("[BridgePool] No bridge responded within timeout")
 	}
 }
 
@@ -136,12 +124,6 @@ func (h *HealthMonitor) checkBridge(b *BridgeInfo) {
 	}
 
 	h.registry.UpdateBridgeStatus(b.ID, isAlive, latency)
-
-	if isAlive {
-		log.Printf("[BridgePool] Bridge %s (%s): alive, latency=%dms", b.ID, b.Address, latency)
-	} else {
-		log.Printf("[BridgePool] Bridge %s (%s): DEAD", b.ID, b.Address)
-	}
 }
 
 func (h *HealthMonitor) CheckSingle(bridgeID string) (bool, int, error) {

@@ -287,10 +287,8 @@ func (m *Manager) mlFederatedSync(ctx context.Context) {
 	if m.config.MLToken != "" {
 		req.Header.Set("Authorization", "Bearer "+m.config.MLToken)
 	}
-	resp, err := m.mlHTTPClient().Do(req)
-	if err == nil && resp.StatusCode == http.StatusOK {
-		resp.Body.Close()
-	} else if resp != nil {
+	resp, _ := m.mlHTTPClient().Do(req)
+	if resp != nil {
 		resp.Body.Close()
 	}
 
@@ -306,8 +304,8 @@ func (m *Manager) mlFederatedSync(ctx context.Context) {
 	if m.config.MLToken != "" {
 		ulReq.Header.Set("Authorization", "Bearer "+m.config.MLToken)
 	}
-	ulResp, err := m.mlHTTPClient().Do(ulReq)
-	if err == nil {
+	ulResp, _ := m.mlHTTPClient().Do(ulReq)
+	if ulResp != nil {
 		ulResp.Body.Close()
 	}
 }
