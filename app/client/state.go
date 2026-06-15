@@ -11,7 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 	"whispera/core/modules/config"
-	"whispera/core/modules/dns"
+	"whispera/common/dns"
 	"whispera/core/modules/proxyagent"
 	"whispera/core/modules/socks5"
 	"whispera/core/modules/tunnel"

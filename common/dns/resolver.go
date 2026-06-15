@@ -1,448 +1,577 @@
 package dns
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
-	"encoding/binary"
-	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
-
-	lru "github.com/hashicorp/golang-lru/v2"
-	"golang.org/x/sync/singleflight"
+	"whispera/common/runtime/base"
+	"whispera/common/runtime/events"
+	"whispera/common/runtime/interfaces"
 )
 
-type ResolverType string
-
 const (
-	ResolverTypeSystem ResolverType = "system"
-	ResolverTypeUDP    ResolverType = "udp"
-	ResolverTypeDoH    ResolverType = "doh"
-	ResolverTypeDoT    ResolverType = "dot"
+	ModuleName    = "dns.resolver"
+	ModuleVersion = "1.0.0"
+
+	DefaultCacheSize = 10000
+	DefaultCacheTTL  = 5 * time.Minute
 )
 
 type Config struct {
-	Type        ResolverType
-	Servers     []string
-	Timeout     time.Duration
-	CacheSize   int
-	CacheTTL    time.Duration
-	NegativeTTL time.Duration
-
-	DoHPath string
-
-	DoTPort    int
-	ServerName string
-
-	DialContext func(ctx context.Context, network, address string) (net.Conn, error)
+	Upstream        string
+	FakeIPEnabled   bool
+	FakeIPRange     string
+	CacheEnabled    bool
+	CacheSize       int
+	CacheTTL        time.Duration
+	BlockingEnabled bool
+	BlockLists      []string
+	DialContext     func(ctx context.Context, network, address string) (net.Conn, error)
+	BypassFunc      func(hostname string) bool
+	BypassResolver  *net.Resolver
 }
 
 func DefaultConfig() *Config {
 	return &Config{
-		Type:        ResolverTypeDoH,
-		Servers:     []string{"https://cloudflare-dns.com/dns-query", "https://dns.google/dns-query", "https://dns.yandex.ru/dns-query"},
-		Timeout:     2 * time.Second,
-		CacheSize:   10000,
-		CacheTTL:    5 * time.Minute,
-		NegativeTTL: 15 * time.Second,
-		DoHPath:     "/dns-query",
-		DoTPort:     853,
+		Upstream:        "8.8.8.8:53",
+		FakeIPEnabled:   false,
+		FakeIPRange:     "198.18.0.0/15",
+		CacheEnabled:    true,
+		CacheSize:       DefaultCacheSize,
+		CacheTTL:        DefaultCacheTTL,
+		BlockingEnabled: false,
 	}
 }
 
-type CacheEntry struct {
+func (c *Config) Validate() error {
+	if c.CacheSize <= 0 {
+		c.CacheSize = DefaultCacheSize
+	}
+	if c.CacheTTL <= 0 {
+		c.CacheTTL = DefaultCacheTTL
+	}
+	return nil
+}
+
+type cacheEntry struct {
 	IPs       []net.IP
 	ExpiresAt time.Time
-	Negative  bool
 }
-
-var errNXCached = errors.New("resolve failed (negative-cached)")
 
 type Resolver struct {
-	config *Config
-	cache  *lru.Cache[string, *CacheEntry]
-	client *http.Client
-	sf     singleflight.Group
+	*base.Module
+	config    *Config
+	cache     map[string]*cacheEntry
+	cacheMu   sync.RWMutex
+	dialCtx   func(ctx context.Context, network, address string) (net.Conn, error)
+	dialCtxMu sync.RWMutex
 
-	queries   uint64
-	cacheHits uint64
-	cacheMiss uint64
+	fakeIPNet     *net.IPNet
+	fakeIPNext    uint32
+	fakeIPMu      sync.Mutex
+	fakeIPMap     map[string]net.IP
+	fakeIPReverse map[string]string
+
+	blockList   map[string]bool
+	blockListMu sync.RWMutex
+
+	queries     uint64
+	cacheHits   uint64
+	cacheMisses uint64
+	blocked     uint64
+	errors      uint64
 }
 
-func NewResolver(cfg *Config) *Resolver {
+func New(cfg *Config) (*Resolver, error) {
 	if cfg == nil {
 		cfg = DefaultConfig()
 	}
-
-	cache, _ := lru.New[string, *CacheEntry](cfg.CacheSize)
-	ipv4Dialer := &net.Dialer{}
-	return &Resolver{
-		config: cfg,
-		cache:  cache,
-		client: &http.Client{
-			Timeout: cfg.Timeout,
-			Transport: &http.Transport{
-				TLSClientConfig: &tls.Config{
-					ServerName: cfg.ServerName,
-				},
-				DialContext: func(ctx context.Context, _, addr string) (net.Conn, error) {
-					return ipv4Dialer.DialContext(ctx, "tcp4", addr)
-				},
-			},
-		},
+	if err := cfg.Validate(); err != nil {
+		return nil, err
 	}
+
+	r := &Resolver{
+		Module:        base.NewModule(ModuleName, ModuleVersion, nil),
+		config:        cfg,
+		cache:         make(map[string]*cacheEntry),
+		fakeIPMap:     make(map[string]net.IP),
+		fakeIPReverse: make(map[string]string),
+		blockList:     make(map[string]bool),
+	}
+
+	if cfg.FakeIPEnabled {
+		_, ipnet, err := net.ParseCIDR(cfg.FakeIPRange)
+		if err == nil {
+			r.fakeIPNet = ipnet
+		}
+	}
+
+	return r, nil
 }
 
-func (r *Resolver) Resolve(ctx context.Context, host string) ([]net.IP, error) {
-	atomic.AddUint64(&r.queries, 1)
+func NewResolver(cfg *Config) *Resolver {
+	r, _ := New(cfg)
+	return r
+}
 
-	if ip := net.ParseIP(host); ip != nil {
+func (r *Resolver) Init(ctx context.Context, cfg interfaces.ModuleConfig) error {
+	if err := r.Module.Init(ctx, cfg); err != nil {
+		return err
+	}
+	if dnsCfg, ok := cfg.(*Config); ok {
+		r.config = dnsCfg
+	}
+	return nil
+}
+
+func (r *Resolver) Start() error {
+	if err := r.Module.Start(); err != nil {
+		return err
+	}
+	go r.cacheCleanupLoop()
+	r.SetHealthy(true, fmt.Sprintf("DNS resolver running (upstream: %s)", r.config.Upstream))
+	r.PublishEvent(events.EventTypeModuleStarted, map[string]interface{}{
+		"upstream": r.config.Upstream,
+		"cache":    r.config.CacheEnabled,
+		"fake_ip":  r.config.FakeIPEnabled,
+	})
+	return nil
+}
+
+func (r *Resolver) Stop() error {
+	r.PublishEvent(events.EventTypeModuleStopped, nil)
+	return r.Module.Stop()
+}
+
+func (r *Resolver) Resolve(ctx context.Context, domain string) ([]net.IP, error) {
+	atomic.AddUint64(&r.queries, 1)
+	r.UpdateActivity()
+	if r.isBlocked(domain) {
+		atomic.AddUint64(&r.blocked, 1)
+		return nil, fmt.Errorf("domain blocked: %s", domain)
+	}
+
+	if r.config.BypassFunc != nil && r.config.BypassFunc(domain) {
+		resolver := r.config.BypassResolver
+		if resolver == nil {
+			resolver = net.DefaultResolver
+		}
+		addrs, err := resolver.LookupIPAddr(ctx, domain)
+		if err != nil {
+			return nil, err
+		}
+		ips := make([]net.IP, 0, len(addrs))
+		for _, a := range addrs {
+			ips = append(ips, a.IP)
+		}
+		return ips, nil
+	}
+
+	if r.config.CacheEnabled {
+		if ips := r.getFromCache(domain); ips != nil {
+			atomic.AddUint64(&r.cacheHits, 1)
+			return ips, nil
+		}
+		atomic.AddUint64(&r.cacheMisses, 1)
+	}
+
+	if r.config.FakeIPEnabled {
+		ip := r.getFakeIP(domain)
 		return []net.IP{ip}, nil
 	}
 
-	if entry, ok := r.cacheLookup(host); ok {
-		atomic.AddUint64(&r.cacheHits, 1)
-		if entry.Negative {
-			return nil, errNXCached
-		}
-		return entry.IPs, nil
-	}
-	atomic.AddUint64(&r.cacheMiss, 1)
-
-	key := strings.ToLower(host)
-	ch := r.sf.DoChan(key, func() (interface{}, error) {
-		if entry, ok := r.cacheLookup(host); ok {
-			if entry.Negative {
-				return nil, errNXCached
-			}
-			return entry.IPs, nil
-		}
-		qctx, qcancel := context.WithTimeout(context.Background(), r.config.Timeout)
-		defer qcancel()
-		ips, err := r.queryOnce(qctx, host)
-		if err != nil {
-			r.putNegative(host)
-			return nil, err
-		}
-		r.putToCache(host, ips)
-		return ips, nil
-	})
-
-	select {
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	case res := <-ch:
-		if res.Err != nil {
-			return nil, res.Err
-		}
-		return res.Val.([]net.IP), nil
-	}
-}
-
-func (r *Resolver) queryOnce(ctx context.Context, host string) ([]net.IP, error) {
-	switch r.config.Type {
-	case ResolverTypeSystem:
-		return r.resolveSystem(ctx, host)
-	case ResolverTypeUDP:
-		return r.resolveUDP(ctx, host)
-	case ResolverTypeDoH:
-		return r.resolveDoH(ctx, host)
-	case ResolverTypeDoT:
-		return r.resolveDoT(ctx, host)
-	default:
-		return nil, fmt.Errorf("unknown resolver type: %s", r.config.Type)
-	}
-}
-
-func (r *Resolver) resolveSystem(ctx context.Context, host string) ([]net.IP, error) {
-	addrs, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+	ips, err := r.resolveUpstream(ctx, domain)
 	if err != nil {
+		atomic.AddUint64(&r.errors, 1)
 		return nil, err
 	}
 
-	ips := make([]net.IP, len(addrs))
-	for i, addr := range addrs {
-		ips[i] = addr.IP
+	if r.config.CacheEnabled && len(ips) > 0 {
+		r.addToCache(domain, ips)
 	}
+
 	return ips, nil
 }
 
-func (r *Resolver) resolveUDP(ctx context.Context, host string) ([]net.IP, error) {
-	if len(r.config.Servers) == 0 {
-		return nil, errors.New("no DNS servers configured")
-	}
-
-	query := buildDNSQuery(host, 1)
-
-	server := r.config.Servers[0]
-	if !strings.Contains(server, ":") {
-		server += ":53"
-	}
-
-	var conn net.Conn
-	var err error
-	if r.config.DialContext != nil {
-		dialCtx, dialCancel := context.WithTimeout(ctx, r.config.Timeout)
-		defer dialCancel()
-		conn, err = r.config.DialContext(dialCtx, "udp", server)
-	} else {
-		conn, err = (&net.Dialer{Timeout: r.config.Timeout}).DialContext(context.Background(), "udp", server)
-	}
+func (r *Resolver) ResolveToString(ctx context.Context, domain string) (string, error) {
+	ips, err := r.Resolve(ctx, domain)
 	if err != nil {
-		return nil, err
+		return "", err
 	}
-	defer conn.Close()
-
-	conn.SetDeadline(time.Now().Add(r.config.Timeout))
-
-	if _, err := conn.Write(query); err != nil {
-		return nil, err
+	if len(ips) == 0 {
+		return "", fmt.Errorf("no IPs for domain: %s", domain)
 	}
-
-	response := make([]byte, 512)
-	n, err := conn.Read(response)
-	if err != nil {
-		return nil, err
-	}
-
-	return parseDNSResponse(response[:n])
+	return ips[0].String(), nil
 }
 
-func (r *Resolver) resolveDoH(ctx context.Context, host string) ([]net.IP, error) {
-	if len(r.config.Servers) == 0 {
-		return nil, errors.New("no DoH servers configured")
+func (r *Resolver) LookupFakeIP(ip net.IP) (string, bool) {
+	r.fakeIPMu.Lock()
+	defer r.fakeIPMu.Unlock()
+	domain, ok := r.fakeIPReverse[ip.String()]
+	return domain, ok
+}
+
+func (r *Resolver) AddBlockedDomain(domain string) {
+	r.blockListMu.Lock()
+	r.blockList[domain] = true
+	r.blockListMu.Unlock()
+}
+
+func (r *Resolver) RemoveBlockedDomain(domain string) {
+	r.blockListMu.Lock()
+	delete(r.blockList, domain)
+	r.blockListMu.Unlock()
+}
+
+func (r *Resolver) ClearCache() {
+	r.cacheMu.Lock()
+	r.cache = make(map[string]*cacheEntry)
+	r.cacheMu.Unlock()
+}
+
+func (r *Resolver) SetDialContext(dialFn func(ctx context.Context, network, address string) (net.Conn, error)) {
+	r.dialCtxMu.Lock()
+	r.dialCtx = dialFn
+	r.dialCtxMu.Unlock()
+}
+
+func (r *Resolver) SetUpstream(upstream string) {
+	if strings.EqualFold(upstream, "system") {
+		upstream = ""
 	}
+	r.cacheMu.Lock()
+	r.config.Upstream = upstream
+	r.cache = make(map[string]*cacheEntry)
+	r.cacheMu.Unlock()
+}
 
-	query := buildDNSQuery(host, 1)
+func (r *Resolver) GetUpstream() string {
+	r.cacheMu.RLock()
+	defer r.cacheMu.RUnlock()
+	return r.config.Upstream
+}
 
-	type dohResult struct {
-		ips []net.IP
-		err error
+func (r *Resolver) HealthCheck() interfaces.HealthStatus {
+	status := r.Module.HealthCheck()
+	status.Details["upstream"] = r.config.Upstream
+	status.Details["queries"] = atomic.LoadUint64(&r.queries)
+	status.Details["cache_hits"] = atomic.LoadUint64(&r.cacheHits)
+	status.Details["cache_misses"] = atomic.LoadUint64(&r.cacheMisses)
+	status.Details["blocked"] = atomic.LoadUint64(&r.blocked)
+	status.Details["errors"] = atomic.LoadUint64(&r.errors)
+	r.cacheMu.RLock()
+	status.Details["cache_size"] = len(r.cache)
+	r.cacheMu.RUnlock()
+	r.fakeIPMu.Lock()
+	status.Details["fake_ip_count"] = len(r.fakeIPMap)
+	r.fakeIPMu.Unlock()
+	r.blockListMu.RLock()
+	status.Details["block_list_size"] = len(r.blockList)
+	r.blockListMu.RUnlock()
+	return status
+}
+
+func (r *Resolver) isBlocked(domain string) bool {
+	if !r.config.BlockingEnabled {
+		return false
 	}
-	rctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
-	ch := make(chan dohResult, len(r.config.Servers))
-	for _, server := range r.config.Servers {
-		server := server
-		go func() {
-			ips, err := r.doHQuery(rctx, server, query)
-			ch <- dohResult{ips: ips, err: err}
-		}()
+	r.blockListMu.RLock()
+	defer r.blockListMu.RUnlock()
+	if r.blockList[domain] {
+		return true
 	}
-
-	var lastErr error
-	for range r.config.Servers {
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case res := <-ch:
-			if res.err == nil && len(res.ips) > 0 {
-				return res.ips, nil
-			}
-			if res.err != nil {
-				lastErr = res.err
+	for i := 0; i < len(domain); i++ {
+		if domain[i] == '.' {
+			if r.blockList[domain[i+1:]] {
+				return true
 			}
 		}
 	}
-	if lastErr == nil {
-		lastErr = errors.New("all DoH servers failed")
-	}
-	return nil, lastErr
+	return false
 }
 
-func (r *Resolver) doHQuery(ctx context.Context, server string, query []byte) ([]net.IP, error) {
-	req, err := http.NewRequestWithContext(ctx, "POST", server, strings.NewReader(string(query)))
-	if err != nil {
+func (r *Resolver) getFromCache(domain string) []net.IP {
+	r.cacheMu.RLock()
+	entry, ok := r.cache[domain]
+	r.cacheMu.RUnlock()
+	if !ok || time.Now().After(entry.ExpiresAt) {
+		return nil
+	}
+	return entry.IPs
+}
+
+func (r *Resolver) addToCache(domain string, ips []net.IP) {
+	r.cacheMu.Lock()
+	defer r.cacheMu.Unlock()
+	if len(r.cache) >= r.config.CacheSize {
+		var oldestKey string
+		var oldestTime time.Time
+		for k, v := range r.cache {
+			if oldestKey == "" || v.ExpiresAt.Before(oldestTime) {
+				oldestKey = k
+				oldestTime = v.ExpiresAt
+			}
+		}
+		delete(r.cache, oldestKey)
+	}
+	r.cache[domain] = &cacheEntry{
+		IPs:       ips,
+		ExpiresAt: time.Now().Add(r.config.CacheTTL),
+	}
+}
+
+func (r *Resolver) getFakeIP(domain string) net.IP {
+	r.fakeIPMu.Lock()
+	defer r.fakeIPMu.Unlock()
+	if ip, ok := r.fakeIPMap[domain]; ok {
+		return ip
+	}
+	if r.fakeIPNet == nil {
+		return net.ParseIP("198.18.0.1")
+	}
+	baseIP := r.fakeIPNet.IP.To4()
+	if baseIP == nil {
+		return net.ParseIP("198.18.0.1")
+	}
+	r.fakeIPNext++
+	ip := make(net.IP, 4)
+	copy(ip, baseIP)
+	offset := r.fakeIPNext
+	ip[3] = byte(offset)
+	ip[2] = byte(offset >> 8)
+	r.fakeIPMap[domain] = ip
+	r.fakeIPReverse[ip.String()] = domain
+	return ip
+}
+
+func (r *Resolver) resolveUpstream(ctx context.Context, domain string) ([]net.IP, error) {
+	r.dialCtxMu.RLock()
+	dialFn := r.dialCtx
+	r.dialCtxMu.RUnlock()
+
+	r.cacheMu.RLock()
+	upstream := r.config.Upstream
+	r.cacheMu.RUnlock()
+
+	if strings.HasPrefix(upstream, "https://") {
+		return r.resolveDoH(ctx, upstream, domain)
+	}
+
+	if upstream == "" || strings.EqualFold(upstream, "system") {
+		addrs, err := net.DefaultResolver.LookupIPAddr(ctx, domain)
+		if err != nil {
+			return nil, err
+		}
+		ips := make([]net.IP, len(addrs))
+		for i, a := range addrs {
+			ips[i] = a.IP
+		}
+		return ips, nil
+	}
+
+	if dialFn != nil {
+		ips, err := r.resolveTCPDNS(ctx, dialFn, upstream, domain)
+		if err == nil {
+			return ips, nil
+		}
+		if ips, err2 := r.resolveDoH(ctx, dohFallbackFor(upstream), domain); err2 == nil {
+			return ips, nil
+		}
 		return nil, err
 	}
 
+	resolver := &net.Resolver{
+		PreferGo: true,
+		Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
+			addr := upstream
+			if !strings.Contains(addr, ":") {
+				addr += ":53"
+			}
+			d := net.Dialer{Timeout: 5 * time.Second}
+			return d.DialContext(ctx, "udp4", addr)
+		},
+	}
+	ips, err := resolver.LookupIP(ctx, "ip4", domain)
+	if err == nil {
+		return ips, nil
+	}
+	return r.resolveDoH(ctx, dohFallbackFor(upstream), domain)
+}
+
+func dohFallbackFor(upstream string) string {
+	host := strings.TrimSuffix(upstream, ":53")
+	host = strings.Split(host, ":")[0]
+	switch host {
+	case "8.8.8.8", "8.8.4.4", "dns.google":
+		return "https://dns.google/dns-query"
+	case "9.9.9.9", "149.112.112.112":
+		return "https://dns.quad9.net/dns-query"
+	case "94.140.14.14", "94.140.15.15":
+		return "https://dns.adguard.com/dns-query"
+	default:
+		return "https://1.1.1.1/dns-query"
+	}
+}
+
+func (r *Resolver) resolveDoH(ctx context.Context, endpoint, domain string) ([]net.IP, error) {
+	r.dialCtxMu.RLock()
+	dialFn := r.dialCtx
+	r.dialCtxMu.RUnlock()
+
+	msg := buildDNSMsg(domain)
+
+	var transport http.RoundTripper
+	if dialFn != nil {
+		transport = &http.Transport{
+			DialContext:       dialFn,
+			TLSClientConfig:   &tls.Config{MinVersion: tls.VersionTLS12},
+			ForceAttemptHTTP2: true,
+		}
+	} else {
+		transport = &http.Transport{
+			TLSClientConfig:   &tls.Config{MinVersion: tls.VersionTLS12},
+			ForceAttemptHTTP2: true,
+		}
+	}
+
+	client := &http.Client{Transport: transport, Timeout: 5 * time.Second}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(msg))
+	if err != nil {
+		return nil, fmt.Errorf("doh: build request: %w", err)
+	}
 	req.Header.Set("Content-Type", "application/dns-message")
 	req.Header.Set("Accept", "application/dns-message")
 
-	resp, err := r.client.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("doh: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("DoH server returned status %d", resp.StatusCode)
+		return nil, fmt.Errorf("doh: server returned HTTP %d", resp.StatusCode)
 	}
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 65535))
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("doh: read body: %w", err)
 	}
 
 	return parseDNSResponse(body)
 }
 
-func (r *Resolver) resolveDoT(ctx context.Context, host string) ([]net.IP, error) {
-	if len(r.config.Servers) == 0 {
-		return nil, errors.New("no DoT servers configured")
+func (r *Resolver) resolveTCPDNS(ctx context.Context, dialFn func(context.Context, string, string) (net.Conn, error), upstream, domain string) ([]net.IP, error) {
+	addr := upstream
+	if !strings.Contains(addr, ":") {
+		addr += ":53"
 	}
-
-	query := buildDNSQuery(host, 1)
-
-	for _, server := range r.config.Servers {
-		ips, err := r.doTQuery(ctx, server, query)
-		if err == nil {
-			return ips, nil
-		}
-	}
-
-	return nil, errors.New("all DoT servers failed")
-}
-
-func (r *Resolver) doTQuery(ctx context.Context, server string, query []byte) ([]net.IP, error) {
-	server = strings.TrimPrefix(server, "tls://")
-
-	port := r.config.DoTPort
-	if port == 0 {
-		port = 853
-	}
-	if !strings.Contains(server, ":") {
-		server = fmt.Sprintf("%s:%d", server, port)
-	}
-
-	tlsCfg := &tls.Config{
-		ServerName: r.config.ServerName,
-	}
-
-	var conn net.Conn
-	var err error
-	if r.config.DialContext != nil {
-		var rawConn net.Conn
-		rawConn, err = r.config.DialContext(ctx, "tcp", server)
-		if err != nil {
-			return nil, err
-		}
-		tlsConn := tls.Client(rawConn, tlsCfg)
-		if err = tlsConn.HandshakeContext(ctx); err != nil {
-			rawConn.Close()
-			return nil, err
-		}
-		conn = tlsConn
-	} else {
-		dialer := &tls.Dialer{Config: tlsCfg}
-		conn, err = dialer.DialContext(ctx, "tcp", server)
-		if err != nil {
-			return nil, err
-		}
+	conn, err := dialFn(ctx, "tcp", addr)
+	if err != nil {
+		return nil, fmt.Errorf("tcp dns dial: %w", err)
 	}
 	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(5 * time.Second))
 
-	conn.SetDeadline(time.Now().Add(r.config.Timeout))
+	msg := buildDNSMsg(domain)
+	lenBuf := [2]byte{byte(len(msg) >> 8), byte(len(msg))}
+	conn.Write(lenBuf[:])
+	conn.Write(msg)
 
-	lenBuf := make([]byte, 2)
-	binary.BigEndian.PutUint16(lenBuf, uint16(len(query)))
-
-	if _, err := conn.Write(lenBuf); err != nil {
-		return nil, err
+	if _, err := io.ReadFull(conn, lenBuf[:]); err != nil {
+		return nil, fmt.Errorf("tcp dns read len: %w", err)
 	}
-	if _, err := conn.Write(query); err != nil {
-		return nil, err
+	respLen := int(lenBuf[0])<<8 | int(lenBuf[1])
+	if respLen < 12 || respLen > 65535 {
+		return nil, fmt.Errorf("tcp dns: invalid response length %d", respLen)
 	}
-
-	if _, err := io.ReadFull(conn, lenBuf); err != nil {
-		return nil, err
+	resp := make([]byte, respLen)
+	if _, err := io.ReadFull(conn, resp); err != nil {
+		return nil, fmt.Errorf("tcp dns read body: %w", err)
 	}
-	respLen := binary.BigEndian.Uint16(lenBuf)
-
-	response := make([]byte, respLen)
-	if _, err := io.ReadFull(conn, response); err != nil {
-		return nil, err
-	}
-
-	return parseDNSResponse(response)
+	return parseDNSResponse(resp)
 }
 
-func (r *Resolver) cacheLookup(host string) (*CacheEntry, bool) {
-	entry, ok := r.cache.Get(strings.ToLower(host))
-	if !ok || time.Now().After(entry.ExpiresAt) {
-		return nil, false
+func (r *Resolver) cacheCleanupLoop() {
+	ticker := time.NewTicker(time.Minute)
+	defer ticker.Stop()
+	for r.IsRunning() {
+		select {
+		case <-r.Context().Done():
+			return
+		case <-ticker.C:
+			r.cleanupCache()
+		}
 	}
-	return entry, true
 }
 
-func (r *Resolver) putNegative(host string) {
-	ttl := r.config.NegativeTTL
-	if ttl <= 0 {
-		ttl = 15 * time.Second
+func (r *Resolver) cleanupCache() {
+	r.cacheMu.Lock()
+	defer r.cacheMu.Unlock()
+	now := time.Now()
+	for key, entry := range r.cache {
+		if now.After(entry.ExpiresAt) {
+			delete(r.cache, key)
+		}
 	}
-	r.cache.Add(strings.ToLower(host), &CacheEntry{
-		Negative:  true,
-		ExpiresAt: time.Now().Add(ttl),
-	})
 }
 
-func (r *Resolver) putToCache(host string, ips []net.IP) {
-	r.cache.Add(strings.ToLower(host), &CacheEntry{
-		IPs:       ips,
-		ExpiresAt: time.Now().Add(r.config.CacheTTL),
-	})
-}
-
-func buildDNSQuery(host string, qtype uint16) []byte {
-	buf := make([]byte, 0, 512)
-
-	buf = append(buf, 0xAB, 0xCD)
-	buf = append(buf, 0x01, 0x00)
-	buf = append(buf, 0x00, 0x01)
-	buf = append(buf, 0x00, 0x00)
-	buf = append(buf, 0x00, 0x00)
-	buf = append(buf, 0x00, 0x00)
-
-	parts := strings.Split(host, ".")
-	for _, part := range parts {
-		buf = append(buf, byte(len(part)))
-		buf = append(buf, []byte(part)...)
+func buildDNSMsg(domain string) []byte {
+	id := [2]byte{0x12, 0x34}
+	buf := []byte{
+		id[0], id[1],
+		0x01, 0x00,
+		0x00, 0x01,
+		0x00, 0x00,
+		0x00, 0x00,
+		0x00, 0x00,
+	}
+	for _, label := range strings.Split(strings.TrimSuffix(domain, "."), ".") {
+		buf = append(buf, byte(len(label)))
+		buf = append(buf, label...)
 	}
 	buf = append(buf, 0x00)
-
-	buf = append(buf, byte(qtype>>8), byte(qtype))
 	buf = append(buf, 0x00, 0x01)
-
+	buf = append(buf, 0x00, 0x01)
 	return buf
 }
 
 func parseDNSResponse(response []byte) ([]net.IP, error) {
 	if len(response) < 12 {
-		return nil, errors.New("response too short")
+		return nil, fmt.Errorf("dns response too short (%d bytes)", len(response))
 	}
-
 	rcode := response[3] & 0x0F
 	if rcode != 0 {
-		return nil, fmt.Errorf("DNS error code: %d", rcode)
+		return nil, fmt.Errorf("dns error rcode=%d", rcode)
 	}
-
-	ancount := binary.BigEndian.Uint16(response[6:8])
+	ancount := int(response[6])<<8 | int(response[7])
 	if ancount == 0 {
-		return nil, errors.New("no answers in response")
+		return nil, fmt.Errorf("dns: no answers")
 	}
 
 	offset := 12
-
-	for offset < len(response) && response[offset] != 0 {
+	for offset < len(response) {
+		if response[offset] == 0 {
+			offset++
+			break
+		}
 		if response[offset]&0xC0 == 0xC0 {
 			offset += 2
 			break
 		}
 		offset += int(response[offset]) + 1
 	}
-	if offset < len(response) && response[offset] == 0 {
-		offset++
-	}
 	offset += 4
 
 	var ips []net.IP
-	for i := 0; i < int(ancount) && offset < len(response); i++ {
+	for i := 0; i < ancount && offset < len(response); i++ {
 		if offset >= len(response) {
 			break
 		}
@@ -454,36 +583,29 @@ func parseDNSResponse(response []byte) ([]net.IP, error) {
 			}
 			offset++
 		}
-
 		if offset+10 > len(response) {
 			break
 		}
-
-		rtype := binary.BigEndian.Uint16(response[offset : offset+2])
+		rtype := int(response[offset])<<8 | int(response[offset+1])
 		offset += 8
-		rdlength := binary.BigEndian.Uint16(response[offset : offset+2])
+		rdlen := int(response[offset])<<8 | int(response[offset+1])
 		offset += 2
-
-		if offset+int(rdlength) > len(response) {
+		if offset+rdlen > len(response) {
 			break
 		}
-
-		if rtype == 1 && rdlength == 4 {
-			ip := net.IP(response[offset : offset+4])
+		if rtype == 1 && rdlen == 4 {
+			ip := make(net.IP, 4)
+			copy(ip, response[offset:offset+4])
+			ips = append(ips, ip)
+		} else if rtype == 28 && rdlen == 16 {
+			ip := make(net.IP, 16)
+			copy(ip, response[offset:offset+16])
 			ips = append(ips, ip)
 		}
-
-		if rtype == 28 && rdlength == 16 {
-			ip := net.IP(response[offset : offset+16])
-			ips = append(ips, ip)
-		}
-
-		offset += int(rdlength)
+		offset += rdlen
 	}
-
 	if len(ips) == 0 {
-		return nil, errors.New("no IP addresses found")
+		return nil, fmt.Errorf("dns: no A/AAAA records in response")
 	}
-
 	return ips, nil
 }

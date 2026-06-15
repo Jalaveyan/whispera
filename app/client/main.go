@@ -26,7 +26,7 @@ import (
 	"whispera/common/log"
 	config2 "whispera/core/modules/config"
 	"whispera/core/modules/crypto"
-	"whispera/core/modules/dns"
+	"whispera/common/dns"
 	"whispera/core/modules/handshake"
 	"whispera/core/modules/killswitch"
 	"whispera/core/modules/proxyagent"
