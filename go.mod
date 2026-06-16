@@ -2,6 +2,8 @@ module whispera
 
 go 1.26
 
+toolchain go1.26.4
+
 require (
 	github.com/go-telegram-bot-api/telegram-bot-api/v5 v5.5.1
 	github.com/google/uuid v1.6.0
@@ -15,9 +17,9 @@ require (
 	github.com/sourcegraph/conc v0.3.0
 	go.uber.org/automaxprocs v1.6.0
 	go.uber.org/zap v1.27.1
-	golang.org/x/crypto v0.49.0
-	golang.org/x/net v0.52.0
-	google.golang.org/grpc v1.73.0
+	golang.org/x/crypto v0.53.0
+	golang.org/x/net v0.56.0
+	google.golang.org/grpc v1.81.1
 	gopkg.in/yaml.v3 v3.0.1
 	gorgonia.org/gorgonia v0.9.18
 	gorgonia.org/tensor v0.9.24
@@ -45,7 +47,7 @@ require (
 	golang.org/x/exp v0.0.0-20250911091902-df9299821621 // indirect
 	golang.org/x/sync v0.20.0 // indirect
 	golang.org/x/xerrors v0.0.0-20200804184101-5ec99f83aff1 // indirect
-	gonum.org/v1/gonum v0.16.0 // indirect
+	gonum.org/v1/gonum v0.17.0 // indirect
 	gorgonia.org/cu v0.9.4 // indirect
 	gorgonia.org/dawson v1.2.0 // indirect
 	gorgonia.org/vecf32 v0.9.0 // indirect
@@ -54,7 +56,7 @@ require (
 
 replace (
 	golang.org/x/crypto => golang.org/x/crypto v0.41.0
-	golang.org/x/net => golang.org/x/net v0.43.0
+	golang.org/x/net => golang.org/x/net v0.56.0
 	golang.org/x/sys => golang.org/x/sys v0.35.0
 	golang.org/x/text => golang.org/x/text v0.28.0
 // gvisor.dev/gvisor => ./internal/gvisor/gvisor@v0.0.0-20251115042331-9fc4303aefe1
@@ -65,8 +67,8 @@ require (
 	github.com/klauspost/compress v1.18.2 // indirect
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
 	github.com/klauspost/reedsolomon v1.13.0
-	golang.org/x/sys v0.42.0 // indirect
-	golang.org/x/text v0.35.0 // indirect
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20251202230838-ff82c1b0f217 // indirect
+	golang.org/x/sys v0.46.0 // indirect
+	golang.org/x/text v0.38.0 // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20260226221140-a57be14db171 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
 )
