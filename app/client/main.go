@@ -451,7 +451,6 @@ func main() {
 		profile := e.BehavioralProfile
 		customSNI := e.SNI
 		noSNI := e.NoSNI
-		bridgeAddr := e.Bridge
 		rateLimitKB := e.RateLimitKB
 		e.mu.Unlock()
 
@@ -499,7 +498,6 @@ func main() {
 			NoSNI:             noSNI,
 			Regions:           cfgRegions,
 			PreferredRegion:   getGlobalRegion(),
-			BridgeAddr:        bridgeAddr,
 			RateLimitKB:       rateLimitKB,
 			EnableIPSpoof:     len(spoofList) > 0,
 			SpoofSourceIPs:    spoofList,

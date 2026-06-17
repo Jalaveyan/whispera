@@ -34,7 +34,6 @@ import (
 	"whispera/core/modules/dataplane"
 	"whispera/core/modules/handshake"
 	"whispera/core/modules/keylimits"
-	"whispera/core/modules/metricscollector"
 	"whispera/core/modules/mlserver"
 	"whispera/core/modules/probedetector"
 	relay2 "whispera/core/modules/relay"
@@ -97,7 +96,6 @@ var (
 	configFile     = flag.String("config", "", "Path to configuration file")
 	listenAddr     = flag.String("listen", "", "UDP/TCP listen address (default from config)")
 	apiAddr        = flag.String("api", ":8080", "API server listen address")
-	metricsAddr    = flag.String("metrics", ":9091", "Metrics server listen address")
 	debug          = flag.Bool("debug", false, "Enable debug logging")
 	printVersion   = flag.Bool("version", false, "Print version and exit")
 	validateConfig = flag.Bool("validate-config", false, "Validate configuration and exit")
@@ -563,10 +561,6 @@ func createModules(manager *lifecycle.Manager, ctx context.Context) error {
 	if *apiAddr != "" {
 		serverConfig.API.ListenAddr = *apiAddr
 	}
-	if *metricsAddr != "" {
-		serverConfig.Metrics.ListenAddr = *metricsAddr
-	}
-
 
 	if err := initCore(manager, serverConfig); err != nil {
 		return err
@@ -801,19 +795,6 @@ func initTransports(m *lifecycle.Manager, sc *config.ServerConfig, ctx context.C
 }
 
 func initOptional(m *lifecycle.Manager, sc *config.ServerConfig, ctx context.Context) error {
-	if sc.Metrics.Enabled {
-		metricsCollector, err := metricscollector.New(&metricscollector.Config{
-			Enabled:    true,
-			ListenAddr: sc.Metrics.ListenAddr,
-			Path:       sc.Metrics.Path,
-		})
-		if err != nil {
-			return err
-		}
-		if err := m.Register(metricsCollector); err != nil {
-			return err
-		}
-	}
 
 	if sc.API.Enabled {
 		apiServer, err := apiserver.New(&apiserver.Config{

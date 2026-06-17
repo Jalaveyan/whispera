@@ -38,7 +38,6 @@ type TransportEntry struct {
 	Mux         bool       `json:"mux"`
 	RateLimitKB int        `json:"rate_limit_kb"`
 	SNI         string     `json:"sni"`
-	Bridge      string     `json:"bridge"`
 	BytesUp     uint64     `json:"bytes_up"`
 	BytesDown   uint64     `json:"bytes_down"`
 	ConnectedAt time.Time  `json:"connected_at,omitempty"`
@@ -199,7 +198,6 @@ type entryView struct {
 	Mux               bool       `json:"mux"`
 	RateLimitKB       int        `json:"rate_limit_kb"`
 	SNI               string     `json:"sni"`
-	Bridge            string     `json:"bridge"`
 	BytesUp           uint64     `json:"bytes_up"`
 	BytesDown         uint64     `json:"bytes_down"`
 	ConnectedAt       time.Time  `json:"connected_at,omitempty"`
@@ -227,7 +225,7 @@ func toView(e *TransportEntry) entryView {
 	return entryView{
 		ID: e.ID, Transport: e.Transport, Server: e.Server,
 		Status: e.Status, Enabled: e.Enabled, Obfuscated: e.Obfuscated,
-		Mux: e.Mux, RateLimitKB: e.RateLimitKB, SNI: e.SNI, Bridge: e.Bridge,
+		Mux: e.Mux, RateLimitKB: e.RateLimitKB, SNI: e.SNI,
 		BytesUp: e.BytesUp, BytesDown: e.BytesDown,
 		ConnectedAt: e.ConnectedAt, Error: e.Error,
 		EncapsulatedIn:    e.EncapsulatedIn,

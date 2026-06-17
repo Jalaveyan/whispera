@@ -20,7 +20,6 @@ const (
 	RoleAdmin    Role = "admin"
 	RoleOperator Role = "operator"
 	RoleUser     Role = "user"
-	RoleBridge   Role = "bridge"
 )
 
 const (
@@ -268,9 +267,8 @@ func generateJTI() string {
 
 var Permissions = map[Role][]string{
 	RoleAdmin:    {"*"},
-	RoleOperator: {"bridges.*", "users.read", "stats.*", "config.read", "sessions.*"},
-	RoleUser:     {"profile.*", "bridges.list", "bridges.connect"},
-	RoleBridge:   {"bridge.heartbeat", "bridge.register", "bridge.metrics"},
+	RoleOperator: {"users.read", "stats.*", "config.read", "sessions.*"},
+	RoleUser:     {"profile.*"},
 }
 
 func HasPermission(role Role, perm string) bool {

@@ -106,8 +106,6 @@ type ClientConfig struct {
 	TransportWhitelist []string `yaml:"transport_whitelist,omitempty" json:"transport_whitelist,omitempty"`
 	TransportBlacklist []string `yaml:"transport_blacklist,omitempty" json:"transport_blacklist,omitempty"`
 
-	BridgeDiscoveryURL string `yaml:"bridge_discovery_url,omitempty" json:"bridge_discovery_url,omitempty"`
-
 	RussianService string `yaml:"russian_service,omitempty" json:"russian_service,omitempty"`
 
 	TransportConfig map[string]interface{} `yaml:"transport_config,omitempty" json:"transport_config,omitempty"`

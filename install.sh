@@ -1385,11 +1385,6 @@ session:
   idle_timeout: 300
   cleanup_interval: 60
 
-metrics:
-  enabled: true
-  listen_addr: ":9090"
-  path: "/metrics"
-
 api:
   enabled: true
   listen_addr: ":8080"

@@ -167,7 +167,6 @@ type Config struct {
 	DesyncConfig *evasion.DesyncConfig
 	CustomSNI    string
 	NoSNI        bool
-	BridgeAddr   string
 	RateLimitKB  int
 
 	EnableIPSpoof  bool
@@ -491,34 +490,6 @@ func New(cfg *Config) (*Manager, error) {
 		}
 		if _, exists := cfg.TransportConfig["sni"]; !exists {
 			cfg.TransportConfig["sni"] = cfg.CustomSNI
-		}
-	}
-
-	if cfg.BridgeAddr != "" && cfg.CustomDialFn == nil {
-		bridgeAddr := cfg.BridgeAddr
-		serverAddr := cfg.ServerAddr
-		cfg.CustomDialFn = func(ctx context.Context) (net.Conn, error) {
-			d := &net.Dialer{}
-			conn, err := d.DialContext(ctx, "tcp", bridgeAddr)
-			if err != nil {
-				return nil, fmt.Errorf("bridge dial %s: %w", bridgeAddr, err)
-			}
-			req := "CONNECT " + serverAddr + " HTTP/1.1\r\nHost: " + serverAddr + "\r\n\r\n"
-			if _, err = conn.Write([]byte(req)); err != nil {
-				conn.Close()
-				return nil, fmt.Errorf("bridge CONNECT write: %w", err)
-			}
-			buf := make([]byte, 256)
-			n, err := conn.Read(buf)
-			if err != nil {
-				conn.Close()
-				return nil, fmt.Errorf("bridge CONNECT read: %w", err)
-			}
-			if n < 12 || string(buf[9:12]) != "200" {
-				conn.Close()
-				return nil, fmt.Errorf("bridge rejected CONNECT: %s", string(buf[:n]))
-			}
-			return conn, nil
 		}
 	}
 

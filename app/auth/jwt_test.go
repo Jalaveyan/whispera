@@ -85,16 +85,12 @@ func TestHasPermission(t *testing.T) {
 		t.Error("admin should have wildcard permission")
 	}
 
-	if !HasPermission(RoleOperator, "bridges.list") {
-		t.Error("operator should have bridges.* permission")
+	if !HasPermission(RoleOperator, "stats.read") {
+		t.Error("operator should have stats.* permission")
 	}
 
-	if HasPermission(RoleUser, "bridges.delete") {
-		t.Error("user should not have bridges.delete")
-	}
-
-	if !HasPermission(RoleBridge, "bridge.heartbeat") {
-		t.Error("bridge should have bridge.* permission")
+	if HasPermission(RoleUser, "stats.read") {
+		t.Error("user should not have stats.read")
 	}
 }
 

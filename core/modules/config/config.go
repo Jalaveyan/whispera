@@ -60,7 +60,6 @@ type ServerConfig struct {
 	Routing        RoutingConfig      `yaml:"routing"`
 	Obfuscation    ObfuscationConfig  `yaml:"obfuscation"`
 	API            APIConfig          `yaml:"api"`
-	Metrics        MetricsConfig      `yaml:"metrics"`
 	Logging        LoggingConfig      `yaml:"logging"`
 	Relay          RelayConfig        `yaml:"relay"`
 	Chameleon      ChameleonConfig    `yaml:"chameleon"`
@@ -68,7 +67,6 @@ type ServerConfig struct {
 	Outbounds      []OutboundConfig   `yaml:"outbounds" json:"outbounds"`
 	RelayMode      string             `yaml:"relay_mode" json:"relay_mode"`
 	UpstreamServer string             `yaml:"upstream_server" json:"upstream_server"`
-	Bridge         BridgeConfig       `yaml:"bridge" json:"bridge"`
 	VKRelay        VKRelayConfig      `yaml:"vk_relay" json:"vk_relay"`
 	StealthMode    string             `yaml:"stealth_mode" json:"stealth_mode"`
 	Cache          CacheConfig        `yaml:"cache" json:"cache"`
@@ -362,14 +360,6 @@ type ServerSettings struct {
 	PublicURL    string   `yaml:"public_url" json:"public_url"`
 }
 
-type BridgeConfig struct {
-	AutoRegister      bool   `yaml:"auto_register" json:"auto_register"`
-	Type              string `yaml:"type" json:"type"`
-	Provider          string `yaml:"provider" json:"provider"`
-	Region            string `yaml:"region" json:"region"`
-	RegistrationToken string `yaml:"registration_token" json:"registration_token"`
-}
-
 type TransportConfig struct {
 	UDP struct {
 		Enabled       bool   `yaml:"enabled"`
@@ -445,12 +435,6 @@ type APIConfig struct {
 	LoginRateLimit    int      `yaml:"login_rate_limit"`
 }
 
-type MetricsConfig struct {
-	Enabled    bool   `yaml:"enabled"`
-	ListenAddr string `yaml:"listen_addr"`
-	Path       string `yaml:"path"`
-}
-
 type LoggingConfig struct {
 	Level  string `yaml:"level"`
 	Format string `yaml:"format"`
@@ -515,11 +499,6 @@ func DefaultServerConfig() *ServerConfig {
 			ListenAddr: ":8080",
 			EnableCORS: true,
 			WebRoot:    "",
-		},
-		Metrics: MetricsConfig{
-			Enabled:    true,
-			ListenAddr: ":9090",
-			Path:       "/metrics",
 		},
 		Logging: LoggingConfig{
 			Level:  "info",

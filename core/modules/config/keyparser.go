@@ -254,14 +254,6 @@ func (ck *ConnectionKey) ToClientConfig() *ClientConfig {
 		cfg.UDPOnly = true
 	}
 
-	if srv := ck.GetPrimaryServer(); srv != "" {
-		host, _, err := net.SplitHostPort(srv)
-		if err != nil {
-			host = srv
-		}
-		cfg.BridgeDiscoveryURL = "https://" + host + "/api/bridge-list"
-	}
-
 	if ck.EnableASNBypass {
 		cfg.ASNBypass = &ClientASNBypassConfig{
 			Enabled:         true,

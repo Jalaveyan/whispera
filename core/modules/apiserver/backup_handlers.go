@@ -17,7 +17,6 @@ import (
 const (
 	backupDataDir    = "/etc/whispera"
 	adblockDataFile  = "/etc/whispera/adblock.json"
-	bridgesDataFile  = "/etc/whispera/bridges.json"
 	backupStorageDir = "/etc/whispera/backups"
 	maxBackupRetain  = 7
 )
@@ -39,7 +38,6 @@ func (s *Server) handleGetBackup(w http.ResponseWriter, r *http.Request) {
 		"timestamp":     time.Now().UTC().Format(time.RFC3339),
 		"users":         readRawJSON(userDataFile),
 		"subscriptions": readRawJSON(subDataFile),
-		"bridges":       readRawJSON(bridgesDataFile),
 		"adblock":       readRawJSON(adblockDataFile),
 	}
 
@@ -83,7 +81,6 @@ func (s *Server) handleRestoreBackup(w http.ResponseWriter, r *http.Request) {
 	files := map[string]string{
 		"users":         userDataFile,
 		"subscriptions": subDataFile,
-		"bridges":       bridgesDataFile,
 		"adblock":       adblockDataFile,
 	}
 
@@ -132,7 +129,6 @@ func (s *Server) handleGetBackupFull(w http.ResponseWriter, r *http.Request) {
 		"timestamp":     time.Now().UTC().Format(time.RFC3339),
 		"users":         readRawJSON(userDataFile),
 		"subscriptions": readRawJSON(subDataFile),
-		"bridges":       readRawJSON(bridgesDataFile),
 		"adblock":       readRawJSON(adblockDataFile),
 	}
 
@@ -226,7 +222,6 @@ func (s *Server) createBackupSnapshot() {
 		"timestamp":     time.Now().UTC().Format(time.RFC3339),
 		"users":         readRawJSON(userDataFile),
 		"subscriptions": readRawJSON(subDataFile),
-		"bridges":       readRawJSON(bridgesDataFile),
 		"adblock":       readRawJSON(adblockDataFile),
 	}
 

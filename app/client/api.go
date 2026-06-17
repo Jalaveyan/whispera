@@ -174,20 +174,6 @@ func startControlServer(ctx context.Context) {
 			}
 			json.NewEncoder(w).Encode(map[string]bool{"ok": true})
 
-		case "bridge":
-			var body struct {
-				Bridge string `json:"bridge"`
-			}
-			json.NewDecoder(r.Body).Decode(&body)
-			entry.mu.Lock()
-			entry.Bridge = body.Bridge
-			entry.Status = connStatusConnecting
-			entry.mu.Unlock()
-			if reconnectEntry != nil {
-				go reconnectEntry(entry)
-			}
-			json.NewEncoder(w).Encode(map[string]bool{"ok": true})
-
 		case "duplicate":
 			entry.mu.Lock()
 			newEntry := &TransportEntry{
@@ -198,7 +184,6 @@ func startControlServer(ctx context.Context) {
 				Obfuscated:       entry.Obfuscated,
 				ForceObfuscation: entry.ForceObfuscation,
 				SNI:              entry.SNI,
-				Bridge:           entry.Bridge,
 				RateLimitKB:      entry.RateLimitKB,
 				Mux:              entry.Mux,
 				Status:           connStatusConnecting,

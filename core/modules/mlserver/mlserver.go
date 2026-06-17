@@ -216,7 +216,6 @@ func (s *MLServer) registerRoutes() {
 	s.mux.HandleFunc("POST /models/load", s.handleModelsLoad)
 	s.mux.HandleFunc("GET /self-learning/status", s.handleSelfLearningStatus)
 	s.mux.HandleFunc("POST /predict/traffic", s.handlePredictTraffic)
-	s.mux.HandleFunc("POST /rank/bridges", s.handleRankBridges)
 	s.mux.HandleFunc("POST /network/analyze", s.handleNetworkAnalyze)
 	s.mux.HandleFunc("POST /recommend/transport", s.handleRecommendTransport)
 	s.mux.HandleFunc("POST /feedback/connection", s.handleFeedbackConnection)
@@ -355,39 +354,6 @@ func (s *MLServer) handlePredictTraffic(w http.ResponseWriter, r *http.Request) 
 	}
 	resp := s.engine.Predict(req.Data, req.Protocol, req.Direction)
 	s.jsonReply(w, resp)
-}
-
-func (s *MLServer) handleRankBridges(w http.ResponseWriter, r *http.Request) {
-	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
-	if err != nil {
-		http.Error(w, "read error", http.StatusBadRequest)
-		return
-	}
-
-	var bridges []map[string]interface{}
-	if err := json.Unmarshal(body, &bridges); err != nil {
-		var wrapped struct {
-			Bridges []map[string]interface{} `json:"bridges"`
-		}
-		if err2 := json.Unmarshal(body, &wrapped); err2 != nil {
-			http.Error(w, "invalid json", http.StatusBadRequest)
-			return
-		}
-		bridges = wrapped.Bridges
-	}
-
-	ranked := s.engine.RankBridges(bridges)
-
-	for i := range ranked {
-		if sc, ok := ranked[i]["score"].(float64); ok {
-			ranked[i]["ml_score"] = sc
-		}
-		if rs, ok := ranked[i]["reason"].(string); ok {
-			ranked[i]["ml_reason"] = rs
-		}
-	}
-
-	s.jsonReply(w, ranked)
 }
 
 func (s *MLServer) handleNetworkAnalyze(w http.ResponseWriter, r *http.Request) {

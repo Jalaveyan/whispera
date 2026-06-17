@@ -7,7 +7,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -652,34 +651,6 @@ func TestConnLimitMiddleware(t *testing.T) {
 	wg.Wait()
 }
 
-func TestBridgeRegister_BypassesJWTAuth(t *testing.T) {
-	s := newTestServer(t)
-	handler := s.buildHandler()
-
-	body := map[string]interface{}{
-		"address":    "10.0.0.1:8443",
-		"type":       "operator",
-		"public_key": "dGVzdA==",
-	}
-	rec := doRequest(handler, "POST", "/api/bridge-register", body, "")
-	body2 := rec.Body.String()
-	if rec.Code == http.StatusUnauthorized && (strings.Contains(body2, `"unauthorized"`) || strings.Contains(body2, `"session expired"`)) {
-		t.Fatal("bridge-register should bypass JWT auth middleware")
-	}
-}
-
-func TestBridgeHeartbeat_BypassesJWTAuth(t *testing.T) {
-	s := newTestServer(t)
-	handler := s.buildHandler()
-
-	body := map[string]interface{}{"bridge_id": "test-id"}
-	rec := doRequest(handler, "POST", "/api/bridge-heartbeat", body, "")
-	body2 := rec.Body.String()
-	if rec.Code == http.StatusUnauthorized && (strings.Contains(body2, `"unauthorized"`) || strings.Contains(body2, `"session expired"`)) {
-		t.Fatal("bridge-heartbeat should bypass JWT auth middleware")
-	}
-}
-
 func TestProtectedEndpoints_RequireAuth(t *testing.T) {
 	s := newTestServer(t)
 	handler := s.buildHandler()
@@ -696,7 +667,6 @@ func TestProtectedEndpoints_RequireAuth(t *testing.T) {
 		{"GET", "/api/users"},
 		{"GET", "/api/inbounds"},
 		{"GET", "/api/outbounds"},
-		{"GET", "/api/bridge-list"},
 		{"GET", "/api/subscriptions"},
 		{"GET", "/api/stats"},
 		{"GET", "/api/logs"},

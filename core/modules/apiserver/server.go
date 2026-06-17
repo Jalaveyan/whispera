@@ -271,8 +271,7 @@ func (s *Server) registerDefaultRoutes() {
 	s.Handle("POST /api/subscriptions/delete", s.handleDeleteSubscription)
 	s.Handle("GET /sub/{token}", s.handleServeSubscription)
 
-	s.Handle("POST /api/adblock/settings", s.handleAdblockSettings)
-	s.Handle("POST /api/v1/config/renew-cert", s.handleRenewCert)
+
 	s.Handle("GET /api/firewall/status", s.handleFirewallStatus)
 	s.Handle("POST /api/firewall/rules", s.handleFirewallAddRule)
 	s.Handle("DELETE /api/firewall/rules", s.handleFirewallDeleteRule)

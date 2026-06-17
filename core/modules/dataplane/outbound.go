@@ -369,9 +369,6 @@ func validateChainGraph(configs []config.OutboundConfig) error {
 		stack[tag] = true
 		defer delete(stack, tag)
 		for _, hop := range out.Chain {
-			if len(hop) > 7 && hop[:7] == "bridge:" {
-				continue
-			}
 			if err := visit(hop, stack); err != nil {
 				return err
 			}
