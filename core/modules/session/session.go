@@ -4,14 +4,12 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/binary"
-	"encoding/json"
 	"fmt"
 	"log"
 	"net"
 	"sync"
 	"sync/atomic"
 	"time"
-	"whispera/common/cache"
 	"whispera/common/runtime/base"
 	"whispera/common/runtime/events"
 	"whispera/common/runtime/interfaces"
@@ -80,8 +78,6 @@ type Manager struct {
 
 	cleanupStop    chan struct{}
 	currentCleanup int32
-
-	cache cache.Cache
 }
 
 type Session struct {
@@ -273,8 +269,6 @@ func (m *Manager) CreateSession(params interfaces.SessionParams) (interfaces.Ses
 	atomic.AddUint64(&m.totalCreated, 1)
 	m.UpdateActivity()
 
-	m.persistSession(session)
-
 	m.publishSessionEvent(interfaces.SessionEventCreated, id, nil)
 
 	return session, nil
@@ -305,8 +299,6 @@ func (m *Manager) removeSessionFromShard(shard *sessionShard, id uint32) {
 
 	delete(shard.sessions, id)
 	atomic.AddUint64(&m.totalRemoved, 1)
-
-	m.unpersistSession(id)
 
 	m.publishSessionEvent(interfaces.SessionEventRemoved, id, nil)
 }
@@ -642,43 +634,6 @@ func (st *Stream) IsClosed() bool {
 	st.mu.RLock()
 	defer st.mu.RUnlock()
 	return st.closed
-}
-
-type sessionData struct {
-	ID           uint32                 `json:"id"`
-	ClientAddr   string                 `json:"client_addr"`
-	CreatedAt    time.Time              `json:"created_at"`
-	LastActivity time.Time              `json:"last_activity"`
-	Metadata     map[string]interface{} `json:"metadata"`
-	UserID       string                 `json:"user_id,omitempty"`
-}
-
-func (m *Manager) persistSession(s *Session) {
-	s.mu.RLock()
-	data := sessionData{
-		ID:           s.id,
-		ClientAddr:   s.clientAddr.String(),
-		CreatedAt:    s.createdAt,
-		LastActivity: s.lastActivity,
-		Metadata:     s.metadata,
-	}
-	if uid, ok := s.metadata["user_id"].(string); ok {
-		data.UserID = uid
-	}
-	s.mu.RUnlock()
-
-	bytes, err := json.Marshal(data)
-	if err != nil {
-		return
-	}
-
-	key := fmt.Sprintf("session:%d", s.id)
-	_ = m.cache.Set(context.Background(), key, bytes, m.config.SessionTimeout)
-}
-
-func (m *Manager) unpersistSession(id uint32) {
-	key := fmt.Sprintf("session:%d", id)
-	_ = m.cache.Delete(context.Background(), key)
 }
 
 func Factory(cfg interface{}) (interfaces.Module, error) {

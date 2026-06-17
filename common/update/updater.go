@@ -65,10 +65,6 @@ func NewUpdater(cfg *Config) *Updater {
 	}
 }
 
-func (u *Updater) OnUpdateAvailable(fn func(VersionInfo))  { u.onUpdateAvailable = fn }
-func (u *Updater) OnUpdateApplied(fn func(string, string)) { u.onUpdateApplied = fn }
-func (u *Updater) OnUpdateFailed(fn func(string, error))   { u.onUpdateFailed = fn }
-
 func (u *Updater) Start() {
 	go func() {
 		ticker := time.NewTicker(u.config.CheckInterval)

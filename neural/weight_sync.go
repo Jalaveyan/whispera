@@ -61,19 +61,6 @@ func (a *RLTransportAgent) ImportWeights(layers []gnet.LayerDef) {
 	a.target = gnet.Clone(a.qNet)
 }
 
-func (a *RLSNIAgent) ExportWeights() []gnet.LayerDef {
-	a.mu.RLock()
-	defer a.mu.RUnlock()
-	return copyLayers(a.qNet)
-}
-
-func (a *RLSNIAgent) ImportWeights(layers []gnet.LayerDef) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	a.qNet.LoadWeights(layers)
-	a.target = gnet.Clone(a.qNet)
-}
-
 func (a *RLKeepaliveAgent) ExportWeights() []gnet.LayerDef {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
@@ -146,19 +133,6 @@ func (a *RLServerAgent) ExportWeights() []gnet.LayerDef {
 }
 
 func (a *RLServerAgent) ImportWeights(layers []gnet.LayerDef) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	a.qNet.LoadWeights(layers)
-	a.target = gnet.Clone(a.qNet)
-}
-
-func (a *RLTLSAgent) ExportWeights() []gnet.LayerDef {
-	a.mu.RLock()
-	defer a.mu.RUnlock()
-	return copyLayers(a.qNet)
-}
-
-func (a *RLTLSAgent) ImportWeights(layers []gnet.LayerDef) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.qNet.LoadWeights(layers)

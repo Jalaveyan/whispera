@@ -15,8 +15,6 @@ var (
 	ErrUserNotFound    = errors.New("user not found")
 	ErrUserExists      = errors.New("user already exists")
 	ErrInvalidPassword = errors.New("invalid password")
-	ErrQuotaExceeded   = errors.New("traffic quota exceeded")
-	ErrTooManyDevices  = errors.New("too many devices")
 	ErrUserInactive    = errors.New("user is inactive")
 )
 
@@ -142,74 +140,6 @@ func (db *DB) GetUserByEmail(ctx context.Context, email string) (*User, error) {
 	return &user, nil
 }
 
-func (db *DB) GetUserByTelegramID(ctx context.Context, telegramID int64) (*User, error) {
-	var user User
-	err := db.pool.QueryRow(ctx, `
-		SELECT u.id, u.email, u.public_key, u.private_key, u.plan_id,
-		       u.is_active, u.is_admin, u.traffic_used, u.valid_until,
-		       u.created_at, u.updated_at,
-		       COALESCE(p.name, 'Free') as plan_name,
-		       COALESCE(p.traffic_limit, 0) as traffic_limit,
-		       COALESCE(p.speed_limit, 0) as speed_limit,
-		       COALESCE(p.max_devices, 1) as max_devices,
-		       COALESCE(u.obfs_profile, 'http2'),
-		       COALESCE(u.marionette_profile, 'browser'),
-		       COALESCE(u.russian_service, 'vk'),
-		       u.telegram_id
-		FROM users u
-		LEFT JOIN plans p ON u.plan_id = p.id
-		WHERE u.telegram_id = $1
-	`, telegramID).Scan(
-		&user.ID, &user.Email, &user.PublicKey, &user.PrivateKey, &user.PlanID,
-		&user.IsActive, &user.IsAdmin, &user.TrafficUsed, &user.ValidUntil,
-		&user.CreatedAt, &user.UpdatedAt,
-		&user.PlanName, &user.TrafficLimit, &user.SpeedLimit, &user.MaxDevices,
-		&user.ObfsProfile, &user.MarionetteProfile, &user.RussianService,
-		&user.TelegramID,
-	)
-
-	if err != nil {
-		if err.Error() == "no rows in result set" {
-			return nil, ErrUserNotFound
-		}
-		return nil, fmt.Errorf("query user by telegram_id: %w", err)
-	}
-
-	return &user, nil
-}
-
-func (db *DB) GetUserByPublicKey(ctx context.Context, pubKey string) (*User, error) {
-	var user User
-	err := db.pool.QueryRow(ctx, `
-		SELECT u.id, u.email, u.public_key, u.plan_id,
-		       u.is_active, u.is_admin, u.traffic_used, u.valid_until,
-		       COALESCE(p.name, 'Free') as plan_name,
-		       COALESCE(p.traffic_limit, 0) as traffic_limit,
-		       COALESCE(p.speed_limit, 0) as speed_limit,
-		       COALESCE(p.max_devices, 1) as max_devices,
-		       COALESCE(u.obfs_profile, 'http2'),
-		       COALESCE(u.marionette_profile, 'browser'),
-		       COALESCE(u.russian_service, 'vk')
-		FROM users u
-		LEFT JOIN plans p ON u.plan_id = p.id
-		WHERE u.public_key = $1
-	`, pubKey).Scan(
-		&user.ID, &user.Email, &user.PublicKey, &user.PlanID,
-		&user.IsActive, &user.IsAdmin, &user.TrafficUsed, &user.ValidUntil,
-		&user.PlanName, &user.TrafficLimit, &user.SpeedLimit, &user.MaxDevices,
-		&user.ObfsProfile, &user.MarionetteProfile, &user.RussianService,
-	)
-
-	if err != nil {
-		if err.Error() == "no rows in result set" {
-			return nil, ErrUserNotFound
-		}
-		return nil, fmt.Errorf("query user by public_key: %w", err)
-	}
-
-	return &user, nil
-}
-
 func (db *DB) AuthenticateUser(ctx context.Context, email, password string) (*User, error) {
 	user, err := db.GetUserByEmail(ctx, email)
 	if err != nil {
@@ -234,72 +164,8 @@ func (db *DB) SetUserPublicKey(ctx context.Context, userID uuid.UUID, pubKey str
 	return err
 }
 
-func (db *DB) UpdateTrafficUsed(ctx context.Context, userID uuid.UUID, bytesUsed int64) error {
-	_, err := db.pool.Exec(ctx, `
-		UPDATE users SET traffic_used = traffic_used + $1, updated_at = NOW() WHERE id = $2
-	`, bytesUsed, userID)
-	return err
-}
-
-func (db *DB) CheckUserLimits(ctx context.Context, userID uuid.UUID) error {
-	var user struct {
-		IsActive         bool
-		TrafficUsed      int64
-		UserTrafficLimit int64
-		PlanTrafficLimit int64
-		MaxDevices       int
-		ValidUntil       *time.Time
-	}
-
-	err := db.pool.QueryRow(ctx, `
-		SELECT u.is_active, u.traffic_used, u.valid_until, u.traffic_limit,
-		       COALESCE(p.traffic_limit, 0), COALESCE(p.max_devices, 1)
-		FROM users u
-		LEFT JOIN plans p ON u.plan_id = p.id
-		WHERE u.id = $1
-	`, userID).Scan(&user.IsActive, &user.TrafficUsed, &user.ValidUntil,
-		&user.UserTrafficLimit, &user.PlanTrafficLimit, &user.MaxDevices)
-
-	if err != nil {
-		return ErrUserNotFound
-	}
-
-	if !user.IsActive {
-		return ErrUserInactive
-	}
-
-	if user.ValidUntil != nil && time.Now().After(*user.ValidUntil) {
-		return ErrUserInactive
-	}
-
-	effectiveLimit := user.PlanTrafficLimit
-	if user.UserTrafficLimit > 0 {
-		effectiveLimit = user.UserTrafficLimit
-	}
-
-	if effectiveLimit > 0 && user.TrafficUsed >= effectiveLimit {
-		return ErrQuotaExceeded
-	}
-
-	var sessionCount int
-	if err := db.pool.QueryRow(ctx, `SELECT COUNT(*) FROM sessions WHERE user_id = $1`, userID).Scan(&sessionCount); err != nil {
-		return fmt.Errorf("count user sessions: %w", err)
-	}
-
-	if sessionCount >= user.MaxDevices {
-		return ErrTooManyDevices
-	}
-
-	return nil
-}
-
 func (db *DB) SetAdmin(ctx context.Context, userID uuid.UUID, isAdmin bool) error {
 	_, err := db.pool.Exec(ctx, `UPDATE users SET is_admin = $1, updated_at = NOW() WHERE id = $2`, isAdmin, userID)
-	return err
-}
-
-func (db *DB) SetUserActive(ctx context.Context, userID uuid.UUID, active bool) error {
-	_, err := db.pool.Exec(ctx, `UPDATE users SET is_active = $1, updated_at = NOW() WHERE id = $2`, active, userID)
 	return err
 }
 

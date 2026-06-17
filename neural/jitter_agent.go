@@ -140,7 +140,6 @@ func (a *RLJitterAgent) RecordOutcome(quality float64) {
 		NextState: state, Done: true,
 	})
 	step := atomic.AddInt64(&a.stepCount, 1)
-	_ = a.epsilon
 	a.mu.Unlock()
 
 	if step%jTrainEvery == 0 {
@@ -173,6 +172,4 @@ func (a *RLJitterAgent) trainStep() {
 		saveRLMiniPolicy(a.modelDir, "rl_jitter.json", a.qNet.Layers, a.epsilon, atomic.LoadInt64(&a.stepCount))
 	}
 	a.mu.Unlock()
-	if cnt%10 == 0 {
-	}
 }

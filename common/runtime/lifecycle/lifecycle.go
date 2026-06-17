@@ -189,30 +189,15 @@ func (m *Manager) Reload() error {
 func (m *Manager) Context() context.Context {
 	return m.ctx
 }
-func (m *Manager) Events() events.EventBus {
-	return m.eventBus
-}
 
 func (m *Manager) Registry() registry.Registry {
 	return m.registry
-}
-
-func (m *Manager) OnStart(cb func() error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.onStart = append(m.onStart, cb)
 }
 
 func (m *Manager) OnStop(cb func() error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.onStop = append(m.onStop, cb)
-}
-
-func (m *Manager) OnReload(cb func() error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.onReload = append(m.onReload, cb)
 }
 
 func (m *Manager) OnShutdown(cb func()) {

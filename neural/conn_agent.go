@@ -178,7 +178,6 @@ func (a *RLConnAgent) RecordOutcome(d *ConnDecision, quality float64) {
 		Done:      true,
 	})
 	step := atomic.AddInt64(&a.stepCount, 1)
-	_ = a.epsilon
 	a.mu.Unlock()
 
 	if step%connTrainEvery == 0 {
@@ -201,12 +200,8 @@ func (a *RLConnAgent) trainStep() {
 	dqnTrainBatchAdamPER(a.qNet, a.target, a.adam, a.prb, batch, idxs, connNumActions, connGamma, 0.001, defaultEntropyCoeff)
 	a.temperature = math.Max(MinTemp, a.temperature*TempDecay)
 	cnt := atomic.AddInt64(&a.trainCount, 1)
-	_ = a.temperature
-	_ = a.epsilon
 	if cnt%100 == 0 {
 		saveRLMiniPolicy(a.modelDir, "rl_conn_v2.json", a.qNet.Layers, a.epsilon, atomic.LoadInt64(&a.stepCount))
 	}
 	a.mu.Unlock()
-	if cnt%10 == 0 {
-	}
 }

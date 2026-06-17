@@ -13,8 +13,6 @@ import (
 	"sync/atomic"
 	"time"
 	"whispera/common/runtime/base"
-	"whispera/common/runtime/events"
-	"whispera/common/runtime/interfaces"
 )
 
 const (
@@ -122,35 +120,6 @@ func NewResolver(cfg *Config) *Resolver {
 	return r
 }
 
-func (r *Resolver) Init(ctx context.Context, cfg interfaces.ModuleConfig) error {
-	if err := r.Module.Init(ctx, cfg); err != nil {
-		return err
-	}
-	if dnsCfg, ok := cfg.(*Config); ok {
-		r.config = dnsCfg
-	}
-	return nil
-}
-
-func (r *Resolver) Start() error {
-	if err := r.Module.Start(); err != nil {
-		return err
-	}
-	go r.cacheCleanupLoop()
-	r.SetHealthy(true, fmt.Sprintf("DNS resolver running (upstream: %s)", r.config.Upstream))
-	r.PublishEvent(events.EventTypeModuleStarted, map[string]interface{}{
-		"upstream": r.config.Upstream,
-		"cache":    r.config.CacheEnabled,
-		"fake_ip":  r.config.FakeIPEnabled,
-	})
-	return nil
-}
-
-func (r *Resolver) Stop() error {
-	r.PublishEvent(events.EventTypeModuleStopped, nil)
-	return r.Module.Stop()
-}
-
 func (r *Resolver) Resolve(ctx context.Context, domain string) ([]net.IP, error) {
 	if ip := net.ParseIP(domain); ip != nil {
 		return []net.IP{ip}, nil
@@ -204,42 +173,6 @@ func (r *Resolver) Resolve(ctx context.Context, domain string) ([]net.IP, error)
 	return ips, nil
 }
 
-func (r *Resolver) ResolveToString(ctx context.Context, domain string) (string, error) {
-	ips, err := r.Resolve(ctx, domain)
-	if err != nil {
-		return "", err
-	}
-	if len(ips) == 0 {
-		return "", fmt.Errorf("no IPs for domain: %s", domain)
-	}
-	return ips[0].String(), nil
-}
-
-func (r *Resolver) LookupFakeIP(ip net.IP) (string, bool) {
-	r.fakeIPMu.Lock()
-	defer r.fakeIPMu.Unlock()
-	domain, ok := r.fakeIPReverse[ip.String()]
-	return domain, ok
-}
-
-func (r *Resolver) AddBlockedDomain(domain string) {
-	r.blockListMu.Lock()
-	r.blockList[domain] = true
-	r.blockListMu.Unlock()
-}
-
-func (r *Resolver) RemoveBlockedDomain(domain string) {
-	r.blockListMu.Lock()
-	delete(r.blockList, domain)
-	r.blockListMu.Unlock()
-}
-
-func (r *Resolver) ClearCache() {
-	r.cacheMu.Lock()
-	r.cache = make(map[string]*cacheEntry)
-	r.cacheMu.Unlock()
-}
-
 func (r *Resolver) SetDialContext(dialFn func(ctx context.Context, network, address string) (net.Conn, error)) {
 	r.dialCtxMu.Lock()
 	r.dialCtx = dialFn
@@ -260,26 +193,6 @@ func (r *Resolver) GetUpstream() string {
 	r.cacheMu.RLock()
 	defer r.cacheMu.RUnlock()
 	return r.config.Upstream
-}
-
-func (r *Resolver) HealthCheck() interfaces.HealthStatus {
-	status := r.Module.HealthCheck()
-	status.Details["upstream"] = r.config.Upstream
-	status.Details["queries"] = atomic.LoadUint64(&r.queries)
-	status.Details["cache_hits"] = atomic.LoadUint64(&r.cacheHits)
-	status.Details["cache_misses"] = atomic.LoadUint64(&r.cacheMisses)
-	status.Details["blocked"] = atomic.LoadUint64(&r.blocked)
-	status.Details["errors"] = atomic.LoadUint64(&r.errors)
-	r.cacheMu.RLock()
-	status.Details["cache_size"] = len(r.cache)
-	r.cacheMu.RUnlock()
-	r.fakeIPMu.Lock()
-	status.Details["fake_ip_count"] = len(r.fakeIPMap)
-	r.fakeIPMu.Unlock()
-	r.blockListMu.RLock()
-	status.Details["block_list_size"] = len(r.blockList)
-	r.blockListMu.RUnlock()
-	return status
 }
 
 func (r *Resolver) isBlocked(domain string) bool {
@@ -500,30 +413,6 @@ func (r *Resolver) resolveTCPDNS(ctx context.Context, dialFn func(context.Contex
 		return nil, fmt.Errorf("tcp dns read body: %w", err)
 	}
 	return parseDNSResponse(resp)
-}
-
-func (r *Resolver) cacheCleanupLoop() {
-	ticker := time.NewTicker(time.Minute)
-	defer ticker.Stop()
-	for r.IsRunning() {
-		select {
-		case <-r.Context().Done():
-			return
-		case <-ticker.C:
-			r.cleanupCache()
-		}
-	}
-}
-
-func (r *Resolver) cleanupCache() {
-	r.cacheMu.Lock()
-	defer r.cacheMu.Unlock()
-	now := time.Now()
-	for key, entry := range r.cache {
-		if now.After(entry.ExpiresAt) {
-			delete(r.cache, key)
-		}
-	}
 }
 
 func buildDNSMsg(domain string) []byte {

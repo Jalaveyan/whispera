@@ -400,9 +400,6 @@ func (m *Manager) ExportMLWeights() *neural.WeightSnapshot {
 	if m.transportAgent != nil {
 		snap.Transport = m.transportAgent.ExportWeights()
 	}
-	if m.sniAgent != nil {
-		snap.SNI = m.sniAgent.ExportWeights()
-	}
 	if m.kaAgent != nil {
 		snap.Keepalive = m.kaAgent.ExportWeights()
 	}
@@ -421,9 +418,7 @@ func (m *Manager) ExportMLWeights() *neural.WeightSnapshot {
 	if m.serverAgent != nil {
 		snap.Server = m.serverAgent.ExportWeights()
 	}
-	if m.tlsAgent != nil {
-		snap.TLS = m.tlsAgent.ExportWeights()
-	}
+
 	return snap
 }
 
@@ -433,9 +428,6 @@ func (m *Manager) ImportMLWeights(snap *neural.WeightSnapshot) {
 	}
 	if m.transportAgent != nil && len(snap.Transport) > 0 {
 		m.transportAgent.ImportWeights(snap.Transport)
-	}
-	if m.sniAgent != nil && len(snap.SNI) > 0 {
-		m.sniAgent.ImportWeights(snap.SNI)
 	}
 	if m.kaAgent != nil && len(snap.Keepalive) > 0 {
 		m.kaAgent.ImportWeights(snap.Keepalive)
@@ -454,8 +446,5 @@ func (m *Manager) ImportMLWeights(snap *neural.WeightSnapshot) {
 	}
 	if m.serverAgent != nil && len(snap.Server) > 0 {
 		m.serverAgent.ImportWeights(snap.Server)
-	}
-	if m.tlsAgent != nil && len(snap.TLS) > 0 {
-		m.tlsAgent.ImportWeights(snap.TLS)
 	}
 }

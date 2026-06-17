@@ -171,9 +171,6 @@ type NativeMLEngine struct {
 	profileHitStreak int32
 
 	activeConn int32
-
-	sniPoolMu sync.RWMutex
-	sniPool   []string
 }
 
 func NewNativeMLEngine(modelDir string) *NativeMLEngine {
@@ -1073,51 +1070,6 @@ func (e *NativeMLEngine) SetConnectionActive(active bool) {
 	}
 }
 
-func (e *NativeMLEngine) IsConnectionActive() bool {
-	return atomic.LoadInt32(&e.activeConn) == 1
-}
-
-func (e *NativeMLEngine) QualitySamplesReady() bool {
-	e.mu.RLock()
-	sz := e.replayBuf.size()
-	e.mu.RUnlock()
-	return sz >= RetrainThreshold
-}
-
-func (e *NativeMLEngine) AddSample(data []byte, classID, dpiType int) {
-	if !e.IsConnectionActive() {
-		return
-	}
-	features := e.ExtractFeatures(data)
-	q := sampleQuality(features)
-	if q < 0.01 {
-		return
-	}
-	sample := TrainingSample{Features: features, ClassID: classID, DPIType: dpiType, IsLabeled: true, Quality: q}
-
-	e.mu.Lock()
-	e.replayBuf.add(sample)
-
-	n := e.featureNorm
-	count := float64(n.Samples + 1)
-	for i := range features {
-		if i >= len(n.Mean) {
-			break
-		}
-		oldMean := n.Mean[i]
-		n.Mean[i] += (features[i] - oldMean) / count
-		n.Std[i] = math.Sqrt(n.Std[i]*n.Std[i]*(count-1)/count + (features[i]-oldMean)*(features[i]-n.Mean[i])/count)
-		if n.Std[i] < 1e-8 {
-			n.Std[i] = 1.0
-		}
-	}
-	n.Samples++
-	e.mu.Unlock()
-
-	atomic.AddInt64(&e.sampleCount, 1)
-	atomic.AddInt64(&e.samplesAfterTrain, 1)
-}
-
 func (e *NativeMLEngine) Train(epochs int) (int, float64) {
 	if !atomic.CompareAndSwapInt32(&e.trainingActive, 0, 1) {
 		return 0, 0
@@ -1672,97 +1624,6 @@ func netParams(net *GorgoniaNet) int {
 		total += l.InSize*l.OutSize + l.OutSize
 	}
 	return total
-}
-
-func extractTLSSNI(data []byte) string {
-	if len(data) < 43 {
-		return ""
-	}
-	if data[0] != 0x16 {
-		return ""
-	}
-	if len(data) < 5 {
-		return ""
-	}
-	recLen := int(data[3])<<8 | int(data[4])
-	if len(data) < 5+recLen {
-		return ""
-	}
-	hs := data[5:]
-	if len(hs) < 4 || hs[0] != 0x01 {
-		return ""
-	}
-	hsLen := int(hs[1])<<16 | int(hs[2])<<8 | int(hs[3])
-	if len(hs) < 4+hsLen {
-		return ""
-	}
-	hello := hs[4 : 4+hsLen]
-	if len(hello) < 38 {
-		return ""
-	}
-	pos := 2 + 32
-	if pos >= len(hello) {
-		return ""
-	}
-	sessLen := int(hello[pos])
-	pos += 1 + sessLen
-	if pos+2 > len(hello) {
-		return ""
-	}
-	csLen := int(hello[pos])<<8 | int(hello[pos+1])
-	pos += 2 + csLen
-	if pos+1 > len(hello) {
-		return ""
-	}
-	compLen := int(hello[pos])
-	pos += 1 + compLen
-	if pos+2 > len(hello) {
-		return ""
-	}
-	extTotal := int(hello[pos])<<8 | int(hello[pos+1])
-	pos += 2
-	end := pos + extTotal
-	if end > len(hello) {
-		return ""
-	}
-	for pos+4 <= end {
-		extType := int(hello[pos])<<8 | int(hello[pos+1])
-		extLen := int(hello[pos+2])<<8 | int(hello[pos+3])
-		pos += 4
-		if extType == 0x0000 && extLen >= 5 && pos+extLen <= end {
-			listLen := int(hello[pos])<<8 | int(hello[pos+1])
-			if listLen+2 <= extLen && hello[pos+2] == 0x00 {
-				nameLen := int(hello[pos+3])<<8 | int(hello[pos+4])
-				if nameLen+5 <= extLen && pos+5+nameLen <= end {
-					return string(hello[pos+5 : pos+5+nameLen])
-				}
-			}
-		}
-		pos += extLen
-	}
-	return ""
-}
-
-func (e *NativeMLEngine) StoreSNI(sni string) {
-	if sni == "" {
-		return
-	}
-	e.sniPoolMu.Lock()
-	defer e.sniPoolMu.Unlock()
-	for _, s := range e.sniPool {
-		if s == sni {
-			return
-		}
-	}
-	e.sniPool = append(e.sniPool, sni)
-}
-
-func (e *NativeMLEngine) GetSNIPool() []string {
-	e.sniPoolMu.RLock()
-	defer e.sniPoolMu.RUnlock()
-	out := make([]string, len(e.sniPool))
-	copy(out, e.sniPool)
-	return out
 }
 
 func (e *NativeMLEngine) GetCurrentDPILevel() (dpiType int, confidence float64) {

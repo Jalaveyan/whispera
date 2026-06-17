@@ -140,7 +140,6 @@ func (a *RLChunkAgent) RecordOutcome(quality float64) {
 		NextState: state, Done: true,
 	})
 	step := atomic.AddInt64(&a.stepCount, 1)
-	_ = a.epsilon
 	a.mu.Unlock()
 
 	if step%chunkTrainEvery == 0 {
@@ -169,12 +168,8 @@ func (a *RLChunkAgent) trainStep() {
 	dqnTrainBatchAdamPER(a.qNet, a.target, a.adam, a.prb, batch, idxs, chunkNumActions, chunkGamma, 0.001, defaultEntropyCoeff)
 	a.temperature = math.Max(MinTemp, a.temperature*TempDecay)
 	cnt := atomic.AddInt64(&a.trainCount, 1)
-	_ = a.temperature
-	_ = a.epsilon
 	if cnt%100 == 0 {
 		saveRLMiniPolicy(a.modelDir, "rl_chunk.json", a.qNet.Layers, a.epsilon, atomic.LoadInt64(&a.stepCount))
 	}
 	a.mu.Unlock()
-	if cnt%10 == 0 {
-	}
 }

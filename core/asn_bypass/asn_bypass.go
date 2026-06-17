@@ -68,10 +68,6 @@ var SNICategories = []SNICategory{
 	},
 }
 
-func PickRandomSNI() (string, time.Duration) {
-	return pickRandomSNI()
-}
-
 func (d *Dialer) DialTCP(ctx context.Context, network, addr string) (net.Conn, error) {
 	conn, err := d.dialDirect(ctx, network, addr)
 	if err != nil {
@@ -340,7 +336,7 @@ func (d *Dialer) dialWithStrategy(ctx context.Context, network, addr string, str
 	}
 }
 
-func (d *Dialer) dialDirect(ctx context.Context, network, addr string) (net.Conn, error) {
+func (d *Dialer) dialDirect(ctx context.Context, _, addr string) (net.Conn, error) {
 	conn, err := (&net.Dialer{
 		KeepAlive: 30 * time.Second,
 	}).DialContext(ctx, "tcp4", addr)
@@ -848,13 +844,6 @@ func (d *Dialer) CreateHTTPClient() *http.Client {
 		},
 		Timeout: 30 * time.Second,
 	}
-}
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }
 
 type interceptorConn struct {

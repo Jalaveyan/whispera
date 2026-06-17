@@ -90,6 +90,3 @@ func SetGlobal(db *DB) {
 func Global() *DB {
 	return globalDB
 }
-func IsEnabled() bool {
-	return globalDB != nil
-}

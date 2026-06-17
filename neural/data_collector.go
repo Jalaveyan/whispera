@@ -15,8 +15,6 @@ import (
 	"whispera/neural/types"
 )
 
-const minQualitySamplesBeforeUse = 500
-
 type DataCollector struct {
 	samples      []TrafficSample
 	mu           sync.RWMutex
@@ -154,10 +152,6 @@ func (dc *DataCollector) SetConnectionActive(active bool) {
 
 func (dc *DataCollector) IsConnectionActive() bool {
 	return atomic.LoadUint32(&dc.connectionActive) == 1
-}
-
-func (dc *DataCollector) QualitySamplesReady() bool {
-	return atomic.LoadUint64(&dc.qualitySamples) >= minQualitySamplesBeforeUse
 }
 
 func isGarbageSample(sample TrafficSample) bool {

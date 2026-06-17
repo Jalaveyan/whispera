@@ -26,7 +26,6 @@ import (
 	"whispera/core/modules/killswitch"
 	"whispera/core/protocol"
 	"whispera/neural"
-	"whispera/neural/evasion"
 )
 
 var log = logger.Module("tunnel")
@@ -164,10 +163,9 @@ type Config struct {
 
 	CustomDialFn func(ctx context.Context) (net.Conn, error)
 
-	DesyncConfig *evasion.DesyncConfig
-	CustomSNI    string
-	NoSNI        bool
-	RateLimitKB  int
+	CustomSNI   string
+	NoSNI       bool
+	RateLimitKB int
 
 	EnableIPSpoof  bool
 	SpoofSourceIPs []string
@@ -252,13 +250,6 @@ func (m *Manager) streamLoad(streamID uint16) (chan *buf.Buffer, bool) {
 	return ch, ok
 }
 
-func (m *Manager) streamDelete(streamID uint16) {
-	s := &m.streamShards[streamID&streamShardMask]
-	s.mu.Lock()
-	delete(s.m, streamID)
-	s.mu.Unlock()
-}
-
 func (m *Manager) initStreamShards() {
 	for i := range m.streamShards {
 		m.streamShards[i].m = make(map[uint16]chan *buf.Buffer)
@@ -318,7 +309,6 @@ type Manager struct {
 	russianSNIsMu   sync.RWMutex
 	currentSNI      string
 	lastRotation    time.Time
-	sniAgent        *neural.RLSNIAgent
 	connAgent       *neural.RLConnAgent
 	connAgentStop   chan struct{}
 	rateSamplerStop chan struct{}
@@ -336,7 +326,6 @@ type Manager struct {
 	jitterAgent     *neural.RLJitterAgent
 	serverAgent     *neural.RLServerAgent
 	chunkAgent      *neural.RLChunkAgent
-	tlsAgent        *neural.RLTLSAgent
 	tspuDetector    *neural.TSPUDetector
 
 	boFailCount     int32
@@ -479,7 +468,6 @@ func New(cfg *Config) (*Manager, error) {
 	m.jitterAgent = neural.NewRLJitterAgent(cfg.SNIModelDir)
 	m.serverAgent = neural.NewRLServerAgent(cfg.SNIModelDir)
 	m.chunkAgent = neural.NewRLChunkAgent(cfg.SNIModelDir)
-	m.tlsAgent = neural.NewRLTLSAgent(cfg.SNIModelDir)
 	m.tspuDetector = neural.NewTSPUDetector()
 
 	go m.runWeightSnapshotLoop()
@@ -904,9 +892,6 @@ func (m *Manager) Reconnect(ctx context.Context) error {
 		dialLatency := float64(time.Since(dialStart).Milliseconds())
 		if err == nil {
 			m.mlSendFeedback(usedTransport, true, dialLatency)
-			if m.sniAgent != nil {
-				m.sniAgent.RecordOutcome(true, dialLatency)
-			}
 			if m.boAgent != nil {
 				m.boAgent.RecordOutcome(true)
 			}
@@ -922,13 +907,6 @@ func (m *Manager) Reconnect(ctx context.Context) error {
 			return nil
 		}
 
-		m.mlSendFeedback(usedTransport, false, dialLatency)
-		if m.sniAgent != nil {
-			m.sniAgent.RecordOutcome(false, dialLatency)
-			if m.sniAgent.ShouldRotate() {
-				go m.RotateSNI()
-			}
-		}
 		if m.tspuDetector != nil {
 			errStr := err.Error()
 			dialDur := time.Duration(dialLatency) * time.Millisecond
@@ -1986,85 +1964,6 @@ func (m *Manager) DialStream(ctx context.Context, network, addr string) (net.Con
 
 	return m.OpenStream(ctx, proto, host, port)
 }
-
-type StreamConn struct {
-	streamID  uint16
-	manager   *Manager
-	readCh    chan *buf.Buffer
-	readBuf   []byte
-	done      chan struct{}
-	closeOnce sync.Once
-	local     net.Addr
-	remote    net.Addr
-}
-
-func (s *StreamConn) Read(b []byte) (n int, err error) {
-	if len(s.readBuf) > 0 {
-		n = copy(b, s.readBuf)
-		s.readBuf = s.readBuf[n:]
-		return n, nil
-	}
-	select {
-	case frame, ok := <-s.readCh:
-		if !ok {
-			return 0, io.EOF
-		}
-		data := frame.Bytes()
-		if len(data) <= FrameHeaderSize {
-			frame.Release()
-			return 0, nil
-		}
-		payload := data[FrameHeaderSize:]
-		n = copy(b, payload)
-		if n < len(payload) {
-			s.readBuf = append(s.readBuf[:0], payload[n:]...)
-		}
-		frame.Release()
-		return n, nil
-	case <-s.done:
-		return 0, io.EOF
-	}
-}
-
-func (s *StreamConn) Write(b []byte) (n int, err error) {
-	if len(b) == 0 {
-		return 0, nil
-	}
-	frameLen := FrameHeaderSize + len(b)
-	fb := buf.NewSize(frameLen)
-	frame := fb.Extend(frameLen)
-	binary.BigEndian.PutUint16(frame[0:2], s.streamID)
-	frame[2] = 0x02
-	frame[3] = 0x00
-	binary.BigEndian.PutUint32(frame[4:8], uint32(len(b)))
-	copy(frame[8:], b)
-	sendErr := s.manager.Send(frame)
-	fb.Release()
-	if sendErr != nil {
-		return 0, sendErr
-	}
-	return len(b), nil
-}
-
-func (s *StreamConn) Close() error {
-	s.closeOnce.Do(func() {
-		s.manager.streamDelete(s.streamID)
-		close(s.done)
-	})
-
-	frame := make([]byte, FrameHeaderSize)
-	binary.BigEndian.PutUint16(frame[0:2], s.streamID)
-	frame[2] = FrameTypeClose
-	binary.BigEndian.PutUint32(frame[4:8], 0)
-
-	return s.manager.Send(frame)
-}
-
-func (s *StreamConn) LocalAddr() net.Addr                { return s.local }
-func (s *StreamConn) RemoteAddr() net.Addr               { return s.remote }
-func (s *StreamConn) SetDeadline(t time.Time) error      { return nil }
-func (s *StreamConn) SetReadDeadline(t time.Time) error  { return nil }
-func (s *StreamConn) SetWriteDeadline(t time.Time) error { return nil }
 
 func (m *Manager) startKeepalive() {
 	m.stopKeepalive()

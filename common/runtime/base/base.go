@@ -2,9 +2,7 @@ package base
 
 import (
 	"context"
-	"io"
 	"log"
-	"net/http"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -447,16 +445,4 @@ func (m *Metrics) Snapshot() map[string]interface{} {
 		result["gauge."+k] = v
 	}
 	return result
-}
-
-func GetPublicIP() string {
-	client := http.Client{Timeout: 5 * time.Second}
-	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://api.ipify.org?format=text", nil)
-	resp, err := client.Do(req)
-	if err != nil {
-		return ""
-	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
-	return string(body)
 }

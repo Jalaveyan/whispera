@@ -177,6 +177,4 @@ func (a *RLKeepaliveAgent) trainStep() {
 		saveRLMiniPolicy(a.modelDir, "rl_ka.json", a.qNet.Layers, a.epsilon, atomic.LoadInt64(&a.stepCount))
 	}
 	a.mu.Unlock()
-	if cnt%10 == 0 {
-	}
 }

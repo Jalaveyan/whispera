@@ -39,16 +39,6 @@ func (m *Manager) selectNewSNILocked() string {
 		return m.currentSNI
 	}
 
-	if m.sniAgent != nil {
-		state := m.sniAgent.EncodeState(0, 0, 0, false, 0)
-		domain, _ := m.sniAgent.Select(state)
-		if domain != "" {
-			m.currentSNI = domain
-			m.lastRotation = time.Now()
-			return m.currentSNI
-		}
-	}
-
 	idxBig, err := rand.Int(rand.Reader, big.NewInt(int64(len(pool))))
 	if err != nil {
 		m.currentSNI = pool[0]
