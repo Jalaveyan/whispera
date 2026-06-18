@@ -50,8 +50,6 @@ import (
 	"golang.org/x/crypto/bcrypt"
 	"golang.org/x/crypto/curve25519"
 	"golang.org/x/net/proxy"
-
-	_ "whispera/core/modules/transport/grpc"
 )
 
 var log = logger.Module("server")
