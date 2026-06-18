@@ -4,16 +4,19 @@ It is a fast, easy-to-use and easy-to-install censorship-bypassing proxy server 
 
 ## Install and Update
 
-### How to install? (Ubuntu/Debian/Arch)
+### How to install? (Ubuntu/Debian/Arch) ( only root )
 
 ```bash
-sudo bash <(curl -sL https://raw.githubusercontent.com/Jalaveyan/Whispera/main/install.sh)
+bash <(curl -sL https://raw.githubusercontent.com/Jalaveyan/Whispera/main/install.sh)
 ```
 
 ### How to update?
 
 ```bash
 bash menu
+```
+
+```bash
 Select item 18
 ```
 
