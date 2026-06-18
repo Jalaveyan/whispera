@@ -16,9 +16,7 @@ bash <(curl -sL https://raw.githubusercontent.com/Jalaveyan/Whispera/main/instal
 bash menu
 ```
 
-```bash
 Select item 18
-```
 
 ### Create keys, subscriptions, and view all keys
 
