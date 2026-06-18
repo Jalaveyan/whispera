@@ -4,17 +4,38 @@ It is a fast, easy-to-use and easy-to-install censorship-bypassing proxy server 
 
 ## Install and Update
 
-### How to install? (Ubuntu/Debian/Arch)
+### How to install? (Ubuntu/Debian/Arch) ( only root )
 
 ```bash
-sudo bash <(curl -sL https://raw.githubusercontent.com/Jalaveyan/Whispera/main/install.sh)
+bash <(curl -sL https://raw.githubusercontent.com/Jalaveyan/Whispera/main/install.sh)
 ```
 
 ### How to update?
 
 ```bash
 bash menu
+```
+
 Select item 18
+
+### Create keys, subscriptions, and view all keys
+
+This is for creating a key
+
+```bash
+whispera create-key -user <your_username> -port <your_port>
+```
+
+This is for creating a sub
+
+```bash
+whispera generate-sub -name "" -users <john, ...> 
+```
+
+This allows you to view all keys
+
+```bash
+whispera view-keys
 ```
 
 ## Build from source
@@ -36,181 +57,55 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
 ## Configuration example
 
 ```yaml
-server:
-    name: whispera-server
-    listen_addr: 0.0.0.0:443
-    tun_name: tun0
-    mtu: 1420
-    workers: 8
-    graceful_stop: 30000000000
-    private_key: YOUR_PRIVATE_KEY
-    uuid: ""
-    public_url: ""
 transport:
-    udp:
-        enabled: true
-        listen_addr: :8443
-        max_packet_size: 65535
-        buffer_size: 4096
-        workers: 8
-    tcp:
-        enabled: true
-        listen_addr: :8443
-    websocket:
-        enabled: false
-        listen_addr: :8080
-        path: ""
-    xhttp:
-        enabled: false
-        listen_addr: ""
-        mode: ""
-        max_concurrency: 0
-session:
-    max_sessions: 10000
-    session_timeout: 86400000000000
-    cleanup_interval: 60000000000
-    keepalive_interval: 30000000000
-    rekey_interval: 43200000000000
-routing:
-    rules_file: ""
-    default_route: direct
-    geo:
-        enabled: false
-        geoip_file: ""
-        geosite_file: ""
-        update_interval: 0
-    dns:
-        enabled: false
-        upstream: ""
-        fakeip_range: ""
+  udp:
+    enabled: true
+    listen_addr: ":8443"
+    max_packet_size: 65535
+    buffer_size: 4194304
+    workers: 16
+
 obfuscation:
-    enabled: true
-    profile: default
-    threat_level: 5
-    padding:
-        enabled: false
-        min_size: 0
-        max_size: 0
-    chaff:
-        enabled: false
-        interval: 0
-        min_size: 0
-        max_size: 0
-api:
-    enabled: true
-    listen_addr: :8080
-    auth_token: YOUR_AUTH_TOKEN
-    web_root: ""
-    enable_cors: true
-    allowed_origins: []
-    tls_cert: ""
-    tls_key: ""
-    login_rate_limit: 5
-metrics:
-    enabled: true
-    listen_addr: :9090
-    path: /metrics
+  enabled: true
+  ml_enabled: true
+  default_profile: "ml"
+
+network:
+  tun_name: "Whispera"
+  tun_ip: "198.18.0.1"
+  tun_mtu: 1500
+  dns: "1.1.1.1"
+
+session:
+  max_sessions: 10000
+  idle_timeout: 300
+  cleanup_interval: 60
+
+rate_limit:
+  handshake: 100
+  packets: 10000000
+
 logging:
-    level: info
-    format: text
-    output: stdout
-    file: ""
-relay:
-    max_streams: 10000
-    enable_tcp: true
-    enable_udp: true
-    debug: false
-    upstream_proxy: ""
+  level: "info"
+  format: "json"
+
+api:
+  enabled: true
+  listen_addr: ":8080"
+  web_root: ""
+  enable_cors: true
+  auth_token: "whispera_admin_token"
+  admin_username: "admin"
+  admin_password: "admin"
+
 chameleon:
-    ### chameleon need a tls cert!!!
-    enabled: true
-    listen_addr: YOUR PORT
-    tls_cert: /etc/whispera/panel.crt
-    tls_key: /etc/whispera/panel.key
-    domain: ""
-    acme_dir: /var/lib/whispera/acme
-    decoy_origin: ""
-    gan_iface: ""
-    gan_port: 0
-    gan_max_padding: 0
-    brutal_mbps: 0
-inbounds:
-    - tag: default-inbound
-      protocol: whispera
-      listen: 0.0.0.0
-      port: 443
-      settings: {}
-      stream_settings:
-        network: tcp
-        security: none
-        tls:
-            cert_file: ""
-            key_file: ""
-      sniffing:
-        enabled: false
-        dest_override: []
-outbounds: []
-relay_mode: ""
-upstream_server: ""
-bridge:
-    auto_register: false
-    type: ""
-    provider: ""
-    region: ""
-    registration_token: YOUR_REG_TOKEN
-vk_relay:
-    enabled: false
-    mode: ""
-    token: ""
-    group_id: 0
-    peer_id: 0
-    server_mode: false
-    stream_key: ""
-stealth_mode: ""
-cache:
-    redis_url: redis://127.0.0.1:6379
-database:
-    postgres_url: "your link postgtes db"
-    max_conns: 25
-    min_conns: 5
-notifications:
-    enabled: false
-    token: YOUR_TELEGRAM_BOT_TOKEN
-    chat_id: ""
-bot:
-    enabled: false
-    token: YOUR_TELEGRAM_BOT_TOKEN
-    debug: false
-    admin_id: 0
-    monitor_admin_ids: []
-nats:
-    enabled: false
-    url: ""
-    prefix: ""
-update:
-    enabled: false
-    manifest_url: ""
-    public_key: ""
-    channel: ""
-    check_interval: 0
-correlation:
-    enabled: false
-    padding: false
-    jitter: false
-    cover_traffic: false
-    max_jitter_ms: 0
-    cover_rate_ms: 0
-    rate_bytes_per_sec: 0
-sni_bypass:
-    enabled: false
-    mode: ""
-    fragment_size: 0
-    fingerprint: ""
-ml:
-    enabled: true
-    server_url: https://127.0.0.1:8000
-    listen_addr: ""
-    token_file: ""
+  enabled: true
+  listen_addr: ":443"
+  domain: ""
+  acme_dir: "/var/lib/whispera/acme"
+  tls_cert: ""
+  tls_key: ""
+  decoy_origin: ""
 ```
 
 ## If you need a cascade, I recommend using this instruction
@@ -254,10 +149,14 @@ outbounds:
     settings:
       chameleon_secret: "SECRET_EXIT"
     chain: ["relay1", "relay2"]
+```
 
-# update checksum and restart
-# whispera update-checksum /etc/whispera/config.yaml
-# systemctl restart whispera
+Next command data
+
+```bash
+update checksum and restart
+whispera update-checksum /etc/whispera/config.yaml
+systemctl restart whispera
 ```
 
 Check
