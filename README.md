@@ -17,6 +17,26 @@ bash menu
 Select item 18
 ```
 
+### Create keys, subscriptions, and view all keys
+
+This is for creating a key
+
+```bash
+whispera create-key -user <your_username> -port <your_port>
+```
+
+This is for creating a sub
+
+```bash
+whispera generate-sub -name "" -users <john, ...> 
+```
+
+This allows you to view all keys
+
+```bash
+whispera view-keys
+```
+
 ## Build from source
 
 Requires Go 1.25+. Pure-Go cross-compile:
