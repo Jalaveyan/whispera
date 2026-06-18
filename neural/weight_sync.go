@@ -61,80 +61,20 @@ func (a *RLTransportAgent) ImportWeights(layers []gnet.LayerDef) {
 	a.target = gnet.Clone(a.qNet)
 }
 
-func (a *RLKeepaliveAgent) ExportWeights() []gnet.LayerDef {
-	a.mu.RLock()
-	defer a.mu.RUnlock()
-	return copyLayers(a.qNet)
-}
+func (a *RLKeepaliveAgent) ExportWeights() []gnet.LayerDef       { return a.core.ExportWeights() }
+func (a *RLKeepaliveAgent) ImportWeights(layers []gnet.LayerDef) { a.core.ImportWeights(layers) }
 
-func (a *RLKeepaliveAgent) ImportWeights(layers []gnet.LayerDef) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	a.qNet.LoadWeights(layers)
-	a.target = gnet.Clone(a.qNet)
-}
+func (a *RLJitterAgent) ExportWeights() []gnet.LayerDef       { return a.core.ExportWeights() }
+func (a *RLJitterAgent) ImportWeights(layers []gnet.LayerDef) { a.core.ImportWeights(layers) }
 
-func (a *RLJitterAgent) ExportWeights() []gnet.LayerDef {
-	a.mu.RLock()
-	defer a.mu.RUnlock()
-	return copyLayers(a.qNet)
-}
+func (a *RLChunkAgent) ExportWeights() []gnet.LayerDef       { return a.core.ExportWeights() }
+func (a *RLChunkAgent) ImportWeights(layers []gnet.LayerDef) { a.core.ImportWeights(layers) }
 
-func (a *RLJitterAgent) ImportWeights(layers []gnet.LayerDef) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	a.qNet.LoadWeights(layers)
-	a.target = gnet.Clone(a.qNet)
-}
+func (a *RLConnAgent) ExportWeights() []gnet.LayerDef       { return a.core.ExportWeights() }
+func (a *RLConnAgent) ImportWeights(layers []gnet.LayerDef) { a.core.ImportWeights(layers) }
 
-func (a *RLChunkAgent) ExportWeights() []gnet.LayerDef {
-	a.mu.RLock()
-	defer a.mu.RUnlock()
-	return copyLayers(a.qNet)
-}
+func (a *RLBackoffAgent) ExportWeights() []gnet.LayerDef       { return a.core.ExportWeights() }
+func (a *RLBackoffAgent) ImportWeights(layers []gnet.LayerDef) { a.core.ImportWeights(layers) }
 
-func (a *RLChunkAgent) ImportWeights(layers []gnet.LayerDef) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	a.qNet.LoadWeights(layers)
-	a.target = gnet.Clone(a.qNet)
-}
-
-func (a *RLConnAgent) ExportWeights() []gnet.LayerDef {
-	a.mu.RLock()
-	defer a.mu.RUnlock()
-	return copyLayers(a.qNet)
-}
-
-func (a *RLConnAgent) ImportWeights(layers []gnet.LayerDef) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	a.qNet.LoadWeights(layers)
-	a.target = gnet.Clone(a.qNet)
-}
-
-func (a *RLBackoffAgent) ExportWeights() []gnet.LayerDef {
-	a.mu.RLock()
-	defer a.mu.RUnlock()
-	return copyLayers(a.qNet)
-}
-
-func (a *RLBackoffAgent) ImportWeights(layers []gnet.LayerDef) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	a.qNet.LoadWeights(layers)
-	a.target = gnet.Clone(a.qNet)
-}
-
-func (a *RLServerAgent) ExportWeights() []gnet.LayerDef {
-	a.mu.RLock()
-	defer a.mu.RUnlock()
-	return copyLayers(a.qNet)
-}
-
-func (a *RLServerAgent) ImportWeights(layers []gnet.LayerDef) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	a.qNet.LoadWeights(layers)
-	a.target = gnet.Clone(a.qNet)
-}
+func (a *RLServerAgent) ExportWeights() []gnet.LayerDef       { return a.core.ExportWeights() }
+func (a *RLServerAgent) ImportWeights(layers []gnet.LayerDef) { a.core.ImportWeights(layers) }

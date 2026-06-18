@@ -19,7 +19,7 @@ func NewGANRunner(iface string, port int, savePath string) *GANRunner {
 	}
 }
 
-func (r *GANRunner) GAN() *TrafficGAN       { return r.gan }
+func (r *GANRunner) GAN() *TrafficGAN        { return r.gan }
 func (r *GANRunner) Out() <-chan LabeledFlow { return nil }
 func (r *GANRunner) Start() error            { return nil }
 func (r *GANRunner) Stop()                   {}

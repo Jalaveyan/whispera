@@ -19,7 +19,7 @@ import (
 	"whispera/common/runtime/base"
 	"whispera/common/runtime/interfaces"
 	"whispera/common/runtime/registry"
-	"whispera/core/modules/transport"
+	"whispera/core/transport"
 
 	"golang.org/x/net/proxy"
 )

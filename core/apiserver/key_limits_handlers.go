@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"time"
-	"whispera/core/modules/keylimits"
+	"whispera/core/keylimits"
 )
 
 type keyLimitsRequest struct {

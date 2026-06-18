@@ -7,7 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
-	"whispera/core/modules/mlserver"
+	"whispera/core/mlserver"
 
 	_ "go.uber.org/automaxprocs"
 )

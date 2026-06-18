@@ -2,7 +2,7 @@ package dataplane
 
 import (
 	"testing"
-	"whispera/core/modules/config"
+	"whispera/core/config"
 )
 
 func TestValidateChainGraphCycle(t *testing.T) {

@@ -11,7 +11,7 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"whispera/core/modules/agent"
+	"whispera/core/agent"
 
 	"golang.org/x/net/proxy"
 )

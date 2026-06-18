@@ -5,7 +5,7 @@ import (
 	"log"
 	"net"
 	"sync"
-	"whispera/core/modules/config"
+	"whispera/core/config"
 )
 
 type Manager struct {

@@ -3,7 +3,7 @@ package apiserver
 import (
 	"encoding/json"
 	"net/http"
-	"whispera/core/modules/probedetector"
+	"whispera/core/probedetector"
 )
 
 func (s *Server) SetProbeDetector(d *probedetector.Detector) {

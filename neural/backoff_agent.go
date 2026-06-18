@@ -2,11 +2,7 @@ package neural
 
 import (
 	"math"
-	mrand "math/rand"
-	"sync"
-	"sync/atomic"
 	"time"
-	"whispera/neural/gnet"
 )
 
 var BackoffDelays = []time.Duration{
@@ -26,20 +22,15 @@ const (
 	BackoffErrRefused BackoffErrType = 3
 )
 
-const (
-	boStateSize    = 5
-	boHidden1      = 12
-	boHidden2      = 8
-	boNumActions   = 5
-	boBufferSize   = 800
-	boBatchSize    = 4
-	boGamma        = 0.95
-	boEpsilonStart = 0.40
-	boEpsilonMin   = 0.05
-	boEpsilonDecay = 0.97
-	boTargetSync   = 8
-	boTrainEvery   = 1
-)
+const boStateSize = 5
+
+var boConfig = dqnConfig{
+	stateSize: boStateSize, numActions: 5, hidden1: 12, hidden2: 8,
+	bufferSize: 800, batchSize: 4, gamma: 0.95, lr: 0.005,
+	epsilonStart: 0.40, epsilonMin: 0.05, epsilonDecay: 0.97,
+	targetSync: 8, trainEvery: 1, stickyK: 2, diversityEps: 0.05,
+	policyFile: "rl_bo.json",
+}
 
 type BackoffView struct {
 	ConsecutiveFails    int
@@ -48,51 +39,11 @@ type BackoffView struct {
 }
 
 type RLBackoffAgent struct {
-	mu sync.RWMutex
-
-	modelDir string
-	qNet     *gnet.GorgoniaNet
-	target   *gnet.GorgoniaNet
-	adam     *AdamState
-
-	prb         *PrioritizedReplayBuffer
-	thompson    *ThompsonSampler
-	sticky      StickyExplorer
-	curriculum  CurriculumTracker
-	diversity   DiversityTracker
-	temperature float64
-
-	epsilon    float64
-	stepCount  int64
-	trainCount int64
-
-	pendingState  []float64
-	pendingAction int
+	core *dqnCore
 }
 
 func NewRLBackoffAgent(modelDir string) *RLBackoffAgent {
-	a := &RLBackoffAgent{
-		modelDir:      modelDir,
-		prb:           NewPrioritizedBuffer(boBufferSize),
-		thompson:      NewThompsonSampler(boNumActions),
-		sticky:        StickyExplorer{K: 2},
-		curriculum:    NewCurriculumTracker(20, 0.0),
-		diversity:     NewDiversityTracker(boNumActions, 0.05),
-		temperature:   InitTemp,
-		epsilon:       boEpsilonStart,
-		pendingAction: -1,
-	}
-	a.qNet = gnet.New([]int{boStateSize, boHidden1, boHidden2, boNumActions})
-	a.target = gnet.Clone(a.qNet)
-	a.adam = NewAdamState(a.qNet)
-	if layers, eps, steps, ok := loadRLMiniPolicy(modelDir, "rl_bo.json", boStateSize, boNumActions); ok {
-		loaded := &gnet.GorgoniaNet{Layers: layers}
-		a.qNet = loaded
-		a.target = gnet.Clone(loaded)
-		a.epsilon = eps
-		atomic.StoreInt64(&a.stepCount, steps)
-	}
-	return a
+	return &RLBackoffAgent{core: newDQNCore(modelDir, boConfig)}
 }
 
 func (a *RLBackoffAgent) encodeState(v BackoffView) []float64 {
@@ -107,37 +58,17 @@ func (a *RLBackoffAgent) encodeState(v BackoffView) []float64 {
 }
 
 func (a *RLBackoffAgent) Decide(v BackoffView) time.Duration {
-	if atomic.LoadInt64(&a.stepCount) < 10 {
+	if a.core.stepsTaken() < 10 {
 		return BackoffDelays[1]
 	}
-
 	state := a.encodeState(v)
-	a.mu.Lock()
-	defer a.mu.Unlock()
-
-	var idx int
-	if action, exploring := a.sticky.Explore(a.epsilon, boNumActions); exploring {
-		idx = action
-	} else {
-		qvals := a.qNet.Forward(state)
-		if mrand.Float64() < 0.30 {
-			idx = a.thompson.Sample(boNumActions)
-		} else {
-			idx = boltzmannSample(qvals, a.temperature)
-		}
-	}
-
-	a.pendingState = state
-	a.pendingAction = idx
+	idx := a.core.decide(state, boConfig.numActions)
 	return BackoffDelays[idx]
 }
 
 func (a *RLBackoffAgent) RecordOutcome(success bool) {
-	a.mu.Lock()
-	state := a.pendingState
-	action := a.pendingAction
-	a.mu.Unlock()
-	if state == nil || action < 0 {
+	state, action, ok := a.core.takePending()
+	if !ok {
 		return
 	}
 
@@ -147,30 +78,9 @@ func (a *RLBackoffAgent) RecordOutcome(success bool) {
 	} else {
 		reward = -0.5
 	}
-
 	reward += GlobalFlowObserver.KLReward()
 
-	a.mu.Lock()
-	divBonus := a.diversity.Record(action)
-	reward += divBonus
-	a.curriculum.Add(reward)
-	a.epsilon = math.Max(boEpsilonMin, a.epsilon*boEpsilonDecay)
-	a.thompson.Update(action, reward)
-	a.prb.Add(Experience{
-		State: state, Action: action, Reward: reward,
-		NextState: state, Done: true,
-	})
-	step := atomic.AddInt64(&a.stepCount, 1)
-	a.mu.Unlock()
-
-	if step%boTrainEvery == 0 {
-		go a.trainStep()
-	}
-	if step%boTargetSync == 0 {
-		a.mu.Lock()
-		a.target = gnet.Clone(a.qNet)
-		a.mu.Unlock()
-	}
+	a.core.finishStep(state, action, reward)
 }
 
 func ClassifyBackoffErr(errStr string) BackoffErrType {
@@ -200,23 +110,5 @@ func containsAny(s string, subs ...string) bool {
 }
 
 func (a *RLBackoffAgent) Epsilon() float64 {
-	a.mu.RLock()
-	defer a.mu.RUnlock()
-	return a.epsilon
-}
-
-func (a *RLBackoffAgent) trainStep() {
-	a.mu.Lock()
-	batch, idxs, ok := a.prb.Sample(boBatchSize)
-	if !ok {
-		a.mu.Unlock()
-		return
-	}
-	dqnTrainBatchAdamPER(a.qNet, a.target, a.adam, a.prb, batch, idxs, boNumActions, boGamma, 0.005, defaultEntropyCoeff)
-	a.temperature = math.Max(MinTemp, a.temperature*TempDecay)
-	cnt := atomic.AddInt64(&a.trainCount, 1)
-	if cnt%100 == 0 {
-		saveRLMiniPolicy(a.modelDir, "rl_bo.json", a.qNet.Layers, a.epsilon, atomic.LoadInt64(&a.stepCount))
-	}
-	a.mu.Unlock()
+	return a.core.Epsilon()
 }

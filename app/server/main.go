@@ -27,21 +27,21 @@ import (
 	"whispera/common/runtime/lifecycle"
 	"whispera/common/stats"
 	"whispera/common/update"
+	"whispera/core/apiserver"
+	"whispera/core/config"
+	"whispera/core/crypto"
+	"whispera/core/dataplane"
+	"whispera/core/handshake"
+	"whispera/core/keylimits"
 	server "whispera/core/manager"
-	"whispera/core/modules/apiserver"
-	"whispera/core/modules/config"
-	"whispera/core/modules/crypto"
-	"whispera/core/modules/dataplane"
-	"whispera/core/modules/handshake"
-	"whispera/core/modules/keylimits"
-	"whispera/core/modules/mlserver"
-	"whispera/core/modules/probedetector"
-	relay2 "whispera/core/modules/relay"
-	"whispera/core/modules/router"
-	"whispera/core/modules/session"
-	"whispera/core/modules/transport/tcp"
-	"whispera/core/modules/transport/udp"
+	"whispera/core/mlserver"
+	"whispera/core/probedetector"
 	protocol2 "whispera/core/protocol"
+	relay2 "whispera/core/relay"
+	"whispera/core/router"
+	"whispera/core/session"
+	"whispera/core/transport/tcp"
+	"whispera/core/transport/udp"
 	"whispera/neural"
 	"whispera/neural/evasion"
 	"whispera/wiraid"
@@ -473,7 +473,6 @@ func main() {
 			manager.Registry().SetEventBus(natsBus)
 		}
 	}
-
 
 	if *validateConfig {
 		os.Exit(0)

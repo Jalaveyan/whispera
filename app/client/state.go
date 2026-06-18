@@ -11,10 +11,10 @@ import (
 	"sync/atomic"
 	"time"
 	"whispera/common/dns"
-	"whispera/core/modules/agent"
-	"whispera/core/modules/config"
-	"whispera/core/modules/socks5"
-	"whispera/core/modules/tunnel"
+	"whispera/core/agent"
+	"whispera/core/config"
+	"whispera/core/socks5"
+	"whispera/core/tunnel"
 )
 
 type connStatus string

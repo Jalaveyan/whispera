@@ -9,11 +9,11 @@ import (
 	"sync"
 	"time"
 	"whispera/common/log"
-	"whispera/core/modules/config"
-	"whispera/core/modules/crypto"
-	"whispera/core/modules/handshake"
-	"whispera/core/modules/session"
-	"whispera/core/modules/tunnel"
+	"whispera/core/config"
+	"whispera/core/crypto"
+	"whispera/core/handshake"
+	"whispera/core/session"
+	"whispera/core/tunnel"
 )
 
 type OutboundManager struct {
@@ -44,7 +44,6 @@ func (c *cascadeConn) Close() error {
 	}
 	return err
 }
-
 
 func (om *OutboundManager) SetStealthMode(mode string) {
 	om.mu.Lock()
@@ -201,7 +200,6 @@ func (om *OutboundManager) dialCascade(ctx context.Context, hops []string, final
 	}
 	return &cascadeConn{Conn: conn, closeFns: closeFns}, nil
 }
-
 
 func (om *OutboundManager) cleanupFns(fns []func()) {
 	for i := len(fns) - 1; i >= 0; i-- {

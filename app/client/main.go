@@ -25,15 +25,15 @@ import (
 	"whispera/common/log"
 	"whispera/common/runtime/lifecycle"
 	"whispera/common/split_tunnel"
-	"whispera/core/modules/agent"
-	config2 "whispera/core/modules/config"
-	"whispera/core/modules/crypto"
-	"whispera/core/modules/handshake"
-	"whispera/core/modules/killswitch"
-	"whispera/core/modules/session"
-	socks6 "whispera/core/modules/socks5"
-	tunnel2 "whispera/core/modules/tunnel"
+	"whispera/core/agent"
+	"whispera/core/config"
+	"whispera/core/crypto"
+	"whispera/core/handshake"
+	"whispera/core/killswitch"
 	"whispera/core/protocol"
+	"whispera/core/session"
+	"whispera/core/socks5"
+	"whispera/core/tunnel"
 	"whispera/neural"
 
 	_ "go.uber.org/automaxprocs"
@@ -74,7 +74,7 @@ var (
 	bypassDNS        = flag.String("bypass-dns", "77.88.8.8:53", "DNS server used for bypass resolver (never goes through tunnel)")
 )
 
-func pickServerAddress(cfg *config2.ClientConfig, transport string) string {
+func pickServerAddress(cfg *config.ClientConfig, transport string) string {
 	switch transport {
 	case "tcp", "tls":
 		if cfg.ServerTCP != "" {
@@ -117,7 +117,7 @@ func mlDefaultDataDir() string {
 	return "data"
 }
 
-func resolveMLToken(cfg *config2.ClientConfig) string {
+func resolveMLToken(cfg *config.ClientConfig) string {
 	if cfg.MLServerURL == "" {
 		return ""
 	}
@@ -180,10 +180,10 @@ func main() {
 	log = logger.Module("client")
 	stdlog.Printf("Whispera Client v%s starting...", Version)
 
-	var cfg *config2.ClientConfig
+	var cfg *config.ClientConfig
 
 	if *connKey != "" {
-		key, err := config2.ParseConnectionKey(*connKey)
+		key, err := config.ParseConnectionKey(*connKey)
 		if err != nil {
 			stdlog.Fatalf("Failed to parse connection key: %v", err)
 		}
@@ -192,12 +192,12 @@ func main() {
 		stdlog.Printf("Server: %s (transport: %s, obfuscation: %s)", key.GetPrimaryServer(), key.Transport, key.ObfsPreset)
 	} else if *configPath != "" {
 		var loadErr error
-		cfg, loadErr = config2.LoadClient(*configPath)
+		cfg, loadErr = config.LoadClient(*configPath)
 		if loadErr != nil {
 			stdlog.Fatalf("Failed to load config: %v", loadErr)
 		}
 	} else {
-		cfg = &config2.ClientConfig{
+		cfg = &config.ClientConfig{
 			Server: *serverAddr,
 		}
 	}
@@ -291,7 +291,7 @@ func main() {
 		stdlog.Printf("[split-tunnel] pre-resolved %d Russian bypass IPs", n)
 	}()
 
-	socksMod, _ := socks6.New(&socks6.Config{
+	socksMod, _ := socks5.New(&socks5.Config{
 		ListenAddr:    *socksAddr,
 		Debug:         true,
 		VPNServerAddr: cfg.Server,
@@ -302,7 +302,7 @@ func main() {
 	generateSocksAuth()
 	socksMod.SetAuthHandler(socksUser, socksPass)
 	stdlog.Printf("SOCKS5 auth enabled (user=%s)", socksUser)
-	socks6.HarvestHook = func(b []byte) { _ = protocol.HarvestRawClientHello(b) }
+	socks5.HarvestHook = func(b []byte) { _ = protocol.HarvestRawClientHello(b) }
 
 	dnsMod, _ := dns.New(&dns.Config{
 		Upstream:       dnsUpstreamAddr,
@@ -325,7 +325,7 @@ func main() {
 			serverAddress = net.JoinHostPort(serverAddress, "8443")
 		}
 	}
-		
+
 	asnBypassEnabled := *asnBypass
 	asnBypassFingerprint := *tlsFingerprint
 	if cfg.ASNBypass != nil && cfg.ASNBypass.Enabled {
@@ -409,8 +409,8 @@ func main() {
 		transports[i], transports[j] = transports[j], transports[i]
 	})
 
-	newTunnelMod := func(tr string) *tunnel2.Manager {
-		m, _ := tunnel2.New(&tunnel2.Config{
+	newTunnelMod := func(tr string) *tunnel.Manager {
+		m, _ := tunnel.New(&tunnel.Config{
 			ServerAddr:              serverAddress,
 			ServerAddrTCP:           fallbackTCP,
 			Transport:               tr,
@@ -421,7 +421,7 @@ func main() {
 			EnableASNBypass:         asnBypassEnabled,
 			TLSFingerprint:          asnBypassFingerprint,
 			EnableJA3Randomize:      true,
-			ChameleonOptions: tunnel2.ChameleonOptions{
+			ChameleonOptions: tunnel.ChameleonOptions{
 				EnableChameleon:  len(chameleonSecret) == 32,
 				ChameleonSecret:  chameleonSecret,
 				ChameleonAddr:    cfg.ChameleonAddr,
@@ -431,7 +431,7 @@ func main() {
 			ServerList:      srvList,
 			RekeyInterval:   *rekeyInterval,
 			TransportConfig: cfg.TransportConfig,
-			MLOptions: tunnel2.MLOptions{
+			MLOptions: tunnel.MLOptions{
 				MLServerURL: cfg.MLServerURL,
 				MLToken:     resolveMLToken(cfg),
 			},
@@ -444,7 +444,7 @@ func main() {
 
 	var spoofList []string
 
-	buildBaseCfg := func(e *TransportEntry) *tunnel2.Config {
+	buildBaseCfg := func(e *TransportEntry) *tunnel.Config {
 		e.mu.Lock()
 		tr := e.Transport
 		force := e.ForceObfuscation
@@ -467,7 +467,7 @@ func main() {
 			tc["sni"] = customSNI
 		}
 
-		return &tunnel2.Config{
+		return &tunnel.Config{
 			ServerAddr:              serverAddress,
 			ServerAddrTCP:           fallbackTCP,
 			Transport:               tr,
@@ -476,14 +476,14 @@ func main() {
 			EnableASNBypass:         asnBypassEnabled,
 			TLSFingerprint:          asnBypassFingerprint,
 			EnableJA3Randomize:      true,
-			ChameleonOptions: tunnel2.ChameleonOptions{
+			ChameleonOptions: tunnel.ChameleonOptions{
 				EnableChameleon:  len(chameleonSecret) == 32,
 				ChameleonSecret:  chameleonSecret,
 				ChameleonAddr:    cfg.ChameleonAddr,
 				ChameleonSNI:     cfg.ChameleonSNI,
 				ChameleonCertPin: cfg.ChameleonCertPin,
 			},
-			MLOptions: tunnel2.MLOptions{
+			MLOptions: tunnel.MLOptions{
 				MLServerURL: cfg.MLServerURL,
 				MLToken:     resolveMLToken(cfg),
 				SNIModelDir: sniModelDir(),
@@ -505,7 +505,7 @@ func main() {
 		}
 	}
 
-	restartEntry := func(e *TransportEntry, tunnelCfg *tunnel2.Config) {
+	restartEntry := func(e *TransportEntry, tunnelCfg *tunnel.Config) {
 		e.mu.Lock()
 		if e.cancel != nil {
 			e.cancel()
@@ -514,7 +514,7 @@ func main() {
 		e.Error = ""
 		e.mu.Unlock()
 
-		newMgr, err := tunnel2.New(tunnelCfg)
+		newMgr, err := tunnel.New(tunnelCfg)
 		if err != nil {
 			stdlog.Printf("restartEntry %s build failed: %v", e.ID, err)
 			e.mu.Lock()
@@ -573,7 +573,7 @@ func main() {
 	wireEncapsulate := func(e *TransportEntry) {
 		e.onEncapsulate = func(outerID string) {
 			baseCfg := buildBaseCfg(e)
-			var finalCfg *tunnel2.Config
+			var finalCfg *tunnel.Config
 			if outerID == "" {
 				finalCfg = baseCfg
 			} else {
@@ -589,7 +589,7 @@ func main() {
 					stdlog.Printf("encapsulate %s: outer %s manager not connected", e.ID, outerID)
 					return
 				}
-				finalCfg = tunnel2.EncapsulatedConfig(baseCfg, outerMgr)
+				finalCfg = tunnel.EncapsulatedConfig(baseCfg, outerMgr)
 			}
 			restartEntry(e, finalCfg)
 		}
@@ -602,7 +602,7 @@ func main() {
 	tunnelMod := newTunnelMod(transports[0])
 	tunnelMod.SetDependencies(nil, hsMod, nil, cryptoMod)
 
-	multiRouter := socks6.NewMultiRouter(tunnelMod)
+	multiRouter := socks5.NewMultiRouter(tunnelMod)
 	globalMultiRouter = multiRouter
 	socksMod.SetTunnel(multiRouter)
 	if err := socksMod.Start(); err != nil {
@@ -622,7 +622,7 @@ func main() {
 	pool.Add(primaryEntry)
 	wireEncapsulate(primaryEntry)
 
-	extraTunnels := make([]*tunnel2.Manager, 0, len(transports)-1)
+	extraTunnels := make([]*tunnel.Manager, 0, len(transports)-1)
 	for i := 1; i < len(transports); i++ {
 		tr := transports[i]
 		m := newTunnelMod(tr)
@@ -695,7 +695,7 @@ func main() {
 	}
 
 	newMultiBridgeTunnel = func(bridgeCtx context.Context, bridgeID, bridgeAddr string, rules []string) {
-		m, err := tunnel2.New(&tunnel2.Config{
+		m, err := tunnel.New(&tunnel.Config{
 			ServerAddr:              bridgeAddr,
 			ServerAddrTCP:           bridgeAddr,
 			Transport:               transports[0],
@@ -704,14 +704,14 @@ func main() {
 			EnableASNBypass:         asnBypassEnabled,
 			TLSFingerprint:          asnBypassFingerprint,
 			EnableJA3Randomize:      true,
-			ChameleonOptions: tunnel2.ChameleonOptions{
+			ChameleonOptions: tunnel.ChameleonOptions{
 				EnableChameleon:  len(chameleonSecret) == 32,
 				ChameleonSecret:  chameleonSecret,
 				ChameleonAddr:    cfg.ChameleonAddr,
 				ChameleonSNI:     cfg.ChameleonSNI,
 				ChameleonCertPin: cfg.ChameleonCertPin,
 			},
-			MLOptions: tunnel2.MLOptions{
+			MLOptions: tunnel.MLOptions{
 				MLServerURL: cfg.MLServerURL,
 				MLToken:     resolveMLToken(cfg),
 			},
@@ -768,15 +768,15 @@ func main() {
 		effectiveSubURL = cfg.SubscriptionURL
 	}
 	if effectiveSubURL == "" && *connKey != "" {
-		if ck, err := config2.ParseConnectionKey(*connKey); err == nil {
+		if ck, err := config.ParseConnectionKey(*connKey); err == nil {
 			effectiveSubURL = ck.SubscriptionURL
 		}
 	}
 
-	var globalSubMgr *config2.SubscriptionManager
+	var globalSubMgr *config.SubscriptionManager
 	if effectiveSubURL != "" {
 		stdlog.Printf("Subscription URL: %s (refresh every %s)", effectiveSubURL, *subInterval)
-		globalSubMgr = config2.NewSubscriptionManager(effectiveSubURL, *subInterval, func(keys []*config2.ConnectionKey) {
+		globalSubMgr = config.NewSubscriptionManager(effectiveSubURL, *subInterval, func(keys []*config.ConnectionKey) {
 			if len(keys) == 0 {
 				return
 			}
@@ -980,7 +980,7 @@ func main() {
 				return
 			case <-ticker.C:
 				eng := neural.GetNativeEngine()
-				allMgrs := []*tunnel2.Manager{tunnelMod}
+				allMgrs := []*tunnel.Manager{tunnelMod}
 				for _, e := range pool.List() {
 					m := e.mgr
 
@@ -1045,7 +1045,7 @@ func sniModelDir() string {
 	return filepath.Join(mlDefaultDataDir(), "sni_model")
 }
 
-func fetchAndApplyMLWeights(ctx context.Context, mgr *tunnel2.Manager, weightsURL, token string) {
+func fetchAndApplyMLWeights(ctx context.Context, mgr *tunnel.Manager, weightsURL, token string) {
 	httpClient := &http.Client{
 		Timeout: 1 * time.Second,
 		Transport: &http.Transport{

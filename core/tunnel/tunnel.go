@@ -23,7 +23,7 @@ import (
 	"whispera/common/runtime/events"
 	"whispera/common/runtime/interfaces"
 	asnbypass "whispera/core/asn_bypass"
-	"whispera/core/modules/killswitch"
+	"whispera/core/killswitch"
 	"whispera/core/protocol"
 	"whispera/neural"
 )

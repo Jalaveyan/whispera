@@ -32,9 +32,9 @@ import (
 	"whispera/common/runtime/interfaces"
 	"whispera/common/runtime/registry"
 	"whispera/common/stats"
-	"whispera/core/modules/config"
-	"whispera/core/modules/dhcp"
-	"whispera/core/modules/keylimits"
+	config2 "whispera/core/config"
+	"whispera/core/dhcp"
+	"whispera/core/keylimits"
 
 	"github.com/quic-go/quic-go/http3"
 	"golang.org/x/crypto/bcrypt"
@@ -270,7 +270,6 @@ func (s *Server) registerDefaultRoutes() {
 	s.Handle("POST /api/subscriptions/update", s.handleUpdateSubscription)
 	s.Handle("POST /api/subscriptions/delete", s.handleDeleteSubscription)
 	s.Handle("GET /sub/{token}", s.handleServeSubscription)
-
 
 	s.Handle("GET /api/firewall/status", s.handleFirewallStatus)
 	s.Handle("POST /api/firewall/rules", s.handleFirewallAddRule)
@@ -1118,7 +1117,7 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 
 	if s.registry != nil {
 		if module, ok := s.registry.Get("config.provider"); ok {
-			if cfgProvider, ok := module.(*config.Provider); ok {
+			if cfgProvider, ok := module.(*config2.Provider); ok {
 				cfg := cfgProvider.GetConfig()
 				resp["stealth_mode"] = cfg.StealthMode
 				resp["public_url"] = cfg.Server.PublicURL
@@ -1182,13 +1181,13 @@ func (s *Server) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cfgProvider, ok := module.(*config.Provider)
+	cfgProvider, ok := module.(*config2.Provider)
 	if !ok {
 		s.jsonError(w, http.StatusInternalServerError, "Invalid config provider type")
 		return
 	}
 
-	err := cfgProvider.Update(func(cfg *config.ServerConfig) {
+	err := cfgProvider.Update(func(cfg *config2.ServerConfig) {
 		if req.Server.Port > 0 {
 			cfg.Transport.UDP.ListenAddr = fmt.Sprintf(":%d", req.Server.Port)
 			cfg.Server.ListenAddr = cfg.Transport.UDP.ListenAddr
@@ -1948,7 +1947,7 @@ func (s *Server) deleteUserInbounds(user *User) {
 	if !ok {
 		return
 	}
-	cfgProvider, ok := mod.(*config.Provider)
+	cfgProvider, ok := mod.(*config2.Provider)
 	if !ok {
 		return
 	}
@@ -1973,8 +1972,8 @@ func (s *Server) deleteUserInbounds(user *User) {
 		tagSet[t] = true
 	}
 
-	_ = cfgProvider.Update(func(cfg *config.ServerConfig) {
-		kept := make([]config.InboundConfig, 0, len(cfg.Inbounds))
+	_ = cfgProvider.Update(func(cfg *config2.ServerConfig) {
+		kept := make([]config2.InboundConfig, 0, len(cfg.Inbounds))
 		for _, in := range cfg.Inbounds {
 			if !tagSet[in.Tag] {
 				kept = append(kept, in)
@@ -2140,7 +2139,7 @@ func (s *Server) handleGenerateConnectionKey(w http.ResponseWriter, r *http.Requ
 	if s.registry != nil {
 		if configMod, ok := s.registry.Get("config.provider"); ok {
 			type ConfigProvider interface {
-				GetConfig() *config.ServerConfig
+				GetConfig() *config2.ServerConfig
 			}
 			if provider, ok := configMod.(ConfigProvider); ok {
 				cfg := provider.GetConfig()
@@ -2240,7 +2239,7 @@ func (s *Server) handleGenerateConnectionKey(w http.ResponseWriter, r *http.Requ
 	mlURL, mlToken := "", ""
 	if s.registry != nil {
 		if mod, ok := s.registry.Get("config.provider"); ok {
-			type cfgProvider interface{ GetConfig() *config.ServerConfig }
+			type cfgProvider interface{ GetConfig() *config2.ServerConfig }
 			if p, ok := mod.(cfgProvider); ok && p.GetConfig() != nil {
 				mlCfg := p.GetConfig().ML
 				if mlCfg.Enabled && mlCfg.ServerURL != "" {
@@ -2254,7 +2253,7 @@ func (s *Server) handleGenerateConnectionKey(w http.ResponseWriter, r *http.Requ
 	chameleonAddr, chameleonSNI, chameleonQUICAddr := "", "", ""
 	if s.registry != nil {
 		if mod, ok := s.registry.Get("config.provider"); ok {
-			type cfgProvider interface{ GetConfig() *config.ServerConfig }
+			type cfgProvider interface{ GetConfig() *config2.ServerConfig }
 			if p, ok := mod.(cfgProvider); ok && p.GetConfig() != nil {
 				chmCfg := p.GetConfig().Chameleon
 				if chmCfg.Enabled && chmCfg.ListenAddr != "" {
@@ -2282,7 +2281,7 @@ func (s *Server) handleGenerateConnectionKey(w http.ResponseWriter, r *http.Requ
 		}
 	}
 
-	ck := config.ConnectionKey{
+	ck := config2.ConnectionKey{
 		Version:           2,
 		KeyID:             keyID,
 		Server:            serverAddr,
@@ -2790,7 +2789,7 @@ func (s *Server) handleGetOutbounds(w http.ResponseWriter, r *http.Request) {
 	}
 
 	type ConfigProvider interface {
-		GetConfig() *config.ServerConfig
+		GetConfig() *config2.ServerConfig
 	}
 
 	provider, ok := module.(ConfigProvider)
@@ -2818,7 +2817,7 @@ func (s *Server) handleAddOutbound(w http.ResponseWriter, r *http.Request) {
 	}
 
 	type ConfigUpdater interface {
-		Update(func(*config.ServerConfig)) error
+		Update(func(*config2.ServerConfig)) error
 	}
 
 	provider, ok := module.(ConfigUpdater)
@@ -2827,7 +2826,7 @@ func (s *Server) handleAddOutbound(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var req config.OutboundConfig
+	var req config2.OutboundConfig
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		s.jsonError(w, http.StatusBadRequest, "Invalid request")
 		return
@@ -2837,7 +2836,7 @@ func (s *Server) handleAddOutbound(w http.ResponseWriter, r *http.Request) {
 		req.Tag = fmt.Sprintf("outbound_%d", time.Now().UnixNano())
 	}
 
-	err = provider.Update(func(cfg *config.ServerConfig) {
+	err = provider.Update(func(cfg *config2.ServerConfig) {
 		for _, out := range cfg.Outbounds {
 			if out.Tag == req.Tag {
 				return
@@ -2868,7 +2867,7 @@ func (s *Server) handleDeleteOutbound(w http.ResponseWriter, r *http.Request) {
 	}
 
 	type ConfigUpdater interface {
-		Update(func(*config.ServerConfig)) error
+		Update(func(*config2.ServerConfig)) error
 	}
 
 	provider, ok := module.(ConfigUpdater)
@@ -2886,8 +2885,8 @@ func (s *Server) handleDeleteOutbound(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err = provider.Update(func(cfg *config.ServerConfig) {
-		newOutbounds := make([]config.OutboundConfig, 0, len(cfg.Outbounds))
+	err = provider.Update(func(cfg *config2.ServerConfig) {
+		newOutbounds := make([]config2.OutboundConfig, 0, len(cfg.Outbounds))
 		for _, out := range cfg.Outbounds {
 			if out.Tag != req.Tag {
 				newOutbounds = append(newOutbounds, out)
@@ -2934,7 +2933,7 @@ func (s *Server) handleSystemInfoAPI(w http.ResponseWriter, r *http.Request) {
 	if s.registry != nil {
 		if configMod, ok := s.registry.Get("config.provider"); ok {
 			type ConfigProvider interface {
-				GetConfig() *config.ServerConfig
+				GetConfig() *config2.ServerConfig
 			}
 			if provider, ok := configMod.(ConfigProvider); ok {
 				cfg := provider.GetConfig()
@@ -3047,7 +3046,7 @@ func (s *Server) handleAdminUpdate(w http.ResponseWriter, r *http.Request) {
 		s.jsonError(w, http.StatusInternalServerError, "config provider not found")
 		return
 	}
-	cfgProvider, ok := module.(*config.Provider)
+	cfgProvider, ok := module.(*config2.Provider)
 	if !ok {
 		s.jsonError(w, http.StatusInternalServerError, "invalid config provider")
 		return
@@ -3065,7 +3064,7 @@ func (s *Server) handleAdminUpdate(w http.ResponseWriter, r *http.Request) {
 		newHash = string(h)
 	}
 
-	if err := cfgProvider.Update(func(cfg *config.ServerConfig) {
+	if err := cfgProvider.Update(func(cfg *config2.ServerConfig) {
 		cfg.API.AdminUsername = req.Username
 		if newHash != "" {
 			cfg.API.AdminPasswordHash = newHash
@@ -3311,10 +3310,10 @@ func (s *Server) handleMLConfig(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAdmin(w, r) {
 		return
 	}
-	mlCfg := config.MLConfig{}
+	mlCfg := config2.MLConfig{}
 	if s.registry != nil {
 		if mod, ok := s.registry.Get("config.provider"); ok {
-			type cfgProvider interface{ GetConfig() *config.ServerConfig }
+			type cfgProvider interface{ GetConfig() *config2.ServerConfig }
 			if p, ok := mod.(cfgProvider); ok && p.GetConfig() != nil {
 				mlCfg = p.GetConfig().ML
 			}
@@ -3337,10 +3336,10 @@ func (s *Server) handleMLTokenRotate(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAdmin(w, r) {
 		return
 	}
-	mlCfg := config.MLConfig{}
+	mlCfg := config2.MLConfig{}
 	if s.registry != nil {
 		if mod, ok := s.registry.Get("config.provider"); ok {
-			type cfgProvider interface{ GetConfig() *config.ServerConfig }
+			type cfgProvider interface{ GetConfig() *config2.ServerConfig }
 			if p, ok := mod.(cfgProvider); ok && p.GetConfig() != nil {
 				mlCfg = p.GetConfig().ML
 			}

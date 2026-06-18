@@ -2,29 +2,22 @@ package neural
 
 import (
 	"math"
-	mrand "math/rand"
 	"sort"
-	"sync"
-	"sync/atomic"
 	"time"
-	"whispera/neural/gnet"
 )
 
 const (
-	srvMaxServers   = 8
-	srvStateSize    = 10
-	srvHidden1      = 16
-	srvHidden2      = 8
-	srvNumActions   = srvMaxServers
-	srvBufferSize   = 800
-	srvBatchSize    = 4
-	srvGamma        = 0.95
-	srvEpsilonStart = 0.50
-	srvEpsilonMin   = 0.05
-	srvEpsilonDecay = 0.97
-	srvTargetSync   = 8
-	srvTrainEvery   = 1
+	srvMaxServers = 8
+	srvStateSize  = 10
 )
+
+var srvConfig = dqnConfig{
+	stateSize: srvStateSize, numActions: srvMaxServers, hidden1: 16, hidden2: 8,
+	bufferSize: 800, batchSize: 4, gamma: 0.95, lr: 0.005,
+	epsilonStart: 0.50, epsilonMin: 0.05, epsilonDecay: 0.97,
+	targetSync: 8, trainEvery: 1, stickyK: 2, diversityEps: 0.05,
+	policyFile: "rl_server.json",
+}
 
 type ServerProbe struct {
 	Addr    string
@@ -32,53 +25,12 @@ type ServerProbe struct {
 }
 
 type RLServerAgent struct {
-	mu sync.RWMutex
-
-	modelDir string
-	qNet     *gnet.GorgoniaNet
-	target   *gnet.GorgoniaNet
-	adam     *AdamState
-
-	prb         *PrioritizedReplayBuffer
-	thompson    *ThompsonSampler
-	sticky      StickyExplorer
-	curriculum  CurriculumTracker
-	diversity   DiversityTracker
-	temperature float64
-
-	epsilon    float64
-	stepCount  int64
-	trainCount int64
-
-	pendingState  []float64
-	pendingAction int
-
+	core       *dqnCore
 	lastProbes []ServerProbe
 }
 
 func NewRLServerAgent(modelDir string) *RLServerAgent {
-	a := &RLServerAgent{
-		modelDir:      modelDir,
-		prb:           NewPrioritizedBuffer(srvBufferSize),
-		thompson:      NewThompsonSampler(srvNumActions),
-		sticky:        StickyExplorer{K: 2},
-		curriculum:    NewCurriculumTracker(20, 0.0),
-		diversity:     NewDiversityTracker(srvNumActions, 0.05),
-		temperature:   InitTemp,
-		epsilon:       srvEpsilonStart,
-		pendingAction: -1,
-	}
-	a.qNet = gnet.New([]int{srvStateSize, srvHidden1, srvHidden2, srvNumActions})
-	a.target = gnet.Clone(a.qNet)
-	a.adam = NewAdamState(a.qNet)
-	if layers, eps, steps, ok := loadRLMiniPolicy(modelDir, "rl_server.json", srvStateSize, srvNumActions); ok {
-		loaded := &gnet.GorgoniaNet{Layers: layers}
-		a.qNet = loaded
-		a.target = gnet.Clone(loaded)
-		a.epsilon = eps
-		atomic.StoreInt64(&a.stepCount, steps)
-	}
-	return a
+	return &RLServerAgent{core: newDQNCore(modelDir, srvConfig)}
 }
 
 func (a *RLServerAgent) encodeState(probes []ServerProbe) []float64 {
@@ -102,7 +54,7 @@ func (a *RLServerAgent) Decide(probes []ServerProbe) string {
 	if len(probes) == 0 {
 		return ""
 	}
-	if atomic.LoadInt64(&a.stepCount) < 10 {
+	if a.core.stepsTaken() < 10 {
 		return ""
 	}
 
@@ -113,10 +65,6 @@ func (a *RLServerAgent) Decide(probes []ServerProbe) string {
 	})
 
 	state := a.encodeState(sorted)
-
-	a.mu.Lock()
-	defer a.mu.Unlock()
-
 	a.lastProbes = sorted
 
 	n := len(sorted)
@@ -124,33 +72,13 @@ func (a *RLServerAgent) Decide(probes []ServerProbe) string {
 		n = srvMaxServers
 	}
 
-	var idx int
-	if action, exploring := a.sticky.Explore(a.epsilon, n); exploring {
-		idx = action
-	} else {
-		qvals := a.qNet.Forward(state)
-		if mrand.Float64() < 0.30 {
-			idx = a.thompson.Sample(n)
-		} else {
-			idx = boltzmannSample(qvals[:n], a.temperature)
-		}
-	}
-	if idx >= n {
-		idx = 0
-	}
-
-	a.pendingState = state
-	a.pendingAction = idx
-	chosen := sorted[idx]
-	return chosen.Addr
+	idx := a.core.decide(state, n)
+	return sorted[idx].Addr
 }
 
 func (a *RLServerAgent) RecordOutcome(success bool, latencyMs float64) {
-	a.mu.Lock()
-	state := a.pendingState
-	action := a.pendingAction
-	a.mu.Unlock()
-	if state == nil || action < 0 {
+	state, action, ok := a.core.takePending()
+	if !ok {
 		return
 	}
 
@@ -162,47 +90,9 @@ func (a *RLServerAgent) RecordOutcome(success bool, latencyMs float64) {
 	}
 	reward += GlobalFlowObserver.KLReward()
 
-	a.mu.Lock()
-	divBonus := a.diversity.Record(action)
-	reward += divBonus
-	a.curriculum.Add(reward)
-	a.epsilon = math.Max(srvEpsilonMin, a.epsilon*srvEpsilonDecay)
-	a.thompson.Update(action, reward)
-	a.prb.Add(Experience{
-		State: state, Action: action, Reward: reward,
-		NextState: state, Done: true,
-	})
-	step := atomic.AddInt64(&a.stepCount, 1)
-	a.mu.Unlock()
-
-	if step%srvTrainEvery == 0 {
-		go a.trainStep()
-	}
-	if step%srvTargetSync == 0 {
-		a.mu.Lock()
-		a.target = gnet.Clone(a.qNet)
-		a.mu.Unlock()
-	}
+	a.core.finishStep(state, action, reward)
 }
 
 func (a *RLServerAgent) Epsilon() float64 {
-	a.mu.RLock()
-	defer a.mu.RUnlock()
-	return a.epsilon
-}
-
-func (a *RLServerAgent) trainStep() {
-	a.mu.Lock()
-	batch, idxs, ok := a.prb.Sample(srvBatchSize)
-	if !ok {
-		a.mu.Unlock()
-		return
-	}
-	dqnTrainBatchAdamPER(a.qNet, a.target, a.adam, a.prb, batch, idxs, srvNumActions, srvGamma, 0.005, defaultEntropyCoeff)
-	a.temperature = math.Max(MinTemp, a.temperature*TempDecay)
-	cnt := atomic.AddInt64(&a.trainCount, 1)
-	if cnt%100 == 0 {
-		saveRLMiniPolicy(a.modelDir, "rl_server.json", a.qNet.Layers, a.epsilon, atomic.LoadInt64(&a.stepCount))
-	}
-	a.mu.Unlock()
+	return a.core.Epsilon()
 }

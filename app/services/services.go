@@ -11,8 +11,8 @@ import (
 	"time"
 	"whispera/common/runtime/interfaces"
 	"whispera/common/runtime/lifecycle"
-	"whispera/core/modules/crypto"
-	"whispera/core/modules/session"
+	"whispera/core/crypto"
+	"whispera/core/session"
 
 	_ "go.uber.org/automaxprocs"
 )

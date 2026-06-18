@@ -9,8 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"whispera/core/config"
 	"whispera/core/manager"
-	"whispera/core/modules/config"
 
 	"golang.org/x/crypto/curve25519"
 )

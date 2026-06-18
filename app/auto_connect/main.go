@@ -17,7 +17,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
-	"whispera/core/modules/config"
+	"whispera/core/config"
 
 	_ "go.uber.org/automaxprocs"
 )

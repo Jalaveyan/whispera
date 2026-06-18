@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 	"whispera/common/ipdetect"
-	"whispera/core/modules/config"
+	"whispera/core/config"
 
 	"golang.org/x/crypto/curve25519"
 )
