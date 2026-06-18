@@ -11,7 +11,6 @@ import (
 	"net"
 	"net/http"
 	_ "net/http/pprof"
-	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -45,12 +44,10 @@ import (
 	"whispera/core/transport/udp"
 	"whispera/neural"
 	"whispera/neural/evasion"
-	"whispera/wiraid"
 
 	_ "go.uber.org/automaxprocs"
 	"golang.org/x/crypto/bcrypt"
 	"golang.org/x/crypto/curve25519"
-	"golang.org/x/net/proxy"
 )
 
 var log = logger.Module("server")
@@ -100,8 +97,6 @@ var (
 	validateConfig = flag.Bool("validate-config", false, "Validate configuration and exit")
 	pprofAddr      = flag.String("pprof", "localhost:6060", "Pprof server listen address")
 )
-
-var globalWiraidEngine *wiraid.Engine
 
 var globalKeyLimits = keylimits.New(keylimits.Limits{
 	MaxActiveSessions: 10,
@@ -623,9 +618,6 @@ func main() {
 			}
 			fmt.Println(string(h))
 			os.Exit(0)
-		case "wiraid":
-			runWiraidCLI(os.Args[2:])
-			os.Exit(0)
 		case "update-checksum":
 			cfgPath := "/etc/whispera/config.yaml"
 			if len(os.Args) >= 3 {
@@ -1020,6 +1012,7 @@ func initTransports(m *lifecycle.Manager, sc *config.ServerConfig, ctx context.C
 }
 
 func initOptional(m *lifecycle.Manager, sc *config.ServerConfig, ctx context.Context) error {
+	reactor := newThreatReactor(sc)
 
 	if sc.API.Enabled {
 		apiServer, err := apiserver.New(&apiserver.Config{
@@ -1059,27 +1052,6 @@ func initOptional(m *lifecycle.Manager, sc *config.ServerConfig, ctx context.Con
 			}
 			w.Write(data)
 		})
-
-		wiraidBaseDir := os.Getenv("WHISPERA_WIRAID_DIR")
-		if wiraidBaseDir == "" {
-			wiraidBaseDir = "/var/lib/whispera/wiraid"
-		}
-
-		if os.Getenv("WHISPERA_PUBLIC_HOST") == "" && sc.Server.PublicURL != "" {
-			if u, err := url.Parse(sc.Server.PublicURL); err == nil && u.Hostname() != "" {
-				os.Setenv("WHISPERA_PUBLIC_HOST", u.Hostname())
-			}
-		}
-
-		if eng, err := wiraid.NewEngine(wiraidBaseDir); err != nil {
-		} else {
-			globalWiraidEngine = eng
-			eng.RegisterRoutes(apiServer.Handle)
-			go eng.StartEnabled()
-			if globalRelay != nil {
-				globalRelay.SetProxyDialer(&wiraidProxyDialer{eng: eng})
-			}
-		}
 
 		globalProbeDetector = probedetector.New(probedetector.DefaultConfig())
 		globalProbeDetector.Start()
@@ -1129,7 +1101,7 @@ func initOptional(m *lifecycle.Manager, sc *config.ServerConfig, ctx context.Con
 					SizeMean: sizeMean,
 					UpRatio:  upRatio,
 				})
-				lambda := neural.GANLambda(sc.Obfuscation.ThreatLevel)
+				lambda := neural.GANLambda(reactor.EffectiveThreatLevel())
 				return protocol2.GANAction{
 					SleepMs:   a.SleepMs * lambda,
 					PaddingN:  int(a.PaddingFrac * float64(ganMaxPadding) * lambda),
@@ -1211,6 +1183,9 @@ func initOptional(m *lifecycle.Manager, sc *config.ServerConfig, ctx context.Con
 		return err
 	}
 	os.Setenv("WHISPERA_ML_SERVER", "http://"+mlListenAddr)
+
+	reactor.SetAdversarial(mlServer.Adversarial())
+	neural.GetNativeEngine().SetOnTSPUDetected(reactor.OnTSPUDetected)
 
 	if sc.Update.Enabled && sc.Update.ManifestURL != "" {
 		updateConfig := &update.Config{
@@ -1415,26 +1390,3 @@ func (w *UDPResponseWriter) Write(data []byte) error {
 }
 
 func (w *UDPResponseWriter) RemoteAddr() net.Addr { return w.addr }
-
-type wiraidProxyDialer struct {
-	eng *wiraid.Engine
-}
-
-func (d *wiraidProxyDialer) Dial(network, addr string) (net.Conn, error) {
-	host, portStr, err := net.SplitHostPort(addr)
-
-	if err == nil {
-		var port64 uint64
-
-		fmt.Sscanf(portStr, "%d", &port64)
-
-		if socksAddr, ok := d.eng.MatchRoute(host, uint16(port64)); ok {
-			socks, errSocks := proxy.SOCKS5("tcp", socksAddr, nil, proxy.Direct)
-
-			if errSocks == nil {
-				return socks.Dial(network, addr)
-			}
-		}
-	}
-	return proxy.Direct.Dial(network, addr)
-}

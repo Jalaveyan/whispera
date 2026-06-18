@@ -1,7 +1,6 @@
 package router
 
 import (
-	"container/list"
 	"context"
 	"fmt"
 	"net"
@@ -9,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"whispera/common/cache"
 	"whispera/common/routing"
 	"whispera/common/runtime/base"
 	"whispera/common/runtime/events"
@@ -53,75 +53,6 @@ func (c *Config) Validate() error {
 	return nil
 }
 
-type lruEntry struct {
-	key   string
-	value *interfaces.Destination
-	elem  *list.Element
-}
-
-type lruCache struct {
-	mu    sync.RWMutex
-	items map[string]*lruEntry
-	list  *list.List
-	max   int
-}
-
-func newLRUCache(maxSize int) *lruCache {
-	return &lruCache{
-		items: make(map[string]*lruEntry, maxSize),
-		list:  list.New(),
-		max:   maxSize,
-	}
-}
-
-func (c *lruCache) Get(key string) (*interfaces.Destination, bool) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if entry, ok := c.items[key]; ok {
-		c.list.MoveToFront(entry.elem)
-		return entry.value, true
-	}
-	return nil, false
-}
-
-func (c *lruCache) Put(key string, value *interfaces.Destination) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if entry, ok := c.items[key]; ok {
-		entry.value = value
-		c.list.MoveToFront(entry.elem)
-		return
-	}
-
-	if c.list.Len() >= c.max {
-		if oldest := c.list.Back(); oldest != nil {
-			c.list.Remove(oldest)
-			if e, ok := oldest.Value.(*lruEntry); ok {
-				delete(c.items, e.key)
-			}
-		}
-	}
-
-	entry := &lruEntry{key: key, value: value}
-	entry.elem = c.list.PushFront(entry)
-	c.items[key] = entry
-}
-
-func (c *lruCache) Clear() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.items = make(map[string]*lruEntry, c.max)
-	c.list.Init()
-}
-
-func (c *lruCache) Len() int {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.list.Len()
-}
-
 type Engine struct {
 	*base.Module
 	config *Config
@@ -130,7 +61,7 @@ type Engine struct {
 	rules []interfaces.RoutingRule
 	byID  map[string]*interfaces.RoutingRule
 
-	cache *lruCache
+	cache *cache.LRUCache[*interfaces.Destination]
 
 	routeHits   uint64
 	routeMisses uint64
@@ -154,7 +85,7 @@ func New(cfg *Config) (*Engine, error) {
 		config: cfg,
 		rules:  make([]interfaces.RoutingRule, 0),
 		byID:   make(map[string]*interfaces.RoutingRule),
-		cache:  newLRUCache(cfg.CacheSize),
+		cache:  cache.NewLRUCache[*interfaces.Destination](cfg.CacheSize),
 	}
 
 	return e, nil
@@ -191,7 +122,7 @@ func (e *Engine) Route(ctx context.Context, packet *interfaces.Packet) (*interfa
 	e.UpdateActivity()
 
 	if e.config.EnableCache {
-		if dest := e.checkCache(packet); dest != nil {
+		if dest := e.checkCache(ctx, packet); dest != nil {
 			atomic.AddUint64(&e.cacheHits, 1)
 			atomic.AddUint64(&e.routeHits, 1)
 			return dest, nil
@@ -209,7 +140,7 @@ func (e *Engine) Route(ctx context.Context, packet *interfaces.Packet) (*interfa
 			dest := &rule.Destination
 
 			if e.config.EnableCache {
-				e.updateCache(packet, dest)
+				e.updateCache(ctx, packet, dest)
 			}
 
 			return dest, nil
@@ -371,18 +302,18 @@ func (e *Engine) matchSessionID(packet *interfaces.Packet, cond *interfaces.Rule
 	return false
 }
 
-func (e *Engine) checkCache(packet *interfaces.Packet) *interfaces.Destination {
+func (e *Engine) checkCache(ctx context.Context, packet *interfaces.Packet) *interfaces.Destination {
 	if packet.DstAddr != nil {
-		if dest, ok := e.cache.Get(packet.DstAddr.String()); ok {
+		if dest, _ := e.cache.Get(ctx, packet.DstAddr.String()); dest != nil {
 			return dest
 		}
 	}
 	return nil
 }
 
-func (e *Engine) updateCache(packet *interfaces.Packet, dest *interfaces.Destination) {
+func (e *Engine) updateCache(ctx context.Context, packet *interfaces.Packet, dest *interfaces.Destination) {
 	if packet.DstAddr != nil {
-		e.cache.Put(packet.DstAddr.String(), dest)
+		_ = e.cache.Set(ctx, packet.DstAddr.String(), dest, 0)
 	}
 }
 
@@ -501,12 +432,13 @@ func (e *Engine) clearCache() {
 
 func (e *Engine) CacheDomain(domain string, dest *interfaces.Destination) {
 	domain = strings.ToLower(domain)
-	e.cache.Put("domain:"+domain, dest)
+	_ = e.cache.Set(context.Background(), "domain:"+domain, dest, 0)
 }
 
 func (e *Engine) LookupDomain(domain string) (*interfaces.Destination, bool) {
 	domain = strings.ToLower(domain)
-	return e.cache.Get("domain:" + domain)
+	dest, _ := e.cache.Get(context.Background(), "domain:"+domain)
+	return dest, dest != nil
 }
 
 func (e *Engine) HealthCheck() interfaces.HealthStatus {

@@ -1711,7 +1711,8 @@ setup_systemd() {
 
     mkdir -p "$LOG_PATH"
     mkdir -p "$DAT_PATH/panel/public/uploads"
-    chown -R whispera:whispera "$WORK_DIR" "$CONF_PATH" "$DAT_PATH" "$LOG_PATH" 2>/dev/null || true
+    mkdir -p /var/lib/whispera/acme
+    chown -R whispera:whispera "$WORK_DIR" "$CONF_PATH" "$DAT_PATH" "$LOG_PATH" /var/lib/whispera 2>/dev/null || true
     chmod 750 "$CONF_PATH"
     chmod 640 "$CONF_PATH/config.yaml" 2>/dev/null || true
 

@@ -125,6 +125,10 @@ func (s *MLServer) Init(ctx context.Context, cfg interfaces.ModuleConfig) error 
 	return s.Module.Init(ctx, cfg)
 }
 
+func (s *MLServer) Adversarial() *evasion.AdversarialEngine {
+	return s.adversarial
+}
+
 func (s *MLServer) Start() error {
 	if err := s.Module.Start(); err != nil {
 		return err

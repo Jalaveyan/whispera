@@ -73,6 +73,11 @@ type surrogateModel struct {
 	losses []float64
 }
 
+func ZeroFeatures() [featureDims]float64 {
+	var f [featureDims]float64
+	return f
+}
+
 func NewAdversarialEngine() *AdversarialEngine {
 	seed := time.Now().UnixNano()
 	if n, err := rand.Int(rand.Reader, big.NewInt(1<<62)); err == nil {
@@ -914,6 +919,12 @@ func (ae *AdversarialEngine) selectPositions(data []byte, grad [featureDims]floa
 	return positions
 }
 
+func (ae *AdversarialEngine) CurrentStrategy() (strategy int, intensity float64) {
+	ae.mu.RLock()
+	defer ae.mu.RUnlock()
+	return ae.bestVector.strategy, ae.intensity
+}
+
 func (ae *AdversarialEngine) GetStats() map[string]interface{} {
 	ae.mu.RLock()
 	defer ae.mu.RUnlock()
@@ -957,4 +968,3 @@ func (me *MLEvasion) CalculateMLFeatures(data []byte) []float64 {
 	}
 	return result
 }
-

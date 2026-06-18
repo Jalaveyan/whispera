@@ -12,6 +12,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"whispera/common/cache"
 	"whispera/common/runtime/base"
 )
 
@@ -59,18 +60,13 @@ func (c *Config) Validate() error {
 	return nil
 }
 
-type cacheEntry struct {
-	IPs       []net.IP
-	ExpiresAt time.Time
-}
-
 type Resolver struct {
 	*base.Module
-	config    *Config
-	cache     map[string]*cacheEntry
-	cacheMu   sync.RWMutex
-	dialCtx   func(ctx context.Context, network, address string) (net.Conn, error)
-	dialCtxMu sync.RWMutex
+	config     *Config
+	cache      *cache.LRUCache[[]net.IP]
+	upstreamMu sync.RWMutex
+	dialCtx    func(ctx context.Context, network, address string) (net.Conn, error)
+	dialCtxMu  sync.RWMutex
 
 	fakeIPNet     *net.IPNet
 	fakeIPNext    uint32
@@ -99,7 +95,7 @@ func New(cfg *Config) (*Resolver, error) {
 	r := &Resolver{
 		Module:        base.NewModule(ModuleName, ModuleVersion, nil),
 		config:        cfg,
-		cache:         make(map[string]*cacheEntry),
+		cache:         cache.NewLRUCache[[]net.IP](cfg.CacheSize),
 		fakeIPMap:     make(map[string]net.IP),
 		fakeIPReverse: make(map[string]string),
 		blockList:     make(map[string]bool),
@@ -148,7 +144,7 @@ func (r *Resolver) Resolve(ctx context.Context, domain string) ([]net.IP, error)
 	}
 
 	if r.config.CacheEnabled {
-		if ips := r.getFromCache(domain); ips != nil {
+		if ips, _ := r.cache.Get(ctx, domain); ips != nil {
 			atomic.AddUint64(&r.cacheHits, 1)
 			return ips, nil
 		}
@@ -167,7 +163,7 @@ func (r *Resolver) Resolve(ctx context.Context, domain string) ([]net.IP, error)
 	}
 
 	if r.config.CacheEnabled && len(ips) > 0 {
-		r.addToCache(domain, ips)
+		_ = r.cache.Set(ctx, domain, ips, r.config.CacheTTL)
 	}
 
 	return ips, nil
@@ -183,15 +179,15 @@ func (r *Resolver) SetUpstream(upstream string) {
 	if strings.EqualFold(upstream, "system") {
 		upstream = ""
 	}
-	r.cacheMu.Lock()
+	r.upstreamMu.Lock()
 	r.config.Upstream = upstream
-	r.cache = make(map[string]*cacheEntry)
-	r.cacheMu.Unlock()
+	r.upstreamMu.Unlock()
+	r.cache.Clear()
 }
 
 func (r *Resolver) GetUpstream() string {
-	r.cacheMu.RLock()
-	defer r.cacheMu.RUnlock()
+	r.upstreamMu.RLock()
+	defer r.upstreamMu.RUnlock()
 	return r.config.Upstream
 }
 
@@ -212,36 +208,6 @@ func (r *Resolver) isBlocked(domain string) bool {
 		}
 	}
 	return false
-}
-
-func (r *Resolver) getFromCache(domain string) []net.IP {
-	r.cacheMu.RLock()
-	entry, ok := r.cache[domain]
-	r.cacheMu.RUnlock()
-	if !ok || time.Now().After(entry.ExpiresAt) {
-		return nil
-	}
-	return entry.IPs
-}
-
-func (r *Resolver) addToCache(domain string, ips []net.IP) {
-	r.cacheMu.Lock()
-	defer r.cacheMu.Unlock()
-	if len(r.cache) >= r.config.CacheSize {
-		var oldestKey string
-		var oldestTime time.Time
-		for k, v := range r.cache {
-			if oldestKey == "" || v.ExpiresAt.Before(oldestTime) {
-				oldestKey = k
-				oldestTime = v.ExpiresAt
-			}
-		}
-		delete(r.cache, oldestKey)
-	}
-	r.cache[domain] = &cacheEntry{
-		IPs:       ips,
-		ExpiresAt: time.Now().Add(r.config.CacheTTL),
-	}
 }
 
 func (r *Resolver) getFakeIP(domain string) net.IP {
@@ -273,9 +239,9 @@ func (r *Resolver) resolveUpstream(ctx context.Context, domain string) ([]net.IP
 	dialFn := r.dialCtx
 	r.dialCtxMu.RUnlock()
 
-	r.cacheMu.RLock()
+	r.upstreamMu.RLock()
 	upstream := r.config.Upstream
-	r.cacheMu.RUnlock()
+	r.upstreamMu.RUnlock()
 
 	if strings.HasPrefix(upstream, "https://") {
 		return r.resolveDoH(ctx, upstream, domain)

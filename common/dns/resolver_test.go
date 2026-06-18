@@ -9,7 +9,7 @@ import (
 func TestPositiveCacheServedWithoutQuery(t *testing.T) {
 	r := NewResolver(DefaultConfig())
 	want := net.IPv4(203, 0, 113, 7)
-	r.addToCache("host.example", []net.IP{want})
+	_ = r.cache.Set(context.Background(), "host.example", []net.IP{want}, 0)
 
 	ips, err := r.Resolve(context.Background(), "host.example")
 	if err != nil {

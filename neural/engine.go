@@ -170,6 +170,10 @@ type NativeMLEngine struct {
 	lastProfileDPI   int32
 	profileHitStreak int32
 
+	onTSPUDetected atomic.Value
+	lastTSPUType   int32
+	tspuHitStreak  int32
+
 	activeConn int32
 }
 
@@ -792,9 +796,9 @@ func (e *NativeMLEngine) Predict(data []byte, protocol, direction string) *types
 		tspuType, tspuConf := e.tspuDetector.DetectTSPU()
 		if tspuType != DPITypeNone && tspuConf > dpiConf {
 			dpiType = tspuType
-			_ = tspuConf
 			dpiName = DPITypeName(tspuType)
 		}
+		e.maybeFireTSPUDetected(tspuType, tspuConf)
 	}
 
 	anomalyScore := sigmoidF64(rawAnomaly[0])
@@ -1308,6 +1312,38 @@ func dpiTypeToProfile(dpiType int) string {
 
 func (e *NativeMLEngine) SetOnDPIProfile(fn func(profile string)) {
 	e.onDPIProfile.Store(fn)
+}
+
+const (
+	TSPUReactConfidence  = 0.6
+	TSPUReactStreak      = 3
+	TSPUReactRequiredMin = DPITypeTSPURST
+)
+
+func (e *NativeMLEngine) SetOnTSPUDetected(fn func(dpiType int, confidence float64)) {
+	e.onTSPUDetected.Store(fn)
+}
+
+func (e *NativeMLEngine) maybeFireTSPUDetected(dpiType int, conf float64) {
+	if dpiType < TSPUReactRequiredMin || conf < TSPUReactConfidence {
+		atomic.StoreInt32(&e.tspuHitStreak, 0)
+		return
+	}
+	last := atomic.LoadInt32(&e.lastTSPUType)
+	if int32(dpiType) == last {
+		streak := atomic.AddInt32(&e.tspuHitStreak, 1)
+		if streak < TSPUReactStreak {
+			return
+		}
+		atomic.StoreInt32(&e.tspuHitStreak, 0)
+	} else {
+		atomic.StoreInt32(&e.lastTSPUType, int32(dpiType))
+		atomic.StoreInt32(&e.tspuHitStreak, 1)
+		return
+	}
+	if fn, ok := e.onTSPUDetected.Load().(func(int, float64)); ok && fn != nil {
+		fn(dpiType, conf)
+	}
 }
 
 func (e *NativeMLEngine) maybeFireProfileChange(dpiType int, conf float64) {
