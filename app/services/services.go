@@ -79,7 +79,9 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to create crypto provider: %v", err)
 	}
-	manager.Register(cryptoProvider)
+	if err := manager.Register(cryptoProvider); err != nil {
+		log.Fatalf("Failed to register crypto provider: %v", err)
+	}
 
 	sessionMgr, err := session.New(&session.Config{
 		MaxSessions:     10000,
@@ -89,7 +91,9 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to create session manager: %v", err)
 	}
-	manager.Register(sessionMgr)
+	if err := manager.Register(sessionMgr); err != nil {
+		log.Fatalf("Failed to register session manager: %v", err)
+	}
 
 	if err := manager.Start(); err != nil {
 		log.Fatalf("Failed to start: %v", err)

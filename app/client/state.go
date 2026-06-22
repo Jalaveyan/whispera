@@ -28,6 +28,28 @@ const (
 	connStatusRST          connStatus = "rst"
 )
 
+type entryView struct {
+	ID                string     `json:"id"`
+	Transport         string     `json:"transport"`
+	Server            string     `json:"server"`
+	Status            connStatus `json:"status"`
+	Enabled           bool       `json:"enabled"`
+	Obfuscated        bool       `json:"obfuscated"`
+	Mux               bool       `json:"mux"`
+	RateLimitKB       int        `json:"rate_limit_kb"`
+	SNI               string     `json:"sni"`
+	BytesUp           uint64     `json:"bytes_up"`
+	BytesDown         uint64     `json:"bytes_down"`
+	ConnectedAt       time.Time  `json:"connected_at,omitempty"`
+	Error             string     `json:"error,omitempty"`
+	EncapsulatedIn    string     `json:"encapsulated_in,omitempty"`
+	ForceObfuscation  bool       `json:"force_obfuscation"`
+	BehavioralProfile string     `json:"behavioral_profile,omitempty"`
+	NoSNI             bool       `json:"no_sni"`
+	QualityRTTMs      int64      `json:"quality_rtt_ms,omitempty"`
+	QualityMissedKAs  int        `json:"quality_missed_kas,omitempty"`
+}
+
 type TransportEntry struct {
 	ID          string     `json:"id"`
 	Transport   string     `json:"transport"`
@@ -186,28 +208,6 @@ func (p *TransportPool) AnyConnected() bool {
 		}
 	}
 	return false
-}
-
-type entryView struct {
-	ID                string     `json:"id"`
-	Transport         string     `json:"transport"`
-	Server            string     `json:"server"`
-	Status            connStatus `json:"status"`
-	Enabled           bool       `json:"enabled"`
-	Obfuscated        bool       `json:"obfuscated"`
-	Mux               bool       `json:"mux"`
-	RateLimitKB       int        `json:"rate_limit_kb"`
-	SNI               string     `json:"sni"`
-	BytesUp           uint64     `json:"bytes_up"`
-	BytesDown         uint64     `json:"bytes_down"`
-	ConnectedAt       time.Time  `json:"connected_at,omitempty"`
-	Error             string     `json:"error,omitempty"`
-	EncapsulatedIn    string     `json:"encapsulated_in,omitempty"`
-	ForceObfuscation  bool       `json:"force_obfuscation"`
-	BehavioralProfile string     `json:"behavioral_profile,omitempty"`
-	NoSNI             bool       `json:"no_sni"`
-	QualityRTTMs      int64      `json:"quality_rtt_ms,omitempty"`
-	QualityMissedKAs  int        `json:"quality_missed_kas,omitempty"`
 }
 
 func toView(e *TransportEntry) entryView {

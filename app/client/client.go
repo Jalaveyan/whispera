@@ -43,6 +43,17 @@ var log = logger.Module("client")
 
 var Version = "2.0.0"
 
+type clientRuntimeParams struct {
+	serverAddress        string
+	fallbackTCP          string
+	asnBypassEnabled     bool
+	asnBypassFingerprint string
+	whisperaSecret       []byte
+	tunnelPSK            []byte
+	srvList              []string
+	transports           []string
+}
+
 var (
 	configPath       = flag.String("config", "", "Path to configuration file")
 	serverAddr       = flag.String("server", "", "Server address (host:port)")
@@ -142,16 +153,7 @@ func resolveMLToken(cfg *config.ClientConfig) string {
 	return ""
 }
 
-func main() {
-	debug.SetGCPercent(100)
-	debug.SetMemoryLimit(200 << 20)
-
-	flag.Parse()
-
-	if *mlServerURL != "" {
-		neural.SetMLServerURL(*mlServerURL, *mlTokenFlag)
-	}
-
+func setupLogging() {
 	underSystemd := os.Getenv("JOURNAL_STREAM") != "" || os.Getenv("INVOCATION_ID") != ""
 
 	var logWriter io.Writer
@@ -179,7 +181,9 @@ func main() {
 	log.SetOutput(logWriter)
 	log = logger.Module("client")
 	stdlog.Printf("Whispera Client v%s starting...", Version)
+}
 
+func loadClientConfig() *config.ClientConfig {
 	var cfg *config.ClientConfig
 
 	if *connKey != "" {
@@ -231,42 +235,49 @@ func main() {
 		stdlog.Printf("Obfuscation: %s", cfg.ObfsPreset)
 	}
 
-	lc := lifecycle.NewManager(lifecycle.Config{
-		ShutdownTimeout: 30 * time.Second,
-		GracefulStop:    true,
-	})
+	return cfg
+}
 
-	ctx := lc.Context()
-
-	cryptoMod, _ := crypto.New(nil)
-
-	sessMod, _ := session.New(&session.Config{MaxSessions: 10})
-
-	hsMod, _ := handshake.New(&handshake.Config{
-		RateLimit: 100,
-		RateBurst: 50,
-		Timeout:   10 * time.Second,
-	})
-	hsMod.SetDependencies(cryptoMod, sessMod)
-	if deviceID, devErr := auth.LoadOrCreateDeviceID(); devErr == nil {
-		hsMod.SetDeviceID(deviceID)
-		stdlog.Printf("Device ID: %x", deviceID[:8])
-	} else {
-		stdlog.Printf("WARNING: Could not load/create device ID: %v", devErr)
-	}
-
-	dnsUpstreamAddr := ""
-	if *dnsUpstream != "" && !strings.EqualFold(*dnsUpstream, "system") {
-		dnsUpstreamAddr = *dnsUpstream
-	}
-	bypassDNS := &net.Resolver{
+func newBypassDNSResolver() *net.Resolver {
+	return &net.Resolver{
 		PreferGo: true,
 		Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
 			d := net.Dialer{Timeout: 1 * time.Second}
 			return d.DialContext(ctx, "udp", *bypassDNS)
 		},
 	}
+}
 
+func runFingerprintSync(cfg *config.ClientConfig, secret []byte) {
+	pCfg := &protocol.ClientConfig{
+		ServerAddr:    cfg.WhisperaAddr,
+		ServerName:    cfg.WhisperaSNI,
+		SharedSecret:  secret,
+		ServerCertPin: cfg.WhisperaCertPin,
+	}
+
+	sync := func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		n, err := protocol.FetchServerFingerprints(ctx, pCfg)
+		cancel()
+		if err != nil {
+			stdlog.Printf("Fingerprint sync failed: %v", err)
+			return
+		}
+		if n > 0 {
+			stdlog.Printf("Fingerprint sync: merged %d fingerprint(s) from server", n)
+		}
+	}
+
+	sync()
+	ticker := time.NewTicker(30 * time.Minute)
+	defer ticker.Stop()
+	for range ticker.C {
+		sync()
+	}
+}
+
+func setupSplitTunnel(cfg *config.ClientConfig, bypassDNS *net.Resolver) *split_tunnel.SplitTunnelManager {
 	stm := split_tunnel.NewSplitTunnelManager()
 	stm.AddRussianWhitelist()
 	stm.CreateDefaultRules()
@@ -291,26 +302,10 @@ func main() {
 		stdlog.Printf("[split-tunnel] pre-resolved %d Russian bypass IPs", n)
 	}()
 
-	socksMod, _ := socks5.New(&socks5.Config{
-		ListenAddr:    *socksAddr,
-		Debug:         true,
-		VPNServerAddr: cfg.Server,
-		MTU:           cfg.MTU,
-		BypassFunc:    stm.ShouldBypass,
-		BlockTorrents: true,
-	})
-	generateSocksAuth()
-	socksMod.SetAuthHandler(socksUser, socksPass)
-	stdlog.Printf("SOCKS5 auth enabled (user=%s)", socksUser)
-	socks5.HarvestHook = func(b []byte) { _ = protocol.HarvestRawClientHello(b) }
+	return stm
+}
 
-	dnsMod, _ := dns.New(&dns.Config{
-		Upstream:       dnsUpstreamAddr,
-		CacheEnabled:   true,
-		BypassFunc:     stm.ShouldBypassByHostname,
-		BypassResolver: bypassDNS,
-	})
-
+func resolveRuntimeParams(cfg *config.ClientConfig) *clientRuntimeParams {
 	resolvedTransport := cfg.Transport
 	if resolvedTransport == "" {
 		resolvedTransport = *transport
@@ -335,11 +330,15 @@ func main() {
 		}
 	}
 
-	var chameleonSecret []byte
+	var whisperaSecret []byte
+	var tunnelPSK []byte
 
-	if cfg.ChameleonAddr != "" && cfg.PSK != "" {
+	if cfg.PSK != "" {
 		if pskBytes, err := base64.StdEncoding.DecodeString(cfg.PSK); err == nil && len(pskBytes) == 32 {
-			chameleonSecret = pskBytes
+			tunnelPSK = pskBytes
+			if cfg.WhisperaAddr != "" {
+				whisperaSecret = pskBytes
+			}
 		}
 	}
 
@@ -409,11 +408,105 @@ func main() {
 		transports[i], transports[j] = transports[j], transports[i]
 	})
 
+	return &clientRuntimeParams{
+		serverAddress:        serverAddress,
+		fallbackTCP:          fallbackTCP,
+		asnBypassEnabled:     asnBypassEnabled,
+		asnBypassFingerprint: asnBypassFingerprint,
+		whisperaSecret:       whisperaSecret,
+		tunnelPSK:            tunnelPSK,
+		srvList:              srvList,
+		transports:           transports,
+	}
+}
+
+func main() {
+	debug.SetGCPercent(100)
+	debug.SetMemoryLimit(200 << 20)
+
+	flag.Parse()
+
+	if *mlServerURL != "" {
+		neural.SetMLServerURL(*mlServerURL, *mlTokenFlag)
+	}
+
+	setupLogging()
+
+	cfg := loadClientConfig()
+
+	lc := lifecycle.NewManager(lifecycle.Config{
+		ShutdownTimeout: 30 * time.Second,
+		GracefulStop:    true,
+	})
+
+	ctx := lc.Context()
+
+	cryptoMod, _ := crypto.New(nil)
+
+	sessMod, _ := session.New(&session.Config{MaxSessions: 10})
+
+	hsMod, _ := handshake.New(&handshake.Config{
+		RateLimit: 100,
+		RateBurst: 50,
+		Timeout:   10 * time.Second,
+	})
+	hsMod.SetDependencies(cryptoMod, sessMod)
+	if deviceID, devErr := auth.LoadOrCreateDeviceID(); devErr == nil {
+		hsMod.SetDeviceID(deviceID)
+		stdlog.Printf("Device ID: %x", deviceID[:8])
+	} else {
+		stdlog.Printf("WARNING: Could not load/create device ID: %v", devErr)
+	}
+
+	dnsUpstreamAddr := ""
+	if *dnsUpstream != "" && !strings.EqualFold(*dnsUpstream, "system") {
+		dnsUpstreamAddr = *dnsUpstream
+	}
+	bypassDNSResolver := newBypassDNSResolver()
+
+	stm := setupSplitTunnel(cfg, bypassDNSResolver)
+
+	socksMod, _ := socks5.New(&socks5.Config{
+		ListenAddr:    *socksAddr,
+		Debug:         true,
+		VPNServerAddr: cfg.Server,
+		MTU:           cfg.MTU,
+		BypassFunc:    stm.ShouldBypass,
+		BlockTorrents: true,
+	})
+	generateSocksAuth()
+	socksMod.SetAuthHandler(socksUser, socksPass)
+	stdlog.Printf("SOCKS5 auth enabled (user=%s)", socksUser)
+	socks5.HarvestHook = func(b []byte) { _ = protocol.HarvestRawClientHello(b) }
+
+	dnsMod, _ := dns.New(&dns.Config{
+		Upstream:       dnsUpstreamAddr,
+		CacheEnabled:   true,
+		BypassFunc:     stm.ShouldBypassByHostname,
+		BypassResolver: bypassDNSResolver,
+	})
+
+	rp := resolveRuntimeParams(cfg)
+	serverAddress := rp.serverAddress
+	fallbackTCP := rp.fallbackTCP
+	asnBypassEnabled := rp.asnBypassEnabled
+	asnBypassFingerprint := rp.asnBypassFingerprint
+	whisperaSecret := rp.whisperaSecret
+	tunnelPSK := rp.tunnelPSK
+	srvList := rp.srvList
+	transports := rp.transports
+
+	if len(whisperaSecret) == 32 && cfg.WhisperaAddr != "" {
+		go runFingerprintSync(cfg, whisperaSecret)
+	}
+
 	newTunnelMod := func(tr string) *tunnel.Manager {
 		m, _ := tunnel.New(&tunnel.Config{
 			ServerAddr:              serverAddress,
 			ServerAddrTCP:           fallbackTCP,
 			Transport:               tr,
+			PSK:                     tunnelPSK,
+			DisableNeural:           cfg.DisableNeural,
 			TransportWhitelist:      cfg.TransportWhitelist,
 			TransportBlacklist:      cfg.TransportBlacklist,
 			KeepaliveInterval:       30 * time.Second,
@@ -421,12 +514,20 @@ func main() {
 			EnableASNBypass:         asnBypassEnabled,
 			TLSFingerprint:          asnBypassFingerprint,
 			EnableJA3Randomize:      true,
-			ChameleonOptions: tunnel.ChameleonOptions{
-				EnableChameleon:  len(chameleonSecret) == 32,
-				ChameleonSecret:  chameleonSecret,
-				ChameleonAddr:    cfg.ChameleonAddr,
-				ChameleonSNI:     cfg.ChameleonSNI,
-				ChameleonCertPin: cfg.ChameleonCertPin,
+			WhisperaOptions: tunnel.WhisperaOptions{
+				EnableWhispera:   len(whisperaSecret) == 32,
+				WhisperaSecret:   whisperaSecret,
+				WhisperaAddr:     cfg.WhisperaAddr,
+				WhisperaSNI:      cfg.WhisperaSNI,
+				WhisperaQUICAddr: cfg.WhisperaQUICAddr,
+				WhisperaCertPin:  cfg.WhisperaCertPin,
+				EnableGRPC:       cfg.GRPCAddr != "",
+				GRPCAddr:         cfg.GRPCAddr,
+				GRPCServerName:   cfg.GRPCServerName,
+				GRPCUseTLS:       cfg.GRPCUseTLS,
+				EnableYaDisk:     cfg.YaDiskOAuthToken != "",
+				YaDiskOAuthToken: cfg.YaDiskOAuthToken,
+				YaDiskSessionID:  cfg.YaDiskSessionID,
 			},
 			ServerList:      srvList,
 			RekeyInterval:   *rekeyInterval,
@@ -471,17 +572,27 @@ func main() {
 			ServerAddr:              serverAddress,
 			ServerAddrTCP:           fallbackTCP,
 			Transport:               tr,
+			PSK:                     tunnelPSK,
+			DisableNeural:           cfg.DisableNeural,
 			KeepaliveInterval:       30 * time.Second,
 			QualityMissedKeepalives: 3,
 			EnableASNBypass:         asnBypassEnabled,
 			TLSFingerprint:          asnBypassFingerprint,
 			EnableJA3Randomize:      true,
-			ChameleonOptions: tunnel.ChameleonOptions{
-				EnableChameleon:  len(chameleonSecret) == 32,
-				ChameleonSecret:  chameleonSecret,
-				ChameleonAddr:    cfg.ChameleonAddr,
-				ChameleonSNI:     cfg.ChameleonSNI,
-				ChameleonCertPin: cfg.ChameleonCertPin,
+			WhisperaOptions: tunnel.WhisperaOptions{
+				EnableWhispera:   len(whisperaSecret) == 32,
+				WhisperaSecret:   whisperaSecret,
+				WhisperaAddr:     cfg.WhisperaAddr,
+				WhisperaSNI:      cfg.WhisperaSNI,
+				WhisperaQUICAddr: cfg.WhisperaQUICAddr,
+				WhisperaCertPin:  cfg.WhisperaCertPin,
+				EnableGRPC:       cfg.GRPCAddr != "",
+				GRPCAddr:         cfg.GRPCAddr,
+				GRPCServerName:   cfg.GRPCServerName,
+				GRPCUseTLS:       cfg.GRPCUseTLS,
+				EnableYaDisk:     cfg.YaDiskOAuthToken != "",
+				YaDiskOAuthToken: cfg.YaDiskOAuthToken,
+				YaDiskSessionID:  cfg.YaDiskSessionID,
 			},
 			MLOptions: tunnel.MLOptions{
 				MLServerURL: cfg.MLServerURL,
@@ -699,17 +810,27 @@ func main() {
 			ServerAddr:              bridgeAddr,
 			ServerAddrTCP:           bridgeAddr,
 			Transport:               transports[0],
+			PSK:                     tunnelPSK,
+			DisableNeural:           cfg.DisableNeural,
 			KeepaliveInterval:       30 * time.Second,
 			QualityMissedKeepalives: 3,
 			EnableASNBypass:         asnBypassEnabled,
 			TLSFingerprint:          asnBypassFingerprint,
 			EnableJA3Randomize:      true,
-			ChameleonOptions: tunnel.ChameleonOptions{
-				EnableChameleon:  len(chameleonSecret) == 32,
-				ChameleonSecret:  chameleonSecret,
-				ChameleonAddr:    cfg.ChameleonAddr,
-				ChameleonSNI:     cfg.ChameleonSNI,
-				ChameleonCertPin: cfg.ChameleonCertPin,
+			WhisperaOptions: tunnel.WhisperaOptions{
+				EnableWhispera:   len(whisperaSecret) == 32,
+				WhisperaSecret:   whisperaSecret,
+				WhisperaAddr:     cfg.WhisperaAddr,
+				WhisperaSNI:      cfg.WhisperaSNI,
+				WhisperaQUICAddr: cfg.WhisperaQUICAddr,
+				WhisperaCertPin:  cfg.WhisperaCertPin,
+				EnableGRPC:       cfg.GRPCAddr != "",
+				GRPCAddr:         cfg.GRPCAddr,
+				GRPCServerName:   cfg.GRPCServerName,
+				GRPCUseTLS:       cfg.GRPCUseTLS,
+				EnableYaDisk:     cfg.YaDiskOAuthToken != "",
+				YaDiskOAuthToken: cfg.YaDiskOAuthToken,
+				YaDiskSessionID:  cfg.YaDiskSessionID,
 			},
 			MLOptions: tunnel.MLOptions{
 				MLServerURL: cfg.MLServerURL,

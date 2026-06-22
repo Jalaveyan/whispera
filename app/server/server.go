@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -11,15 +12,17 @@ import (
 	"net"
 	"net/http"
 	_ "net/http/pprof"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
+	rtdebug "runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+	"whispera/app/commands"
 	"whispera/app/db"
-	"whispera/common/ipdetect"
 	"whispera/common/log"
 	"whispera/common/runtime/base"
 	"whispera/common/runtime/events"
@@ -40,17 +43,24 @@ import (
 	relay2 "whispera/core/relay"
 	"whispera/core/router"
 	"whispera/core/session"
+	"whispera/core/transport/grpc"
 	"whispera/core/transport/tcp"
 	"whispera/core/transport/udp"
+	"whispera/core/transport/yadisk"
 	"whispera/neural"
 	"whispera/neural/evasion"
 
 	_ "go.uber.org/automaxprocs"
-	"golang.org/x/crypto/bcrypt"
 	"golang.org/x/crypto/curve25519"
 )
 
 var log = logger.Module("server")
+
+const (
+	whisperaCertPath     = "/etc/whispera/whispera.crt"
+	whisperaKeyPath      = "/etc/whispera/whispera.key"
+	whisperaDecoyCertDir = "/etc/whispera/decoy_certs"
+)
 
 var (
 	Version   = "2.1.6"
@@ -112,7 +122,7 @@ var (
 	globalSessionMgr   *session.Manager
 	globalUDPTransport *udp.Transport
 	globalRelay        *relay2.Server
-	globalObfuscator   interfaces.Obfuscator
+	globalObfuscator   interfaces.ObfuscationProcessor
 
 	globalServerConfig *config.ServerConfig
 	globalRouter       *router.Engine
@@ -172,8 +182,8 @@ func StartInbound(inbound config.InboundConfig, serverConfig *config.ServerConfi
 
 	listenAddr := fmt.Sprintf("%s:%d", inbound.Listen, inbound.Port)
 
-	if serverConfig.Chameleon.Enabled {
-		if _, chmPort, err := net.SplitHostPort(serverConfig.Chameleon.ListenAddr); err == nil && chmPort != "" && strconv.Itoa(inbound.Port) == chmPort {
+	if serverConfig.Whispera.Enabled {
+		if _, chmPort, err := net.SplitHostPort(serverConfig.Whispera.ListenAddr); err == nil && chmPort != "" && strconv.Itoa(inbound.Port) == chmPort {
 			return nil
 		}
 	}
@@ -221,7 +231,15 @@ func StartInbound(inbound config.InboundConfig, serverConfig *config.ServerConfi
 				continue
 			}
 
-			go handleTCPConnection(pConn, globalHandshake)
+			release, ok := acquireConnSlot(conn.RemoteAddr())
+			if !ok {
+				pConn.Close()
+				continue
+			}
+			go func() {
+				defer release()
+				handleTCPConnection(pConn, globalHandshake)
+			}()
 		}
 	}()
 
@@ -297,343 +315,27 @@ func acceptBackoff(d *time.Duration) {
 	}
 }
 
-func stripURLScheme(publicURL string) string {
-	s := strings.TrimPrefix(strings.TrimPrefix(publicURL, "https://"), "http://")
-	s = strings.TrimRight(s, "/")
-	if h, _, err := net.SplitHostPort(s); err == nil {
-		return h
-	}
-	return s
-}
-
 func main() {
 	if len(os.Args) > 1 {
-		cmd := strings.TrimSpace(os.Args[1])
-
-		switch cmd {
+		switch strings.TrimSpace(os.Args[1]) {
 		case "x25519":
-			private := make([]byte, 32)
-			if _, err := rand.Read(private); err != nil {
-				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-				os.Exit(1)
-			}
-			public, err := curve25519.X25519(private, curve25519.Basepoint)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-				os.Exit(1)
-			}
-			fmt.Printf("Private Key: %s\n", base64.StdEncoding.EncodeToString(private))
-			fmt.Printf("Public Key:  %s\n", base64.StdEncoding.EncodeToString(public))
-			os.Exit(0)
+			commands.RunX25519Cmd()
 		case "pubkey":
-			if len(os.Args) < 3 {
-				fmt.Fprintln(os.Stderr, "whispera pubkey <private_key>")
-				os.Exit(1)
-			}
-			privateKeyString := strings.TrimSpace(os.Args[2])
-
-			private, err := base64.StdEncoding.DecodeString(privateKeyString)
-
-			if err != nil || len(private) != 32 {
-				fmt.Fprintf(os.Stderr, "Error: invalid private key (must be 32 bytes Base64)\n")
-				os.Exit(1)
-			}
-			pub, _ := curve25519.X25519(private, curve25519.Basepoint)
-			fmt.Println(base64.StdEncoding.EncodeToString(pub))
-			os.Exit(0)
+			commands.RunPubkeyCmd()
 		case "create-admin":
-			createAdminCmd := flag.NewFlagSet("create-admin", flag.ExitOnError)
-			email := createAdminCmd.String("email", "", "Admin email")
-			password := createAdminCmd.String("password", "", "Admin password")
-			dbURL := createAdminCmd.String("db", "", "PostgreSQL URL")
-
-			createAdminCmd.Parse(os.Args[2:])
-
-			if *email == "" || *password == "" || *dbURL == "" {
-				fmt.Fprintln(os.Stderr, "whispera create-admin -email <email> -password <pass> -db <postgres_url>")
-				os.Exit(1)
-			}
-
-			cfg := db.DefaultConfig()
-			cfg.URL = *dbURL
-			database, err := db.New(cfg)
-
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Failed to connect to DB: %v\n", err)
-				os.Exit(1)
-			}
-
-			defer database.Close()
-
-			ctx := context.Background()
-			user, err := database.GetUserByEmail(ctx, *email)
-			if err != nil {
-				user, err = database.CreateUser(ctx, *email, *password, 0, nil, "http2", "browser", "vk", "", "")
-				if err != nil {
-					fmt.Fprintf(os.Stderr, "Failed to create user: %v\n", err)
-					os.Exit(1)
-				}
-				fmt.Printf("User %s created\n", *email)
-			} else {
-				if err := database.UpdateUser(ctx, user.ID, *email, *password); err != nil {
-					fmt.Fprintf(os.Stderr, "Failed to update password: %v\n", err)
-					os.Exit(1)
-				}
-				fmt.Printf("User %s password updated\n", *email)
-			}
-
-			if err := database.SetAdmin(ctx, user.ID, true); err != nil {
-				fmt.Fprintf(os.Stderr, "Failed to set admin: %v\n", err)
-				os.Exit(1)
-			}
-			fmt.Printf("User %s is now an admin\n", *email)
-			os.Exit(0)
+			commands.RunCreateAdminCmd()
 		case "create-key":
-			createKeyCmd := flag.NewFlagSet("create-key", flag.ExitOnError)
-			user := createKeyCmd.String("user", "", "User identifier (used as the chameleon auth username)")
-			port := createKeyCmd.Int("port", 0, "Dedicated chameleon listen port for this user")
-			cfgPath := createKeyCmd.String("config", "/etc/whispera/config.yaml", "Path to config.yaml")
-			trafficLimit := createKeyCmd.Int64("traffic-limit", 0, "Traffic limit in bytes (0 = unlimited)")
-
-			createKeyCmd.Parse(os.Args[2:])
-
-			if *user == "" || *port == 0 {
-				fmt.Fprintln(os.Stderr, "whispera create-key -user <name> -port <port> [-config <path>] [-traffic-limit <bytes>]")
-				os.Exit(1)
-			}
-			if *port < 1 || *port > 65535 {
-				fmt.Fprintf(os.Stderr, "Error: invalid port %d\n", *port)
-				os.Exit(1)
-			}
-
-			cfgProvider, err := config.New(*cfgPath)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-				os.Exit(1)
-			}
-			if err := cfgProvider.Load(*cfgPath); err != nil {
-				fmt.Fprintf(os.Stderr, "Failed to load %s: %v\n", *cfgPath, err)
-				os.Exit(1)
-			}
-			sc := cfgProvider.GetConfig()
-
-			_, chmPortStr, _ := net.SplitHostPort(sc.Chameleon.ListenAddr)
-			chmPort, _ := strconv.Atoi(chmPortStr)
-
-			portTaken := *port == chmPort
-			for _, in := range sc.Inbounds {
-				if in.Port == *port {
-					portTaken = true
-				}
-			}
-			for _, p := range sc.Chameleon.ExtraPorts {
-				if p == *port {
-					portTaken = true
-				}
-			}
-
-			if !portTaken {
-				err = cfgProvider.Update(func(sc *config.ServerConfig) {
-					sc.Chameleon.ExtraPorts = append(sc.Chameleon.ExtraPorts, *port)
-				})
-				if err != nil {
-					fmt.Fprintf(os.Stderr, "Failed to update %s: %v\n", *cfgPath, err)
-					os.Exit(1)
-				}
-				fmt.Printf("Chameleon will also listen on port %d (restart server to activate)\n", *port)
-			} else {
-				fmt.Printf("Port %d is already a chameleon listener — reusing it\n", *port)
-			}
-
-			if err := apiserver.OpenFirewallPort(*port); err != nil {
-				fmt.Fprintf(os.Stderr, "Warning: firewall rule not applied: %v\n", err)
-			} else {
-				fmt.Printf("Opened port %d in ufw (tcp+udp)\n", *port)
-			}
-
-			privateKeyB64, publicKeyB64, err := apiserver.CLIUpsertUser(*user, *trafficLimit)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Failed to create user: %v\n", err)
-				os.Exit(1)
-			}
-			fmt.Printf("User %s registered for live auth (/etc/whispera/users.json)\n", *user)
-
-			serverHost := stripURLScheme(sc.Server.PublicURL)
-			if serverHost == "" {
-				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-				serverHost, _ = ipdetect.DetectServerIP(ctx)
-				cancel()
-			}
-			if serverHost == "" {
-				serverHost = "<server_ip>"
-			}
-			serverAddr := fmt.Sprintf("%s:%d", serverHost, *port)
-
-			serverPubKeyB64 := ""
-			if sc.Server.PrivateKey != "" {
-				serverPubKeyB64 = apiserver.DerivePublicKeyB64(sc.Server.PrivateKey)
-			}
-
-			chameleonCertPin := ""
-			if sc.Chameleon.Domain == "" && sc.Chameleon.TLSCert != "" {
-				pin, pinErr := apiserver.ComputeChameleonCertPin(sc.Chameleon.TLSCert)
-				if pinErr != nil {
-					fmt.Fprintf(os.Stderr, "Warning: could not compute chameleon cert pin: %v (client will not pin the server cert)\n", pinErr)
-				} else {
-					chameleonCertPin = pin
-				}
-			}
-
-			connectionURI, err := apiserver.CLIBuildConnectionKey(*user, serverAddr, serverPubKeyB64, "chameleon", chameleonCertPin)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Failed to build connection key: %v\n", err)
-				os.Exit(1)
-			}
-
-			fmt.Println()
-			fmt.Println("=== Client config ===")
-			fmt.Printf("User:        %s\n", *user)
-			fmt.Printf("Server:      %s\n", serverAddr)
-			fmt.Printf("Private Key: %s\n", privateKeyB64)
-			fmt.Printf("Public Key:  %s\n", publicKeyB64)
-			if chameleonCertPin != "" {
-				fmt.Printf("Cert Pin:    %s (embedded in key — protects against TLS MITM)\n", chameleonCertPin)
-			} else {
-				fmt.Println("Cert Pin:    none (chameleon.domain is set — cert rotates under ACME, so it isn't pinned)")
-			}
-			fmt.Printf("Key:         %s\n", connectionURI)
-			fmt.Println()
-			fmt.Println("Restart the whispera server for the new user/inbound to take effect.")
-			os.Exit(0)
+			commands.RunCreateKeyCmd()
+		case "gen-decoy-cert":
+			commands.RunGenDecoyCertCmd()
 		case "generate-sub":
-			genSubCmd := flag.NewFlagSet("generate-sub", flag.ExitOnError)
-			name := genSubCmd.String("name", "", "Subscription name")
-			usersCSV := genSubCmd.String("users", "", "Comma-separated list of usernames created via create-key")
-			cfgPath := genSubCmd.String("config", "/etc/whispera/config.yaml", "Path to config.yaml")
-
-			genSubCmd.Parse(os.Args[2:])
-
-			if *usersCSV == "" {
-				fmt.Fprintln(os.Stderr, "whispera generate-sub -users <user1,user2,...> [-name <name>] [-config <path>]")
-				os.Exit(1)
-			}
-			if *name == "" {
-				*name = fmt.Sprintf("Sub-%d", time.Now().Unix())
-			}
-
-			usernames := strings.Split(*usersCSV, ",")
-			for i := range usernames {
-				usernames[i] = strings.TrimSpace(usernames[i])
-			}
-
-			cfgProvider, err := config.New(*cfgPath)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-				os.Exit(1)
-			}
-			if err := cfgProvider.Load(*cfgPath); err != nil {
-				fmt.Fprintf(os.Stderr, "Failed to load %s: %v\n", *cfgPath, err)
-				os.Exit(1)
-			}
-			sc := cfgProvider.GetConfig()
-
-			token, err := apiserver.CLICreateSubscription(*name, usernames)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Failed to create subscription: %v\n", err)
-				os.Exit(1)
-			}
-			fmt.Printf("Subscription %q created for %d user(s)\n", *name, len(usernames))
-
-			serverHost := strings.TrimRight(sc.Server.PublicURL, "/")
-			if serverHost == "" {
-				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-				ip, _ := ipdetect.DetectServerIP(ctx)
-				cancel()
-				if ip == "" {
-					ip = "<server_ip>"
-				}
-				serverHost = fmt.Sprintf("http://%s:8081", ip)
-			}
-
-			fmt.Println()
-			fmt.Println("=== Subscription URL ===")
-			fmt.Printf("%s/sub/%s\n", serverHost, token)
-			fmt.Println()
-			fmt.Println("Restart the whispera server for the new subscription to take effect.")
-			os.Exit(0)
+			commands.RunGenerateSubCmd()
 		case "view-keys":
-			viewKeysCmd := flag.NewFlagSet("view-keys", flag.ExitOnError)
-			filterUser := viewKeysCmd.String("user", "", "Show only this user")
-			full := viewKeysCmd.Bool("full", false, "Print the full whispera:// connection key")
-
-			viewKeysCmd.Parse(os.Args[2:])
-
-			users := apiserver.CLIListUsers()
-			if len(users) == 0 {
-				fmt.Println("No users found in /etc/whispera/users.json")
-				os.Exit(0)
-			}
-
-			printed := 0
-			for _, u := range users {
-				if *filterUser != "" && u.Username != *filterUser {
-					continue
-				}
-				printed++
-
-				fmt.Printf("ID:      %d\n", u.ID)
-				fmt.Printf("User:    %s\n", u.Username)
-				fmt.Printf("Status:  %s\n", u.Status)
-				fmt.Printf("Traffic: %d / %d bytes\n", u.Upload+u.Download, u.TrafficLimit)
-				fmt.Printf("Created: %s\n", u.CreatedAt.Format(time.RFC3339))
-				if u.ExpiryDate != "" {
-					fmt.Printf("Expires: %s\n", u.ExpiryDate)
-				}
-				switch {
-				case u.ConnectionURI == "":
-					fmt.Println("Key:     (none — run create-key again to generate one)")
-				case *full:
-					fmt.Printf("Key:     %s\n", u.ConnectionURI)
-				default:
-					fmt.Printf("Key:     %s... (%d chars total, use -full to print)\n",
-						u.ConnectionURI[:min(40, len(u.ConnectionURI))], len(u.ConnectionURI))
-				}
-				fmt.Println()
-			}
-
-			if *filterUser != "" && printed == 0 {
-				fmt.Fprintf(os.Stderr, "User %q not found\n", *filterUser)
-				os.Exit(1)
-			}
-			os.Exit(0)
+			commands.RunViewKeysCmd()
 		case "hash-password":
-			if len(os.Args) < 3 || os.Args[2] == "" {
-				fmt.Fprintln(os.Stderr, "Usage: whispera hash-password <password>")
-				os.Exit(1)
-			}
-			h, err := bcrypt.GenerateFromPassword([]byte(os.Args[2]), bcrypt.DefaultCost)
-			if err != nil {
-				fmt.Fprintln(os.Stderr, err)
-				os.Exit(1)
-			}
-			fmt.Println(string(h))
-			os.Exit(0)
+			commands.RunHashPasswordCmd()
 		case "update-checksum":
-			cfgPath := "/etc/whispera/config.yaml"
-			if len(os.Args) >= 3 {
-				cfgPath = os.Args[2]
-			}
-			p, err := config.New(cfgPath)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-				os.Exit(1)
-			}
-			if err := p.UpdateChecksum(); err != nil {
-				fmt.Fprintf(os.Stderr, "Failed to update checksum: %v\n", err)
-				os.Exit(1)
-			}
-			fmt.Println("Checksum updated successfully")
-			os.Exit(0)
+			commands.RunUpdateChecksumCmd()
 		}
 	}
 
@@ -1002,7 +704,15 @@ func initTransports(m *lifecycle.Manager, sc *config.ServerConfig, ctx context.C
 						continue
 					}
 					backoffTCP = 1 * time.Millisecond
-					go handleTCPConnection(conn, globalHandshake)
+					release, ok := acquireConnSlot(conn.RemoteAddr())
+					if !ok {
+						conn.Close()
+						continue
+					}
+					go func() {
+						defer release()
+						handleTCPConnection(conn, globalHandshake)
+					}()
 				}
 			}()
 		}
@@ -1015,158 +725,249 @@ func initOptional(m *lifecycle.Manager, sc *config.ServerConfig, ctx context.Con
 	reactor := newThreatReactor(sc)
 
 	if sc.API.Enabled {
-		apiServer, err := apiserver.New(&apiserver.Config{
-			Enabled:           true,
-			ListenAddr:        sc.API.ListenAddr,
-			AuthToken:         sc.API.AuthToken,
-			WebRoot:           sc.API.WebRoot,
-			EnableCORS:        true,
-			AdminUsername:     sc.API.AdminUsername,
-			AdminPassword:     sc.API.AdminPassword,
-			AdminPasswordHash: sc.API.AdminPasswordHash,
-			LoginRateLimit:    sc.API.LoginRateLimit,
-		})
-		if err != nil {
+		if err := initAPIServer(m, sc); err != nil {
 			return err
 		}
-
-		apiServer.SetRegistry(m.Registry())
-		apiServer.SetKeyLimits(globalKeyLimits)
-
-		if err := m.Register(apiServer); err != nil {
-			return err
-		}
-
-		apiServer.Handle("/api/ml/weights", func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Content-Type", "application/json")
-			snap := neural.GetGlobalSnapshot()
-			if snap == nil {
-				w.WriteHeader(http.StatusServiceUnavailable)
-				fmt.Fprintf(w, `{"error":"weights not ready yet"}`)
-				return
-			}
-			data, err := json.Marshal(snap)
-			if err != nil {
-				w.WriteHeader(http.StatusInternalServerError)
-				return
-			}
-			w.Write(data)
-		})
-
-		globalProbeDetector = probedetector.New(probedetector.DefaultConfig())
-		globalProbeDetector.Start()
-		apiServer.SetProbeDetector(globalProbeDetector)
 	}
 
-	if sc.Chameleon.Enabled && (sc.Chameleon.TLSCert != "" || sc.Chameleon.Domain != "") {
-		ganIface := sc.Chameleon.GANIface
-		if ganIface == "" {
-			ganIface = defaultRouteIface()
-		}
-		ganPort := sc.Chameleon.GANPort
-		if ganPort == 0 {
-			if _, p, err := net.SplitHostPort(sc.Chameleon.ListenAddr); err == nil {
-				ganPort, _ = strconv.Atoi(p)
-			}
-		}
-		if ganPort == 0 {
-			ganPort = 443
-		}
-		ganMaxPadding := sc.Chameleon.GANMaxPadding
-		if ganMaxPadding == 0 {
-			ganMaxPadding = 4096
-		}
-		ganModelDir := os.Getenv("WHISPERA_ML_MODEL_DIR")
-		if ganModelDir == "" {
-			ganModelDir = "./ml_models"
-		}
-		ganSavePath := filepath.Join(ganModelDir, "gan_state.json")
-		if err := os.MkdirAll(ganModelDir, 0755); err != nil {
-			log.Error("GAN: failed to create model dir %s: %v", ganModelDir, err)
-		}
-		ganRunner := neural.NewGANRunner(ganIface, ganPort, ganSavePath)
-		if err := ganRunner.Start(); err != nil {
-			log.Error("GAN: failed to start traffic-shaping runner: %v", err)
-		} else {
-			m.OnStop(func() error {
-				ganRunner.Stop()
-				return nil
-			})
-		}
+	if sc.Whispera.Enabled && sc.Whispera.Domain == "" {
+		ensureWhisperaDecoyCert(sc)
+	}
 
-		cCfg := &protocol2.ServerConfig{
-			GANDecide: func(iatMean, sizeMean, upRatio float64) protocol2.GANAction {
-				a := ganRunner.GAN().Decide(neural.FlowFeatures{
-					IATMean:  iatMean,
-					SizeMean: sizeMean,
-					UpRatio:  upRatio,
-				})
-				lambda := neural.GANLambda(reactor.EffectiveThreatLevel())
-				return protocol2.GANAction{
-					SleepMs:   a.SleepMs * lambda,
-					PaddingN:  int(a.PaddingFrac * float64(ganMaxPadding) * lambda),
-					SegShrink: a.SegShrink * lambda,
-				}
-			},
-			ListenAddr:  sc.Chameleon.ListenAddr,
-			TLSCert:     sc.Chameleon.TLSCert,
-			TLSKey:      sc.Chameleon.TLSKey,
-			Domain:      sc.Chameleon.Domain,
-			ACMEDir:     sc.Chameleon.ACMEDir,
-			DecoyOrigin: sc.Chameleon.DecoyOrigin,
-			GetUsers: func() []protocol2.UserEntry {
-				registered := apiserver.GetRegisteredUsers()
-				entries := make([]protocol2.UserEntry, 0, len(registered))
-				for _, u := range registered {
-					psk, err := base64.StdEncoding.DecodeString(u.PrivateKey)
-					if err != nil || len(psk) != 32 {
-						continue
-					}
-					entries = append(entries, protocol2.UserEntry{UserID: u.UserID, PSK: psk})
-				}
-				return entries
-			},
-			OnConn: func(conn net.Conn, userID string) {
-				neural.FlowRegistry.RegisterConn(conn.LocalAddr(), conn.RemoteAddr(), neural.FlowTunnel)
-				tracked := stats.WrapConn(conn, userID)
-				go func() {
-					globalRelay.ServeTunnelRaw(tracked, false)
-					neural.FlowRegistry.DeleteConn(conn.LocalAddr(), conn.RemoteAddr())
-				}()
-			},
-		}
-		cCfg.QUICListenAddr = sc.Chameleon.QUICListenAddr
-		if len(sc.Chameleon.ExtraPorts) > 0 {
-			listenHost, _, _ := net.SplitHostPort(sc.Chameleon.ListenAddr)
-			for _, p := range sc.Chameleon.ExtraPorts {
-				if p <= 0 || p > 65535 {
-					continue
-				}
-				cCfg.ExtraListenAddrs = append(cCfg.ExtraListenAddrs, net.JoinHostPort(listenHost, strconv.Itoa(p)))
-			}
-		}
-		go func() { _ = protocol2.ListenAndServe(ctx, cCfg) }()
+	if sc.Whispera.Enabled && (sc.Whispera.TLSCert != "" || sc.Whispera.Domain != "") {
+		initWhispera(m, sc, ctx, reactor)
+	}
+
+	if err := initGRPC(m, sc); err != nil {
+		return err
+	}
+
+	if err := initYaDisk(m, sc); err != nil {
+		return err
 	}
 
 	if sc.Correlation.Enabled {
-		corrCfg := &evasion.CorrelationConfig{
-			Enabled:         true,
-			PaddingEnabled:  sc.Correlation.PaddingEnabled,
-			MixEnabled:      sc.Correlation.JitterEnabled,
-			ConstantRatePPS: sc.Correlation.RateBytesPerSec,
-		}
-		if sc.Correlation.MaxJitterMs > 0 {
-			corrCfg.DelayJitter = time.Duration(sc.Correlation.MaxJitterMs) * time.Millisecond
-		} else {
-			corrCfg.DelayJitter = 50 * time.Millisecond
-		}
-		if corrCfg.ConstantRatePPS <= 0 {
-			corrCfg.ConstantRatePPS = 100
-		}
-		globalCorrelation = evasion.NewCorrelationDefense(corrCfg)
-		m.OnShutdown(func() { globalCorrelation.Stop() })
+		initCorrelationDefense(m, sc)
 	}
 
+	mlServer, err := initMLServer(m, sc)
+	if err != nil {
+		return err
+	}
+	reactor.SetAdversarial(mlServer.Adversarial())
+	neural.GetNativeEngine().SetOnTSPUDetected(reactor.OnTSPUDetected)
+
+	if sc.Update.Enabled && sc.Update.ManifestURL != "" {
+		initUpdater(m, sc)
+	}
+
+	return nil
+}
+
+func initAPIServer(m *lifecycle.Manager, sc *config.ServerConfig) error {
+	apiServer, err := apiserver.New(&apiserver.Config{
+		Enabled:           true,
+		ListenAddr:        sc.API.ListenAddr,
+		AuthToken:         sc.API.AuthToken,
+		WebRoot:           sc.API.WebRoot,
+		EnableCORS:        true,
+		AdminUsername:     sc.API.AdminUsername,
+		AdminPassword:     sc.API.AdminPassword,
+		AdminPasswordHash: sc.API.AdminPasswordHash,
+		LoginRateLimit:    sc.API.LoginRateLimit,
+	})
+	if err != nil {
+		return err
+	}
+
+	apiServer.SetRegistry(m.Registry())
+	apiServer.SetKeyLimits(globalKeyLimits)
+
+	if err := m.Register(apiServer); err != nil {
+		return err
+	}
+
+	apiServer.Handle("/api/ml/weights", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		snap := neural.GetGlobalSnapshot()
+		if snap == nil {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			fmt.Fprintf(w, `{"error":"weights not ready yet"}`)
+			return
+		}
+		data, err := json.Marshal(snap)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		w.Write(data)
+	})
+
+	globalProbeDetector = probedetector.New(probedetector.DefaultConfig())
+	globalProbeDetector.Start()
+	apiServer.SetProbeDetector(globalProbeDetector)
+	return nil
+}
+
+func ensureWhisperaDecoyCert(sc *config.ServerConfig) {
+	if sc.Whispera.TLSCert != "" || sc.Whispera.DecoyOrigin == "" {
+		return
+	}
+
+	u, err := url.Parse(sc.Whispera.DecoyOrigin)
+	if err != nil || u.Hostname() == "" {
+		return
+	}
+	host := u.Hostname()
+	if strings.EqualFold(host, "localhost") {
+		return
+	}
+	if ip := net.ParseIP(host); ip != nil && (ip.IsLoopback() || ip.IsPrivate() || ip.IsUnspecified()) {
+		return
+	}
+
+	certPath := whisperaCertPath
+	keyPath := whisperaKeyPath
+	if _, err := os.Stat(certPath); err == nil {
+		sc.Whispera.TLSCert = certPath
+		sc.Whispera.TLSKey = keyPath
+		return
+	}
+
+	os.MkdirAll(filepath.Dir(certPath), 0755)
+	info, err := protocol2.CloneCertToFiles(host, certPath, keyPath)
+	if err != nil {
+		log.Warn("whispera: auto decoy-cert generation from %s failed: %v", host, err)
+		return
+	}
+
+	log.Info("whispera: auto-generated decoy TLS cert cloned from %s (subject=%s, valid %s -> %s)",
+		host, info.Subject, info.NotBefore.Format(time.RFC3339), info.NotAfter.Format(time.RFC3339))
+	sc.Whispera.TLSCert = certPath
+	sc.Whispera.TLSKey = keyPath
+}
+
+func initWhispera(m *lifecycle.Manager, sc *config.ServerConfig, ctx context.Context, reactor *threatReactor) {
+	ganIface := sc.Whispera.GANIface
+	if ganIface == "" {
+		ganIface = defaultRouteIface()
+	}
+	ganPort := sc.Whispera.GANPort
+	if ganPort == 0 {
+		if _, p, err := net.SplitHostPort(sc.Whispera.ListenAddr); err == nil {
+			ganPort, _ = strconv.Atoi(p)
+		}
+	}
+	if ganPort == 0 {
+		ganPort = 443
+	}
+	ganMaxPadding := sc.Whispera.GANMaxPadding
+	if ganMaxPadding == 0 {
+		ganMaxPadding = 4096
+	}
+	ganModelDir := os.Getenv("WHISPERA_ML_MODEL_DIR")
+	if ganModelDir == "" {
+		ganModelDir = "./ml_models"
+	}
+	ganSavePath := filepath.Join(ganModelDir, "gan_state.json")
+	if err := os.MkdirAll(ganModelDir, 0755); err != nil {
+		log.Error("GAN: failed to create model dir %s: %v", ganModelDir, err)
+	}
+	ganRunner := neural.NewGANRunner(ganIface, ganPort, ganSavePath)
+	if err := ganRunner.Start(); err != nil {
+		log.Error("GAN: failed to start traffic-shaping runner: %v", err)
+	} else {
+		m.OnStop(func() error {
+			ganRunner.Stop()
+			return nil
+		})
+	}
+
+	cCfg := &protocol2.ServerConfig{
+		IsNeuralDisabled: apiserver.IsNeuralDisabled,
+		GANDecide: func(iatMean, sizeMean, upRatio float64) protocol2.GANAction {
+			a := ganRunner.GAN().Decide(neural.FlowFeatures{
+				IATMean:  iatMean,
+				SizeMean: sizeMean,
+				UpRatio:  upRatio,
+			})
+			lambda := neural.GANLambda(reactor.EffectiveThreatLevel())
+			return protocol2.GANAction{
+				SleepMs:   a.SleepMs * lambda,
+				PaddingN:  int(a.PaddingFrac * float64(ganMaxPadding) * lambda),
+				SegShrink: a.SegShrink * lambda,
+			}
+		},
+		ListenAddr:   sc.Whispera.ListenAddr,
+		TLSCert:      sc.Whispera.TLSCert,
+		TLSKey:       sc.Whispera.TLSKey,
+		Domain:       sc.Whispera.Domain,
+		DecoyCertDir: whisperaDecoyCertDir,
+		ACMEDir:      sc.Whispera.ACMEDir,
+		DecoyOrigin:  sc.Whispera.DecoyOrigin,
+		GetUsers: func() []protocol2.UserEntry {
+			registered := apiserver.GetRegisteredUsers()
+			entries := make([]protocol2.UserEntry, 0, len(registered))
+			for _, u := range registered {
+				psk, err := base64.StdEncoding.DecodeString(u.PrivateKey)
+				if err != nil || len(psk) != 32 {
+					continue
+				}
+				entries = append(entries, protocol2.UserEntry{UserID: u.UserID, PSK: psk})
+			}
+			return entries
+		},
+		OnConn: func(conn net.Conn, userID string) {
+			neural.FlowRegistry.RegisterConn(conn.LocalAddr(), conn.RemoteAddr(), neural.FlowTunnel)
+			tracked := stats.WrapConn(conn, userID)
+			go func() {
+				globalRelay.ServeTunnelRaw(tracked, false)
+				neural.FlowRegistry.DeleteConn(conn.LocalAddr(), conn.RemoteAddr())
+			}()
+		},
+	}
+	cCfg.QUICListenAddr = sc.Whispera.QUICListenAddr
+	if len(sc.Whispera.ExtraPorts) > 0 {
+		listenHost, _, _ := net.SplitHostPort(sc.Whispera.ListenAddr)
+		for _, p := range sc.Whispera.ExtraPorts {
+			if p <= 0 || p > 65535 {
+				continue
+			}
+			cCfg.ExtraListenAddrs = append(cCfg.ExtraListenAddrs, net.JoinHostPort(listenHost, strconv.Itoa(p)))
+		}
+	}
+	if len(sc.Whispera.QUICExtraPorts) > 0 && sc.Whispera.QUICListenAddr != "" {
+		quicHost, _, _ := net.SplitHostPort(sc.Whispera.QUICListenAddr)
+		for _, p := range sc.Whispera.QUICExtraPorts {
+			if p <= 0 || p > 65535 {
+				continue
+			}
+			cCfg.ExtraQUICListenAddrs = append(cCfg.ExtraQUICListenAddrs, net.JoinHostPort(quicHost, strconv.Itoa(p)))
+		}
+	}
+	go func() { _ = protocol2.ListenAndServe(ctx, cCfg) }()
+}
+
+func initCorrelationDefense(m *lifecycle.Manager, sc *config.ServerConfig) {
+	corrCfg := &evasion.CorrelationConfig{
+		Enabled:         true,
+		PaddingEnabled:  sc.Correlation.PaddingEnabled,
+		MixEnabled:      sc.Correlation.JitterEnabled,
+		ConstantRatePPS: sc.Correlation.RateBytesPerSec,
+	}
+	if sc.Correlation.MaxJitterMs > 0 {
+		corrCfg.DelayJitter = time.Duration(sc.Correlation.MaxJitterMs) * time.Millisecond
+	} else {
+		corrCfg.DelayJitter = 50 * time.Millisecond
+	}
+	if corrCfg.ConstantRatePPS <= 0 {
+		corrCfg.ConstantRatePPS = 100
+	}
+	globalCorrelation = evasion.NewCorrelationDefense(corrCfg)
+	m.OnShutdown(func() { globalCorrelation.Stop() })
+}
+
+func initMLServer(m *lifecycle.Manager, sc *config.ServerConfig) (*mlserver.MLServer, error) {
 	mlListenAddr := ":8000"
 	if sc.ML.ListenAddr != "" {
 		mlListenAddr = sc.ML.ListenAddr
@@ -1177,55 +978,59 @@ func initOptional(m *lifecycle.Manager, sc *config.ServerConfig, ctx context.Con
 		DataDir:    "./ml_data",
 	})
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if err := m.Register(mlServer); err != nil {
-		return err
+		return nil, err
 	}
 	os.Setenv("WHISPERA_ML_SERVER", "http://"+mlListenAddr)
+	return mlServer, nil
+}
 
-	reactor.SetAdversarial(mlServer.Adversarial())
-	neural.GetNativeEngine().SetOnTSPUDetected(reactor.OnTSPUDetected)
+func initUpdater(m *lifecycle.Manager, sc *config.ServerConfig) {
+	updateConfig := &update.Config{
+		ManifestURL:    sc.Update.ManifestURL,
+		CurrentVersion: Version,
+		CheckInterval:  sc.Update.CheckInterval.D(),
+	}
+	if updateConfig.CheckInterval <= 0 {
+		updateConfig.CheckInterval = 1 * time.Hour
+	}
+	binaryPath, _ := os.Executable()
+	updateConfig.BinaryPath = binaryPath
+	globalUpdater = update.NewUpdater(updateConfig)
+	globalUpdater.Start()
+	m.OnShutdown(func() { globalUpdater.Stop() })
+}
 
-	if sc.Update.Enabled && sc.Update.ManifestURL != "" {
-		updateConfig := &update.Config{
-			ManifestURL:    sc.Update.ManifestURL,
-			CurrentVersion: Version,
-			CheckInterval:  sc.Update.CheckInterval.D(),
-		}
-		if updateConfig.CheckInterval <= 0 {
-			updateConfig.CheckInterval = 1 * time.Hour
-		}
-		binaryPath, _ := os.Executable()
-		updateConfig.BinaryPath = binaryPath
-		globalUpdater = update.NewUpdater(updateConfig)
-		globalUpdater.Start()
-		m.OnShutdown(func() { globalUpdater.Stop() })
+func tryHandshakePacket(data []byte, addr net.Addr) bool {
+	if len(data) < 32 || len(data) > 96 || globalHandshake == nil {
+		return false
+	}
+	if !udpIPRateAllow(addr) {
+		return true
 	}
 
-	return nil
+	sess, err := globalHandshake.HandleHandshake(context.Background(), data, addr)
+	if err != nil || sess == nil {
+		return false
+	}
+
+	if response := globalHandshake.BuildResponse(sess); response != nil && globalUDPTransport != nil {
+		globalUDPTransport.WriteTo(response, addr)
+	}
+	return true
 }
 
 func handlePacket(data []byte, addr net.Addr) {
-	ctx := context.Background()
-
-	if len(data) >= 32 && len(data) <= 96 && globalHandshake != nil {
-		if !udpIPRateAllow(addr) {
-			return
+	defer func() {
+		if r := recover(); r != nil {
+			log.Error("PANIC in handlePacket: %v\n%s", r, rtdebug.Stack())
 		}
+	}()
 
-		sess, err := globalHandshake.HandleHandshake(ctx, data, addr)
-
-		if err == nil && sess != nil {
-			if response := globalHandshake.BuildResponse(sess); response != nil {
-				if globalUDPTransport != nil {
-					if _, err := globalUDPTransport.WriteTo(response, addr); err != nil {
-						return
-					}
-				}
-			}
-			return
-		}
+	if tryHandshakePacket(data, addr) {
+		return
 	}
 
 	if globalSessionMgr == nil {
@@ -1299,17 +1104,21 @@ func handlePacket(data []byte, addr net.Addr) {
 
 func handleTCPConnection(conn net.Conn, hsHandler *handshake.Handler) {
 	defer conn.Close()
+	defer func() {
+		if r := recover(); r != nil {
+			log.Error("PANIC in handleTCPConnection: %v\n%s", r, rtdebug.Stack())
+		}
+	}()
 
 	addr := conn.RemoteAddr()
 
-	conn.SetReadDeadline(time.Now().Add(1 * time.Second))
+	conn.SetReadDeadline(time.Now().Add(3 * time.Second))
 
 	var firstByte [1]byte
 
 	if _, err := io.ReadFull(conn, firstByte[:]); err != nil {
 		return
 	}
-	conn.SetReadDeadline(time.Time{})
 
 	if hsHandler != nil && firstByte[0] == byte(handshake.HandshakeTypeInit) {
 		rest := make([]byte, 63)
@@ -1330,6 +1139,8 @@ func handleTCPConnection(conn net.Conn, hsHandler *handshake.Handler) {
 			}
 		}
 
+		conn.SetReadDeadline(time.Time{})
+
 		sess, err := hsHandler.HandleHandshake(context.Background(), buf, addr)
 		if err != nil {
 			return
@@ -1345,6 +1156,8 @@ func handleTCPConnection(conn net.Conn, hsHandler *handshake.Handler) {
 			globalRelay.ServeTunnel(stats.WrapConn(conn, addr.String()), false)
 		}
 	} else {
+		conn.SetReadDeadline(time.Time{})
+
 		logger.Trace().Infow("raw_tcp_no_handshake",
 			"remote", addr.String(),
 			"first_byte", fmt.Sprintf("0x%02x", firstByte[0]),
@@ -1356,10 +1169,172 @@ func handleTCPConnection(conn net.Conn, hsHandler *handshake.Handler) {
 	}
 }
 
+func verifyAltTransportAuth(conn net.Conn) bool {
+	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	defer conn.SetReadDeadline(time.Time{})
+
+	var sidLenByte [1]byte
+	if _, err := io.ReadFull(conn, sidLenByte[:]); err != nil {
+		return false
+	}
+	sidLen := int(sidLenByte[0])
+	if sidLen == 0 || sidLen > 64 {
+		return false
+	}
+	sessionID := make([]byte, sidLen)
+	if _, err := io.ReadFull(conn, sessionID); err != nil {
+		return false
+	}
+
+	var tokLenBuf [2]byte
+	if _, err := io.ReadFull(conn, tokLenBuf[:]); err != nil {
+		return false
+	}
+	tokLen := int(binary.BigEndian.Uint16(tokLenBuf[:]))
+	if tokLen == 0 || tokLen > 256 {
+		return false
+	}
+	tokenBytes := make([]byte, tokLen)
+	if _, err := io.ReadFull(conn, tokenBytes); err != nil {
+		return false
+	}
+	token := string(tokenBytes)
+
+	for _, u := range apiserver.GetRegisteredUsers() {
+		psk, err := base64.StdEncoding.DecodeString(u.PrivateKey)
+		if err != nil || len(psk) != 32 {
+			continue
+		}
+		if protocol2.VerifyAuthToken(psk, token, sessionID) {
+			return true
+		}
+	}
+	return false
+}
+
+func handleAltTransportConn(conn net.Conn) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Error("PANIC in handleAltTransportConn: %v\n%s", r, rtdebug.Stack())
+		}
+	}()
+
+	if !verifyAltTransportAuth(conn) {
+		conn.Close()
+		return
+	}
+	if globalRelay == nil {
+		conn.Close()
+		return
+	}
+	globalRelay.ServeTunnelRaw(stats.WrapConn(conn, conn.RemoteAddr().String()), false)
+}
+
+func initGRPC(m *lifecycle.Manager, sc *config.ServerConfig) error {
+	if !sc.GRPC.Enabled || sc.GRPC.ListenAddr == "" {
+		return nil
+	}
+	var grpcExtraAddrs []string
+	if len(sc.GRPC.ExtraPorts) > 0 {
+		grpcHost, _, _ := net.SplitHostPort(sc.GRPC.ListenAddr)
+		for _, p := range sc.GRPC.ExtraPorts {
+			if p <= 0 || p > 65535 {
+				continue
+			}
+			grpcExtraAddrs = append(grpcExtraAddrs, net.JoinHostPort(grpcHost, strconv.Itoa(p)))
+		}
+	}
+	t, err := grpc.New(&grpc.Config{
+		ListenAddr:       sc.GRPC.ListenAddr,
+		ExtraListenAddrs: grpcExtraAddrs,
+		ServerName:       sc.GRPC.ServerName,
+		UseTLS:           sc.GRPC.TLSCert != "",
+		CertFile:         sc.GRPC.TLSCert,
+		KeyFile:          sc.GRPC.TLSKey,
+	})
+	if err != nil {
+		return err
+	}
+	if err := m.Register(t); err != nil {
+		return err
+	}
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Error("PANIC in grpc accept loop: %v\n%s", r, rtdebug.Stack())
+			}
+		}()
+		time.Sleep(1 * time.Second)
+		backoffGRPC := 1 * time.Millisecond
+		for {
+			conn, err := t.Accept()
+			if err != nil {
+				acceptBackoff(&backoffGRPC)
+				continue
+			}
+			backoffGRPC = 1 * time.Millisecond
+			release, ok := acquireConnSlot(conn.RemoteAddr())
+			if !ok {
+				conn.Close()
+				continue
+			}
+			go func() {
+				defer release()
+				handleAltTransportConn(conn)
+			}()
+		}
+	}()
+	return nil
+}
+
+func initYaDisk(m *lifecycle.Manager, sc *config.ServerConfig) error {
+	if !sc.YaDisk.Enabled || sc.YaDisk.OAuthToken == "" {
+		return nil
+	}
+	t, err := yadisk.New(&yadisk.Config{
+		OAuthToken: sc.YaDisk.OAuthToken,
+		SessionID:  sc.YaDisk.SessionID,
+		ServerMode: true,
+	})
+	if err != nil {
+		return err
+	}
+	if err := m.Register(t); err != nil {
+		return err
+	}
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Error("PANIC in yadisk accept loop: %v\n%s", r, rtdebug.Stack())
+			}
+		}()
+		time.Sleep(1 * time.Second)
+		backoffYaDisk := 1 * time.Millisecond
+		for {
+			conn, err := t.Accept()
+			if err != nil {
+				acceptBackoff(&backoffYaDisk)
+				continue
+			}
+			backoffYaDisk = 1 * time.Millisecond
+			release, ok := acquireConnSlot(conn.RemoteAddr())
+			if !ok {
+				conn.Close()
+				continue
+			}
+			go func() {
+				defer release()
+				handleAltTransportConn(conn)
+			}()
+		}
+	}()
+	return nil
+}
+
 type UDPResponseWriter struct {
 	transport  *udp.Transport
 	addr       net.Addr
-	obfuscator interfaces.Obfuscator
+	obfuscator interfaces.ObfuscationProcessor
 	debug      bool
 	UserID     string
 }
