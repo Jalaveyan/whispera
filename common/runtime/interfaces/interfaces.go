@@ -45,11 +45,13 @@ const (
 
 type Transport interface {
 	Module
-	Listen(addr string) error
 	Dial(ctx context.Context, addr string) (net.Conn, error)
-	Accept() (net.Conn, error)
 	Type() TransportType
 	Close() error
+}
+
+type StreamAcceptor interface {
+	Accept() (net.Conn, error)
 }
 
 type DialableTransport interface {
@@ -79,11 +81,15 @@ type Stream interface {
 	IsClosed() bool
 }
 
-type SessionManager interface {
-	Module
-	GetSession(id uint32) (Session, bool)
+type SessionStore interface {
 	GetSessionByAddr(addr net.Addr) (Session, bool)
 	CreateSession(params SessionParams) (Session, error)
+}
+
+type SessionManager interface {
+	Module
+	SessionStore
+	GetSession(id uint32) (Session, bool)
 	RemoveSession(id uint32)
 	GetAllSessions() []Session
 	Count() int

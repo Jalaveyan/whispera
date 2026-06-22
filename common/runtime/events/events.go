@@ -17,6 +17,43 @@ type Event struct {
 	Metadata map[string]interface{}
 }
 
+type subscription struct {
+	ch      chan Event
+	handler EventHandler
+}
+
+type eventBus struct {
+	mu          sync.RWMutex
+	subscribers map[string][]subscription
+	allSubs     []subscription
+	bufferSize  int
+	closed      bool
+	wg          sync.WaitGroup
+}
+
+type EventBusError struct {
+	Message string
+}
+
+var (
+	ErrEventBusClosed = &EventBusError{Message: "event bus is closed"}
+)
+
+const (
+	EventTypePacketReceived = "packet.received"
+	EventTypePacketSent     = "packet.sent"
+	EventTypePacketDropped  = "packet.dropped"
+
+	EventTypeHandshakeStarted   = "handshake.started"
+	EventTypeHandshakeCompleted = "handshake.completed"
+	EventTypeHandshakeFailed    = "handshake.failed"
+
+	EventTypeConfigReloaded = "config.reloaded"
+	EventTypeModuleStarted  = "module.started"
+	EventTypeModuleStopped  = "module.stopped"
+	EventTypeModuleError    = "module.error"
+)
+
 type EventHandler func(event Event)
 
 type EventBus interface {
@@ -33,20 +70,6 @@ type EventBus interface {
 	Unsubscribe(eventType string, ch <-chan Event)
 
 	Close()
-}
-
-type subscription struct {
-	ch      chan Event
-	handler EventHandler
-}
-
-type eventBus struct {
-	mu          sync.RWMutex
-	subscribers map[string][]subscription
-	allSubs     []subscription
-	bufferSize  int
-	closed      bool
-	wg          sync.WaitGroup
 }
 
 func NewEventBus(bufferSize int) EventBus {
@@ -193,37 +216,6 @@ func (eb *eventBus) Close() {
 			close(sub.ch)
 		}
 	}
-}
-
-const (
-	EventTypeSessionCreated = "session.created"
-	EventTypeSessionUpdated = "session.updated"
-	EventTypeSessionRemoved = "session.removed"
-	EventTypeSessionExpired = "session.expired"
-	EventTypeSessionRekeyed = "session.rekeyed"
-
-	EventTypePacketReceived = "packet.received"
-	EventTypePacketSent     = "packet.sent"
-	EventTypePacketDropped  = "packet.dropped"
-
-	EventTypeHandshakeStarted   = "handshake.started"
-	EventTypeHandshakeCompleted = "handshake.completed"
-	EventTypeHandshakeFailed    = "handshake.failed"
-
-	EventTypeConfigReloaded = "config.reloaded"
-	EventTypeModuleStarted  = "module.started"
-	EventTypeModuleStopped  = "module.stopped"
-	EventTypeModuleError    = "module.error"
-
-	EventTypeHealthChanged = "health.changed"
-)
-
-var (
-	ErrEventBusClosed = &EventBusError{Message: "event bus is closed"}
-)
-
-type EventBusError struct {
-	Message string
 }
 
 func (e *EventBusError) Error() string {
