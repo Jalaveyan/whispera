@@ -16,7 +16,7 @@ func HarvestRawClientHello(record []byte) error {
 	if err != nil {
 		return err
 	}
-	AddHarvestedFingerprint(spec)
+	addHarvestedFingerprint(spec, record)
 	return nil
 }
 

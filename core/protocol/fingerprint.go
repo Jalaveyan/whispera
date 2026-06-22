@@ -23,21 +23,49 @@ var fingerprintPool = []utls.ClientHelloID{
 var (
 	harvestMu    sync.RWMutex
 	harvestSpecs []*utls.ClientHelloSpec
+	harvestRaw   [][]byte
 
 	detectedBrowserID utls.ClientHelloID
 )
 
 const maxHarvest = 32
 
-func AddHarvestedFingerprint(spec *utls.ClientHelloSpec) {
+func addHarvestedFingerprint(spec *utls.ClientHelloSpec, raw []byte) {
 	if spec == nil {
 		return
 	}
 	harvestMu.Lock()
 	if len(harvestSpecs) < maxHarvest {
 		harvestSpecs = append(harvestSpecs, spec)
+		harvestRaw = append(harvestRaw, raw)
 	}
 	harvestMu.Unlock()
+}
+
+func AddHarvestedFingerprint(spec *utls.ClientHelloSpec) {
+	addHarvestedFingerprint(spec, nil)
+}
+
+func HarvestedRawRecords() [][]byte {
+	harvestMu.RLock()
+	defer harvestMu.RUnlock()
+	out := make([][]byte, 0, len(harvestRaw))
+	for _, rec := range harvestRaw {
+		if rec != nil {
+			out = append(out, append([]byte(nil), rec...))
+		}
+	}
+	return out
+}
+
+func HarvestedFingerprintCount() int {
+	harvestMu.RLock()
+	defer harvestMu.RUnlock()
+	return len(harvestSpecs)
+}
+
+func HarvestedFingerprintCapacity() int {
+	return maxHarvest
 }
 
 func pickFingerprint() (utls.ClientHelloID, *utls.ClientHelloSpec) {

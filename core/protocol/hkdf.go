@@ -44,11 +44,11 @@ func NewWindowScheduler(behaviorKey, sessionID []byte, anchor time.Time) *Window
 }
 
 func (ws *WindowScheduler) windowDuration(i int) time.Duration {
-	info := fmt.Sprintf("chameleon-window-dur-v1-%d", i)
+	info := fmt.Sprintf("whispera-window-dur-v1-%d", i)
 	r := hkdf.New(sha256.New, ws.behaviorKey, ws.sessionID, []byte(info))
 	var b [4]byte
 	if _, err := io.ReadFull(r, b[:]); err != nil {
-		panic("chameleon window dur: " + err.Error())
+		panic("whispera window dur: " + err.Error())
 	}
 	secs := minWindowSec + int(binary.BigEndian.Uint32(b[:])%uint32(maxWindowSec-minWindowSec+1))
 	return time.Duration(secs) * time.Second
@@ -89,10 +89,10 @@ func (ws *WindowScheduler) currentIndexLocked(now time.Time) int {
 
 func DeriveSegmentSize(behaviorKey []byte, segIdx uint64) int {
 	r := hkdf.New(sha256.New, behaviorKey, nil,
-		[]byte(fmt.Sprintf("chameleon-seg-size-v1-%d", segIdx)))
+		[]byte(fmt.Sprintf("whispera-seg-size-v1-%d", segIdx)))
 	var b [4]byte
 	if _, err := io.ReadFull(r, b[:]); err != nil {
-		panic("chameleon seg size: " + err.Error())
+		panic("whispera seg size: " + err.Error())
 	}
 	v := binary.LittleEndian.Uint32(b[:])
 	const minSeg = 3 * 1024 * 1024
@@ -101,11 +101,11 @@ func DeriveSegmentSize(behaviorKey []byte, segIdx uint64) int {
 }
 
 func DeriveBehaviorParams(behaviorKey []byte, windowIndex int, sessionID []byte) BehaviorParams {
-	info := fmt.Sprintf("chameleon-behavior-v1-%d", windowIndex)
+	info := fmt.Sprintf("whispera-behavior-v1-%d", windowIndex)
 	r := hkdf.New(sha256.New, behaviorKey, sessionID, []byte(info))
 	var seed [64]byte
 	if _, err := io.ReadFull(r, seed[:]); err != nil {
-		panic("chameleon behavior derive: " + err.Error())
+		panic("whispera behavior derive: " + err.Error())
 	}
 
 	u32 := func(off int) uint32 { return binary.BigEndian.Uint32(seed[off:]) }

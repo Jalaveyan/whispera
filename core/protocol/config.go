@@ -28,15 +28,32 @@ type ServerConfig struct {
 	Domain           string
 	ACMEDir          string
 	DecoyOrigin      string
+	DecoyCertDir     string
 	AsymBiasRatio    float64
 	SharedSecret     []byte
 
-	QUICListenAddr string
+	QUICListenAddr       string
+	ExtraQUICListenAddrs []string
 
-	GetUsers  func() []UserEntry
-	OnConn    func(conn net.Conn, userID string)
-	GANDecide GANDecideFunc
+	GetUsers         func() []UserEntry
+	OnConn           func(conn net.Conn, userID string)
+	GANDecide        GANDecideFunc
+	IsNeuralDisabled func(userID string) bool
 
+	sessionRegistry
+}
+
+func effectiveGANDecide(cfg *ServerConfig, userID string) GANDecideFunc {
+	if cfg.GANDecide == nil {
+		return nil
+	}
+	if cfg.IsNeuralDisabled != nil && cfg.IsNeuralDisabled(userID) {
+		return func(float64, float64, float64) GANAction { return GANAction{} }
+	}
+	return cfg.GANDecide
+}
+
+type sessionRegistry struct {
 	proxy       *decoyProxy
 	sessions    sync.Map
 	sessionMu   sync.Mutex
@@ -49,25 +66,25 @@ type ServerConfig struct {
 
 const replayWindowSeconds = (2*authWindowTolerance + 1) * authWindowSeconds
 
-func (cfg *ServerConfig) consumeToken(token string) bool {
-	return cfg.seenTokens.consume(token, time.Now().Unix())
+func (r *sessionRegistry) consumeToken(token string) bool {
+	return r.seenTokens.consume(token, time.Now().Unix())
 }
 
-func (cfg *ServerConfig) initCond() {
-	if cfg.sessionCond == nil {
-		cfg.sessionCond = sync.NewCond(&cfg.sessionMu)
+func (r *sessionRegistry) initCond() {
+	if r.sessionCond == nil {
+		r.sessionCond = sync.NewCond(&r.sessionMu)
 	}
 }
 
-func (cfg *ServerConfig) storeSession(key string, sess *restSession) {
-	cfg.sessions.Store(key, sess)
-	cfg.sessionCond.Broadcast()
+func (r *sessionRegistry) storeSession(key string, sess *restSession) {
+	r.sessions.Store(key, sess)
+	r.sessionCond.Broadcast()
 }
 
-func (cfg *ServerConfig) waitSession(key string, timeout time.Duration) (*restSession, bool) {
+func (r *sessionRegistry) waitSession(key string, timeout time.Duration) (*restSession, bool) {
 	deadline := time.Now().Add(timeout)
-	cfg.sessionMu.Lock()
-	defer cfg.sessionMu.Unlock()
+	r.sessionMu.Lock()
+	defer r.sessionMu.Unlock()
 	var wakeTimer *time.Timer
 	defer func() {
 		if wakeTimer != nil {
@@ -75,7 +92,7 @@ func (cfg *ServerConfig) waitSession(key string, timeout time.Duration) (*restSe
 		}
 	}()
 	for {
-		if v, ok := cfg.sessions.Load(key); ok {
+		if v, ok := r.sessions.Load(key); ok {
 			return v.(*restSession), true
 		}
 		remaining := time.Until(deadline)
@@ -83,8 +100,8 @@ func (cfg *ServerConfig) waitSession(key string, timeout time.Duration) (*restSe
 			return nil, false
 		}
 		if wakeTimer == nil {
-			wakeTimer = time.AfterFunc(remaining, cfg.sessionCond.Broadcast)
+			wakeTimer = time.AfterFunc(remaining, r.sessionCond.Broadcast)
 		}
-		cfg.sessionCond.Wait()
+		r.sessionCond.Wait()
 	}
 }

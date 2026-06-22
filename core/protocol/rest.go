@@ -14,11 +14,73 @@ import (
 	"time"
 )
 
-const uploadBodyMax = 700 * 1024
-
 type uploadBody struct {
 	data []byte
 }
+
+type segSlot struct {
+	w     io.Writer
+	flush func()
+	done  chan struct{}
+}
+
+type segmentRouter struct {
+	sess        *restSession
+	behaviorKey []byte
+	connDone    chan struct{}
+
+	mu         sync.Mutex
+	curSlot    *segSlot
+	bytesInSeg int
+	segSize    int
+	segIdx     uint64
+}
+
+type GANAction struct {
+	SleepMs   float64
+	PaddingN  int
+	SegShrink float64
+}
+
+type GANDecideFunc func(iatMean, sizeMean, upRatio float64) GANAction
+
+type restSession struct {
+	uploadCh          chan *uploadBody
+	segCh             chan segSlot
+	closed            chan struct{}
+	secret            []byte
+	uploadBytes       int64
+	downloadBytes     int64
+	segShrinkPerMille int64
+	bulkMode          int32
+}
+
+type restServerConn struct {
+	sess    *restSession
+	readBuf []byte
+
+	w       io.Writer
+	flusher http.Flusher
+
+	done    chan struct{}
+	once    sync.Once
+	onClose func()
+
+	localAddr  net.Addr
+	remoteAddr net.Addr
+
+	ganDecide     GANDecideFunc
+	lastWrite     time.Time
+	iatSum        float64
+	sizeSum       float64
+	writeCount    float64
+	lastGANUpdate time.Time
+	smoothedIAT   float64
+	smoothedSize  float64
+	lastGANAction GANAction
+}
+
+const uploadBodyMax = 700 * 1024
 
 var uploadBodyPool = sync.Pool{
 	New: func() any { return &uploadBody{data: make([]byte, uploadBodyMax)} },
@@ -67,24 +129,6 @@ func hlsM3U8(startSeg uint64) string {
 	return sb.String()
 }
 
-type segSlot struct {
-	w     io.Writer
-	flush func()
-	done  chan struct{}
-}
-
-type segmentRouter struct {
-	sess        *restSession
-	behaviorKey []byte
-	connDone    chan struct{}
-
-	mu         sync.Mutex
-	curSlot    *segSlot
-	bytesInSeg int
-	segSize    int
-	segIdx     uint64
-}
-
 func newSegmentRouter(sess *restSession, behaviorKey []byte, connDone chan struct{}) *segmentRouter {
 	return &segmentRouter{sess: sess, behaviorKey: behaviorKey, connDone: connDone}
 }
@@ -121,7 +165,7 @@ func (r *segmentRouter) acquireSlot() (*segSlot, error) {
 	case <-r.connDone:
 		return nil, io.ErrClosedPipe
 	case <-t.C:
-		return nil, fmt.Errorf("chameleon: no segment in 10s")
+		return nil, fmt.Errorf("whispera: no segment in 10s")
 	}
 }
 
@@ -147,50 +191,6 @@ func (r *segmentRouter) Write(b []byte) (int, error) {
 		close(s.done)
 	}
 	return n, err
-}
-
-type GANAction struct {
-	SleepMs   float64
-	PaddingN  int
-	SegShrink float64
-}
-
-type GANDecideFunc func(iatMean, sizeMean, upRatio float64) GANAction
-
-type restSession struct {
-	uploadCh          chan *uploadBody
-	segCh             chan segSlot
-	closed            chan struct{}
-	secret            []byte
-	uploadBytes       int64
-	downloadBytes     int64
-	segShrinkPerMille int64
-	bulkMode          int32
-}
-
-type restServerConn struct {
-	sess    *restSession
-	readBuf []byte
-
-	w       io.Writer
-	flusher http.Flusher
-
-	done    chan struct{}
-	once    sync.Once
-	onClose func()
-
-	localAddr  net.Addr
-	remoteAddr net.Addr
-
-	ganDecide     GANDecideFunc
-	lastWrite     time.Time
-	iatSum        float64
-	sizeSum       float64
-	writeCount    float64
-	lastGANUpdate time.Time
-	smoothedIAT   float64
-	smoothedSize  float64
-	lastGANAction GANAction
 }
 
 func ganEMA(prev, next, alpha float64) float64 {
@@ -378,7 +378,7 @@ func handleRESTDownload(w http.ResponseWriter, r *http.Request, cfg *ServerConfi
 	local := staticAddr{"tcp", r.Host}
 	remote := staticAddr{"tcp", r.RemoteAddr}
 
-	decide := cfg.GANDecide
+	decide := effectiveGANDecide(cfg, userID)
 
 	done := make(chan struct{})
 	conn := newRestServerConn(sess, w, local, remote, func() { close(done) }, decide)
@@ -394,39 +394,7 @@ func handleRESTDownload(w http.ResponseWriter, r *http.Request, cfg *ServerConfi
 	fc := NewFrameConn(conn)
 
 	if decide != nil {
-		go func() {
-			var prevDown int64
-			for {
-				jitter := time.Duration(mrand.Intn(100)-50) * time.Millisecond
-				t := time.NewTimer(200*time.Millisecond + jitter)
-				select {
-				case <-done:
-					t.Stop()
-					return
-				case <-t.C:
-				}
-				curDown := atomic.LoadInt64(&sess.downloadBytes)
-				rate := curDown - prevDown
-				prevDown = curDown
-				if rate > 2*1024*1024 {
-					atomic.StoreInt32(&sess.bulkMode, 1)
-					continue
-				}
-				atomic.StoreInt32(&sess.bulkMode, 0)
-				up := float64(atomic.LoadInt64(&sess.uploadBytes))
-				down := float64(curDown)
-				upRatio := 0.0
-				if up+down > 0 {
-					upRatio = up / (up + down)
-				}
-				action := decide(0, 0, upRatio)
-				if action.PaddingN > 0 {
-					if err := fc.WritePad(action.PaddingN); err != nil {
-						return
-					}
-				}
-			}
-		}()
+		go runAdaptivePadding(sess, fc, done, decide)
 	}
 
 	if cfg.OnConn != nil {
@@ -434,6 +402,40 @@ func handleRESTDownload(w http.ResponseWriter, r *http.Request, cfg *ServerConfi
 	}
 
 	<-done
+}
+
+func runAdaptivePadding(sess *restSession, fc *FrameConn, done <-chan struct{}, decide GANDecideFunc) {
+	var prevDown int64
+	for {
+		jitter := time.Duration(mrand.Intn(100)-50) * time.Millisecond
+		t := time.NewTimer(200*time.Millisecond + jitter)
+		select {
+		case <-done:
+			t.Stop()
+			return
+		case <-t.C:
+		}
+		curDown := atomic.LoadInt64(&sess.downloadBytes)
+		rate := curDown - prevDown
+		prevDown = curDown
+		if rate > 2*1024*1024 {
+			atomic.StoreInt32(&sess.bulkMode, 1)
+			continue
+		}
+		atomic.StoreInt32(&sess.bulkMode, 0)
+		up := float64(atomic.LoadInt64(&sess.uploadBytes))
+		down := float64(curDown)
+		upRatio := 0.0
+		if up+down > 0 {
+			upRatio = up / (up + down)
+		}
+		action := decide(0, 0, upRatio)
+		if action.PaddingN > 0 {
+			if err := fc.WritePad(action.PaddingN); err != nil {
+				return
+			}
+		}
+	}
 }
 
 func handleHLSPlaylist(w http.ResponseWriter, r *http.Request, cfg *ServerConfig) {
@@ -490,7 +492,7 @@ func handleHLSPlaylist(w http.ResponseWriter, r *http.Request, cfg *ServerConfig
 	local := staticAddr{"tcp", r.Host}
 	remote := staticAddr{"tcp", r.RemoteAddr}
 
-	decide := cfg.GANDecide
+	decide := effectiveGANDecide(cfg, userID)
 
 	go func() {
 		defer func() {
@@ -505,39 +507,7 @@ func handleHLSPlaylist(w http.ResponseWriter, r *http.Request, cfg *ServerConfig
 		fc := NewFrameConn(conn)
 
 		if decide != nil {
-			go func() {
-				var prevDown int64
-				for {
-					jitter := time.Duration(mrand.Intn(100)-50) * time.Millisecond
-					t := time.NewTimer(200*time.Millisecond + jitter)
-					select {
-					case <-done:
-						t.Stop()
-						return
-					case <-t.C:
-					}
-					curDown := atomic.LoadInt64(&sess.downloadBytes)
-					rate := curDown - prevDown
-					prevDown = curDown
-					if rate > 2*1024*1024 {
-						atomic.StoreInt32(&sess.bulkMode, 1)
-						continue
-					}
-					atomic.StoreInt32(&sess.bulkMode, 0)
-					up := float64(atomic.LoadInt64(&sess.uploadBytes))
-					down := float64(curDown)
-					upRatio := 0.0
-					if up+down > 0 {
-						upRatio = up / (up + down)
-					}
-					action := decide(0, 0, upRatio)
-					if action.PaddingN > 0 {
-						if err := fc.WritePad(action.PaddingN); err != nil {
-							return
-						}
-					}
-				}
-			}()
+			go runAdaptivePadding(sess, fc, done, decide)
 		}
 
 		if cfg.OnConn != nil {

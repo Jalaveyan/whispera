@@ -50,6 +50,10 @@ func AuthToken(authKey []byte, window int64, sessionID []byte) string {
 	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 }
 
+func ClientAuthToken(authKey, sessionID []byte) string {
+	return AuthToken(authKey, time.Now().Unix()/authWindowSeconds, sessionID)
+}
+
 func VerifyAuthToken(authKey []byte, token string, sessionID []byte) bool {
 	raw, err := base64.RawURLEncoding.DecodeString(token)
 	if err != nil || len(raw) != 32 {

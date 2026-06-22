@@ -18,6 +18,35 @@ type bufferedPipeWriter struct {
 	once sync.Once
 }
 
+type pipelinedConn struct {
+	bpw    *bufferedPipeWriter
+	pr     *io.PipeReader
+	cancel func()
+	once   sync.Once
+	sig    sync.Once
+
+	bodyReady chan struct{}
+	body      io.ReadCloser
+
+	localAddr  net.Addr
+	remoteAddr net.Addr
+}
+
+type staticAddr struct{ network, addr string }
+
+type httpStreamConn struct {
+	r      io.Reader
+	w      http.ResponseWriter
+	flush  func()
+	local  net.Addr
+	remote net.Addr
+	done   chan struct{}
+	once   sync.Once
+
+	upBytes   int64
+	downBytes int64
+}
+
 func newBufferedPipeWriter(pw *io.PipeWriter) *bufferedPipeWriter {
 	b := &bufferedPipeWriter{
 		pw:   pw,
@@ -74,20 +103,6 @@ func (bw *bufferedPipeWriter) drain() {
 	}
 }
 
-type pipelinedConn struct {
-	bpw    *bufferedPipeWriter
-	pr     *io.PipeReader
-	cancel func()
-	once   sync.Once
-	sig    sync.Once
-
-	bodyReady chan struct{}
-	body      io.ReadCloser
-
-	localAddr  net.Addr
-	remoteAddr net.Addr
-}
-
 func newPipelinedConn(pr *io.PipeReader, bpw *bufferedPipeWriter, cancel func(), local, remote net.Addr) *pipelinedConn {
 	return &pipelinedConn{
 		pr:         pr,
@@ -139,23 +154,8 @@ func (c *pipelinedConn) SetDeadline(t time.Time) error      { return nil }
 func (c *pipelinedConn) SetReadDeadline(t time.Time) error  { return nil }
 func (c *pipelinedConn) SetWriteDeadline(t time.Time) error { return nil }
 
-type staticAddr struct{ network, addr string }
-
 func (a staticAddr) Network() string { return a.network }
 func (a staticAddr) String() string  { return a.addr }
-
-type httpStreamConn struct {
-	r      io.Reader
-	w      http.ResponseWriter
-	flush  func()
-	local  net.Addr
-	remote net.Addr
-	done   chan struct{}
-	once   sync.Once
-
-	upBytes   int64
-	downBytes int64
-}
 
 func newHTTPStreamConn(r io.Reader, w http.ResponseWriter, flush func(), local, remote net.Addr, _ GANDecideFunc) *httpStreamConn {
 	return &httpStreamConn{r: r, w: w, flush: flush, local: local, remote: remote, done: make(chan struct{})}
