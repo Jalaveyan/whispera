@@ -1,3 +1,5 @@
+//go:build linux
+
 package neural
 
 import (
@@ -9,8 +11,12 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
+	"whispera/common/log"
 	"whispera/neural/gnet"
 )
+
+var log = logger.Module("neural")
 
 type scoredDecoy struct {
 	features []float64
@@ -404,6 +410,66 @@ func (n *ganNorm) normalise(x []float64) []float64 {
 		out[i] = (v - n.mean[i]) / std
 	}
 	return out
+}
+
+type GANRunner struct {
+	gan       *TrafficGAN
+	collector *PCAPCollector
+	stopCh    chan struct{}
+	savePath  string
+}
+
+func NewGANRunner(iface string, port int, savePath string) *GANRunner {
+	return &GANRunner{
+		gan:       NewTrafficGAN(),
+		collector: NewPCAPCollector(iface, port),
+		stopCh:    make(chan struct{}),
+		savePath:  savePath,
+	}
+}
+
+func (r *GANRunner) Out() <-chan LabeledFlow { return r.collector.Out() }
+
+func (r *GANRunner) GAN() *TrafficGAN { return r.gan }
+
+func (r *GANRunner) Start() error {
+	if r.savePath != "" {
+		if err := r.gan.Load(r.savePath); err == nil {
+		}
+	}
+	if err := r.collector.Start(); err != nil {
+		return err
+	}
+	go r.loop()
+	return nil
+}
+
+func (r *GANRunner) Stop() {
+	close(r.stopCh)
+	if r.savePath != "" {
+		if err := r.gan.Save(r.savePath); err != nil {
+			log.Error("GAN: save state failed: %v", err)
+		}
+	}
+}
+
+func (r *GANRunner) loop() {
+	saveTicker := time.NewTicker(5 * time.Minute)
+	defer saveTicker.Stop()
+	for {
+		select {
+		case <-r.stopCh:
+			return
+		case lf := <-r.Out():
+			r.gan.Train(lf)
+		case <-saveTicker.C:
+			if r.savePath != "" {
+				if err := r.gan.Save(r.savePath); err != nil {
+					log.Error("GAN: save state failed: %v", err)
+				}
+			}
+		}
+	}
 }
 
 func sigmoid64(x float64) float64 {

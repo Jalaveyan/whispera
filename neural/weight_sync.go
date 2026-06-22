@@ -7,12 +7,10 @@ import (
 
 type WeightSnapshot struct {
 	Version   int64           `json:"v"`
-	Transport []gnet.LayerDef `json:"transport,omitempty"`
 	SNI       []gnet.LayerDef `json:"sni,omitempty"`
 	Keepalive []gnet.LayerDef `json:"keepalive,omitempty"`
 	Jitter    []gnet.LayerDef `json:"jitter,omitempty"`
 	Chunk     []gnet.LayerDef `json:"chunk,omitempty"`
-	Conn      []gnet.LayerDef `json:"conn,omitempty"`
 	Backoff   []gnet.LayerDef `json:"backoff,omitempty"`
 	Server    []gnet.LayerDef `json:"server,omitempty"`
 	TLS       []gnet.LayerDef `json:"tls,omitempty"`
@@ -48,19 +46,6 @@ func copyLayers(net *gnet.GorgoniaNet) []gnet.LayerDef {
 	return out
 }
 
-func (a *RLTransportAgent) ExportWeights() []gnet.LayerDef {
-	a.mu.RLock()
-	defer a.mu.RUnlock()
-	return copyLayers(a.qNet)
-}
-
-func (a *RLTransportAgent) ImportWeights(layers []gnet.LayerDef) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	a.qNet.LoadWeights(layers)
-	a.target = gnet.Clone(a.qNet)
-}
-
 func (a *RLKeepaliveAgent) ExportWeights() []gnet.LayerDef       { return a.core.ExportWeights() }
 func (a *RLKeepaliveAgent) ImportWeights(layers []gnet.LayerDef) { a.core.ImportWeights(layers) }
 
@@ -69,9 +54,6 @@ func (a *RLJitterAgent) ImportWeights(layers []gnet.LayerDef) { a.core.ImportWei
 
 func (a *RLChunkAgent) ExportWeights() []gnet.LayerDef       { return a.core.ExportWeights() }
 func (a *RLChunkAgent) ImportWeights(layers []gnet.LayerDef) { a.core.ImportWeights(layers) }
-
-func (a *RLConnAgent) ExportWeights() []gnet.LayerDef       { return a.core.ExportWeights() }
-func (a *RLConnAgent) ImportWeights(layers []gnet.LayerDef) { a.core.ImportWeights(layers) }
 
 func (a *RLBackoffAgent) ExportWeights() []gnet.LayerDef       { return a.core.ExportWeights() }
 func (a *RLBackoffAgent) ImportWeights(layers []gnet.LayerDef) { a.core.ImportWeights(layers) }
