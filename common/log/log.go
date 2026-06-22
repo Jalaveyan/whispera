@@ -1,6 +1,7 @@
 package logger
 
 import (
+	"fmt"
 	"io"
 	"os"
 	"strings"
@@ -87,6 +88,65 @@ func ParseLevel(s string) Level {
 	}
 }
 
+const colorReset = "\x1b[0m"
+
+var levelColors = map[zapcore.Level]string{
+	zapcore.DebugLevel: "\x1b[90m",
+	zapcore.InfoLevel:  "\x1b[36m",
+	zapcore.WarnLevel:  "\x1b[33m",
+	zapcore.ErrorLevel: "\x1b[31m",
+	zapcore.FatalLevel: "\x1b[35m",
+}
+
+func encodeTimeShort(t time.Time, enc zapcore.PrimitiveArrayEncoder) {
+	enc.AppendString(t.Format("15:04:05.000"))
+}
+
+func encodeLevelPlain(l zapcore.Level, enc zapcore.PrimitiveArrayEncoder) {
+	enc.AppendString(fmt.Sprintf("[%-5s]", l.CapitalString()))
+}
+
+func encodeLevelColored(l zapcore.Level, enc zapcore.PrimitiveArrayEncoder) {
+	color := levelColors[l]
+	enc.AppendString(fmt.Sprintf("%s[%-5s]%s", color, l.CapitalString(), colorReset))
+}
+
+func encodeNamePadded(s string, enc zapcore.PrimitiveArrayEncoder) {
+	const width = 9
+	if len(s) > width {
+		s = s[:width]
+	}
+	enc.AppendString(fmt.Sprintf("%-*s", width, s))
+}
+
+func isTerminal(f *os.File) bool {
+	fi, err := f.Stat()
+	if err != nil {
+		return false
+	}
+	return (fi.Mode() & os.ModeCharDevice) != 0
+}
+
+func buildEncoderConfig(color bool) zapcore.EncoderConfig {
+	cfg := zapcore.EncoderConfig{
+		TimeKey:          "ts",
+		LevelKey:         "level",
+		NameKey:          "module",
+		MessageKey:       "msg",
+		LineEnding:       zapcore.DefaultLineEnding,
+		EncodeTime:       encodeTimeShort,
+		EncodeDuration:   zapcore.StringDurationEncoder,
+		EncodeName:       encodeNamePadded,
+		ConsoleSeparator: " ",
+	}
+	if color {
+		cfg.EncodeLevel = encodeLevelColored
+	} else {
+		cfg.EncodeLevel = encodeLevelPlain
+	}
+	return cfg
+}
+
 type atomicWriter struct {
 	w atomic.Pointer[io.Writer]
 }
@@ -162,13 +222,7 @@ func (rc ringCore) Check(e zapcore.Entry, ce *zapcore.CheckedEntry) *zapcore.Che
 	return ce.AddCore(e, rc)
 }
 func (rc ringCore) Write(e zapcore.Entry, fields []zapcore.Field) error {
-	module := ""
-	for _, f := range fields {
-		if f.Key == "module" && f.Type == zapcore.StringType {
-			module = f.String
-		}
-	}
-	rc.rb.push(Entry{Time: e.Time, Level: e.Level.CapitalString(), Module: module, Message: e.Message})
+	rc.rb.push(Entry{Time: e.Time, Level: e.Level.CapitalString(), Module: e.LoggerName, Message: e.Message})
 	return nil
 }
 func (rc ringCore) Sync() error { return nil }
@@ -186,11 +240,7 @@ func buildGlobal() {
 	globalErrSink = newAtomicWriter(os.Stderr)
 	globalRing = newRingBuffer()
 
-	encCfg := zap.NewProductionEncoderConfig()
-	encCfg.EncodeTime = zapcore.ISO8601TimeEncoder
-	encCfg.TimeKey = "ts"
-	encCfg.MessageKey = "msg"
-	encCfg.LevelKey = "level"
+	encCfg := buildEncoderConfig(isTerminal(os.Stderr))
 
 	consoleCore := zapcore.NewCore(
 		zapcore.NewConsoleEncoder(encCfg),
