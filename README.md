@@ -26,15 +26,17 @@ This is for creating a key
 whispera create-key -user <your_username> -port <your_port>
 ```
 
+```
 -user <name> required — username (login via Whispera Auth)
 -port <port> required — dedicated listening port for this user
--transport whispera|grpc|quick|yadisk (default: whispera)
+-transport whispera|grpc|yadisk (default: whispera)
 -quic enable/disable tunneling over QUIC instead of TCP
 -quic-port <port> dedicated QUIC port (0 = reuse shared port)
 -yadisk-token <token> Yandex.Disk OAuth token (YADISK transport only)
 -yadisk-session <id> Yandex.Disk session/folder ID (automatically generated if empty)
 -neural enable/disable RL agents + GAN seeding for this user
 -sni <realdomain> clone a real domain certificate and provide it via SNI for this key
+```
 
 This is for creating a sub
 
