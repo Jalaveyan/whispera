@@ -26,8 +26,7 @@ type ConnectionKey struct {
 
 	ObfsProfile string `json:"obfs_profile,omitempty"`
 
-	EnableML  bool `json:"enable_ml"`
-	EnableFTE bool `json:"enable_fte"`
+	DisableNeural bool `json:"disable_neural,omitempty"`
 
 	EnableASNBypass    bool   `json:"asn_bypass"`
 	TLSFingerprint     string `json:"tls_fingerprint,omitempty"`
@@ -36,10 +35,17 @@ type ConnectionKey struct {
 
 	RussianService string `json:"russian_service,omitempty"`
 
-	ChameleonAddr     string `json:"chameleon_addr,omitempty"`
-	ChameleonSNI      string `json:"chameleon_sni,omitempty"`
-	ChameleonQUICAddr string `json:"chameleon_quic_addr,omitempty"`
-	ChameleonCertPin  string `json:"chameleon_pin,omitempty"`
+	WhisperaAddr     string `json:"whispera_addr,omitempty"`
+	WhisperaSNI      string `json:"whispera_sni,omitempty"`
+	WhisperaQUICAddr string `json:"whispera_quic_addr,omitempty"`
+	WhisperaCertPin  string `json:"whispera_pin,omitempty"`
+
+	GRPCAddr       string `json:"grpc_addr,omitempty"`
+	GRPCServerName string `json:"grpc_server_name,omitempty"`
+	GRPCUseTLS     bool   `json:"grpc_use_tls,omitempty"`
+
+	YaDiskOAuthToken string `json:"yadisk_oauth_token,omitempty"`
+	YaDiskSessionID  string `json:"yadisk_session_id,omitempty"`
 
 	TransportConfig map[string]interface{} `json:"transport_config,omitempty"`
 
@@ -48,6 +54,39 @@ type ConnectionKey struct {
 	MLToken string `json:"ml_token,omitempty"`
 
 	SubscriptionURL string `json:"sub_url,omitempty"`
+}
+
+type transportTraits struct {
+	udpOnly       bool
+	primaryServer func(ck *ConnectionKey) string
+}
+type KeyGenOptions struct {
+	Name              string
+	KeyID             string
+	ExpiresAt         int64
+	ObfsProfile       string
+	ObfsPreset        string
+	Transport         string
+	ASNBypass         bool
+	TLSFingerprint    string
+	DefaultMarionette string
+	DomainFront       string
+	RussianService    string
+	TransportConfig   map[string]interface{}
+}
+
+var data struct {
+	Name    string      `json:"ps"`
+	Add     string      `json:"add"`
+	Port    interface{} `json:"port"`
+	ID      string      `json:"id"`
+	Net     string      `json:"net"`
+	Type    string      `json:"type"`
+	Host    string      `json:"host"`
+	Path    string      `json:"path"`
+	TLS     string      `json:"tls"`
+	SNI     string      `json:"sni"`
+	SvcName string      `json:"serviceName"`
 }
 
 func (ck *ConnectionKey) IsExpired() bool {
@@ -111,8 +150,6 @@ func ParseConnectionKey(key string) (*ConnectionKey, error) {
 			Transport:   "auto",
 			ObfsPreset:  "default",
 			ObfsProfile: "vk",
-			EnableML:    true,
-			EnableFTE:   true,
 		}
 
 		q := u.Query()
@@ -142,7 +179,7 @@ func ParseConnectionKey(key string) (*ConnectionKey, error) {
 			ck.TLSFingerprint = val
 		}
 		if val := q.Get("pin"); val != "" {
-			ck.ChameleonCertPin = val
+			ck.WhisperaCertPin = val
 		}
 		if val := q.Get("front"); val != "" {
 			ck.DomainFrontHost = val
@@ -233,30 +270,33 @@ func ParseConnectionKey(key string) (*ConnectionKey, error) {
 
 func (ck *ConnectionKey) ToClientConfig() *ClientConfig {
 	cfg := &ClientConfig{
-		Server:            ck.Server,
-		ServerAlts:        append([]string(nil), ck.ServerAlts...),
-		ServerTCP:         ck.ServerTCP,
-		ServerWS:          ck.ServerWS,
-		PSK:               ck.PSK,
-		ServerPub:         ck.ServerPub,
-		ObfsPreset:        ck.ObfsPreset,
-		AppProfile:        ck.ObfsProfile,
-		RussianService:    ck.RussianService,
-		TransportConfig:   ck.TransportConfig,
-		Transport:         ck.Transport,
-		MLServerURL:       ck.MLServerURL,
-		MLToken:           ck.MLToken,
-		ChameleonAddr:     ck.ChameleonAddr,
-		ChameleonSNI:      ck.ChameleonSNI,
-		ChameleonQUICAddr: ck.ChameleonQUICAddr,
-		ChameleonCertPin:  ck.ChameleonCertPin,
+		Server:           ck.Server,
+		ServerAlts:       append([]string(nil), ck.ServerAlts...),
+		ServerTCP:        ck.ServerTCP,
+		ServerWS:         ck.ServerWS,
+		PSK:              ck.PSK,
+		ServerPub:        ck.ServerPub,
+		ObfsPreset:       ck.ObfsPreset,
+		AppProfile:       ck.ObfsProfile,
+		RussianService:   ck.RussianService,
+		TransportConfig:  ck.TransportConfig,
+		Transport:        ck.Transport,
+		MLServerURL:      ck.MLServerURL,
+		MLToken:          ck.MLToken,
+		WhisperaAddr:     ck.WhisperaAddr,
+		WhisperaSNI:      ck.WhisperaSNI,
+		WhisperaQUICAddr: ck.WhisperaQUICAddr,
+		WhisperaCertPin:  ck.WhisperaCertPin,
+		GRPCAddr:         ck.GRPCAddr,
+		GRPCServerName:   ck.GRPCServerName,
+		GRPCUseTLS:       ck.GRPCUseTLS,
+		YaDiskOAuthToken: ck.YaDiskOAuthToken,
+		YaDiskSessionID:  ck.YaDiskSessionID,
+		DisableNeural:    ck.DisableNeural,
 	}
 
-	switch ck.Transport {
-	case "tcp":
-		cfg.UDPOnly = false
-	case "udp":
-		cfg.UDPOnly = true
+	if traits, ok := transportRegistry[ck.Transport]; ok {
+		cfg.UDPOnly = traits.udpOnly
 	}
 
 	if ck.EnableASNBypass {
@@ -275,40 +315,39 @@ func (ck *ConnectionKey) ToClientConfig() *ClientConfig {
 }
 
 func (ck *ConnectionKey) GetPrimaryServer() string {
-	switch ck.Transport {
-	case "tcp":
-		if ck.ServerTCP != "" {
-			return ck.ServerTCP
-		}
-		return ck.Server
-	case "ws":
-		if ck.ServerWS != "" {
-			return ck.ServerWS
-		}
-		return ck.ServerTCP
-	case "udp":
-		return ck.Server
-	default:
-		if ck.Server != "" {
-			return ck.Server
-		}
-		return ck.ServerTCP
+	if traits, ok := transportRegistry[ck.Transport]; ok && traits.primaryServer != nil {
+		return traits.primaryServer(ck)
 	}
+	if ck.Server != "" {
+		return ck.Server
+	}
+	return ck.ServerTCP
 }
 
-type KeyGenOptions struct {
-	Name              string
-	KeyID             string
-	ExpiresAt         int64
-	ObfsProfile       string
-	ObfsPreset        string
-	Transport         string
-	ASNBypass         bool
-	TLSFingerprint    string
-	DefaultMarionette string
-	DomainFront       string
-	RussianService    string
-	TransportConfig   map[string]interface{}
+var transportRegistry = map[string]transportTraits{
+	"tcp": {
+		udpOnly: false,
+		primaryServer: func(ck *ConnectionKey) string {
+			if ck.ServerTCP != "" {
+				return ck.ServerTCP
+			}
+			return ck.Server
+		},
+	},
+	"udp": {
+		udpOnly: true,
+		primaryServer: func(ck *ConnectionKey) string {
+			return ck.Server
+		},
+	},
+	"ws": {
+		primaryServer: func(ck *ConnectionKey) string {
+			if ck.ServerWS != "" {
+				return ck.ServerWS
+			}
+			return ck.ServerTCP
+		},
+	},
 }
 
 func FetchSubscription(rawURL string) ([]*ConnectionKey, error) {
@@ -537,15 +576,16 @@ func parseSSKey(raw string) (*ConnectionKey, error) {
 	}, nil
 }
 
+var xrayTransportAliases = map[string]string{
+	"grpc": "grpc",
+	"quic": "quic",
+	"tcp":  "tcp",
+	"":     "tcp",
+}
+
 func mapXRayTransport(t string) string {
-	switch strings.ToLower(t) {
-	case "grpc":
-		return "grpc"
-	case "quic":
-		return "quic"
-	case "tcp", "":
-		return "tcp"
-	default:
-		return "tcp"
+	if v, ok := xrayTransportAliases[strings.ToLower(t)]; ok {
+		return v
 	}
+	return "tcp"
 }

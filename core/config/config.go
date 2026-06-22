@@ -16,28 +16,6 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-type Duration time.Duration
-
-func (d Duration) D() time.Duration { return time.Duration(d) }
-
-func (d *Duration) UnmarshalYAML(value *yaml.Node) error {
-	if value.Kind != yaml.ScalarNode {
-		return &yaml.TypeError{Errors: []string{fmt.Sprintf("line %d: duration must be a scalar, keeping default", value.Line)}}
-	}
-
-	if n, err := strconv.ParseInt(value.Value, 10, 64); err == nil {
-		*d = Duration(time.Duration(n) * time.Second)
-		return nil
-	}
-
-	dur, err := time.ParseDuration(value.Value)
-	if err != nil {
-		return &yaml.TypeError{Errors: []string{fmt.Sprintf("line %d: cannot parse %q as duration (use integer seconds or '30s'), keeping default", value.Line, value.Value)}}
-	}
-	*d = Duration(dur)
-	return nil
-}
-
 const (
 	ModuleName    = "config.provider"
 	ModuleVersion = "1.0.0"
@@ -62,14 +40,15 @@ type ServerConfig struct {
 	API            APIConfig          `yaml:"api"`
 	Logging        LoggingConfig      `yaml:"logging"`
 	Relay          RelayConfig        `yaml:"relay"`
-	Chameleon      ChameleonConfig    `yaml:"chameleon"`
+	Whispera       WhisperaConfig     `yaml:"whispera"`
+	GRPC           GRPCConfig         `yaml:"grpc" json:"grpc"`
+	YaDisk         YaDiskConfig       `yaml:"yadisk" json:"yadisk"`
 	Inbounds       []InboundConfig    `yaml:"inbounds" json:"inbounds"`
 	Outbounds      []OutboundConfig   `yaml:"outbounds" json:"outbounds"`
 	RelayMode      string             `yaml:"relay_mode" json:"relay_mode"`
 	UpstreamServer string             `yaml:"upstream_server" json:"upstream_server"`
 	VKRelay        VKRelayConfig      `yaml:"vk_relay" json:"vk_relay"`
 	StealthMode    string             `yaml:"stealth_mode" json:"stealth_mode"`
-	Cache          CacheConfig        `yaml:"cache" json:"cache"`
 	Database       DatabaseConfig     `yaml:"database" json:"database"`
 	Notifications  NotificationConfig `yaml:"notifications" json:"notifications"`
 	Bot            BotConfig          `yaml:"bot" json:"bot"`
@@ -78,6 +57,291 @@ type ServerConfig struct {
 	Correlation    CorrelationConfig  `yaml:"correlation" json:"correlation"`
 	SNIBypass      SNIBypassConfig    `yaml:"sni_bypass" json:"sni_bypass"`
 	ML             MLConfig           `yaml:"ml" json:"ml"`
+}
+
+type BotConfig struct {
+	Enabled         bool    `yaml:"enabled" json:"enabled"`
+	Token           string  `yaml:"token" json:"token"`
+	Debug           bool    `yaml:"debug" json:"debug"`
+	AdminID         int64   `yaml:"admin_id" json:"admin_id"`
+	MonitorAdminIDs []int64 `yaml:"monitor_admin_ids" json:"monitor_admin_ids"`
+}
+
+func (c *BotConfig) Validate() error {
+	if c.Enabled && c.Token == "" {
+		return fmt.Errorf("bot token is required when enabled")
+	}
+	return nil
+}
+
+type DatabaseConfig struct {
+	PostgresURL string `yaml:"postgres_url" json:"postgres_url"`
+	MaxConns    int    `yaml:"max_conns" json:"max_conns"`
+	MinConns    int    `yaml:"min_conns" json:"min_conns"`
+}
+
+type NATSConfig struct {
+	Enabled bool   `yaml:"enabled" json:"enabled"`
+	URL     string `yaml:"url" json:"url"`
+	Prefix  string `yaml:"prefix" json:"prefix"`
+}
+
+type UpdateConfig struct {
+	Enabled       bool     `yaml:"enabled" json:"enabled"`
+	ManifestURL   string   `yaml:"manifest_url" json:"manifest_url"`
+	PublicKey     string   `yaml:"public_key" json:"public_key"`
+	Channel       string   `yaml:"channel" json:"channel"`
+	CheckInterval Duration `yaml:"check_interval" json:"check_interval"`
+}
+
+type CorrelationConfig struct {
+	Enabled         bool `yaml:"enabled" json:"enabled"`
+	PaddingEnabled  bool `yaml:"padding" json:"padding"`
+	JitterEnabled   bool `yaml:"jitter" json:"jitter"`
+	CoverTraffic    bool `yaml:"cover_traffic" json:"cover_traffic"`
+	MaxJitterMs     int  `yaml:"max_jitter_ms" json:"max_jitter_ms"`
+	CoverRateMs     int  `yaml:"cover_rate_ms" json:"cover_rate_ms"`
+	RateBytesPerSec int  `yaml:"rate_bytes_per_sec" json:"rate_bytes_per_sec"`
+}
+
+type SNIBypassConfig struct {
+	Enabled      bool   `yaml:"enabled" json:"enabled"`
+	Mode         string `yaml:"mode" json:"mode"`
+	FragmentSize int    `yaml:"fragment_size" json:"fragment_size"`
+	Fingerprint  string `yaml:"fingerprint" json:"fingerprint"`
+}
+
+type VKRelayConfig struct {
+	Enabled    bool   `yaml:"enabled" json:"enabled"`
+	Mode       string `yaml:"mode" json:"mode"`
+	Token      string `yaml:"token" json:"token"`
+	GroupID    int64  `yaml:"group_id" json:"group_id"`
+	PeerID     int64  `yaml:"peer_id" json:"peer_id"`
+	ServerMode bool   `yaml:"server_mode" json:"server_mode"`
+	StreamKey  string `yaml:"stream_key" json:"stream_key"`
+}
+
+type OutboundConfig struct {
+	Tag      string                 `yaml:"tag" json:"tag"`
+	Protocol string                 `yaml:"protocol" json:"protocol"`
+	Address  string                 `yaml:"address" json:"address"`
+	Settings map[string]interface{} `yaml:"settings" json:"settings"`
+	Chain    []string               `yaml:"chain" json:"chain"`
+}
+
+type InboundConfig struct {
+	Tag      string `yaml:"tag" json:"tag"`
+	Protocol string `yaml:"protocol" json:"protocol"`
+	Listen   string `yaml:"listen" json:"listen"`
+	Port     int    `yaml:"port" json:"port"`
+	Ports    []int  `yaml:"ports,omitempty" json:"ports,omitempty"`
+
+	Mode       string `yaml:"mode,omitempty" json:"mode,omitempty"`
+	RemoteAddr string `yaml:"remote_addr,omitempty" json:"remote_addr,omitempty"`
+
+	Settings map[string]interface{} `yaml:"settings" json:"settings"`
+
+	StreamSettings StreamConfig `yaml:"stream_settings" json:"stream_settings"`
+
+	Sniffing SniffingConfig `yaml:"sniffing" json:"sniffing"`
+}
+
+type StreamConfig struct {
+	Network  string                 `yaml:"network" json:"network"`
+	Security string                 `yaml:"security" json:"security"`
+	TLS      TLSConfig              `yaml:"tls" json:"tls"`
+	WS       WebSocketConfig        `yaml:"ws" json:"ws"`
+	H2C      H2CStreamConfig        `yaml:"h2c" json:"h2c"`
+	Params   map[string]interface{} `yaml:"params,omitempty" json:"params,omitempty"`
+}
+
+type TLSConfig struct {
+	CertFile string `yaml:"cert_file" json:"cert_file"`
+	KeyFile  string `yaml:"key_file" json:"key_file"`
+}
+
+type WebSocketConfig struct {
+	Path string `yaml:"path" json:"path"`
+}
+
+type H2CStreamConfig struct {
+	Path string `yaml:"path" json:"path"`
+}
+
+type SniffingConfig struct {
+	Enabled      bool     `yaml:"enabled" json:"enabled"`
+	DestOverride []string `yaml:"dest_override" json:"dest_override"`
+}
+
+type WhisperaConfig struct {
+	Enabled        bool   `yaml:"enabled" json:"enabled"`
+	ListenAddr     string `yaml:"listen_addr" json:"listen_addr"`
+	TLSCert        string `yaml:"tls_cert" json:"tls_cert"`
+	TLSKey         string `yaml:"tls_key" json:"tls_key"`
+	Domain         string `yaml:"domain" json:"domain"`
+	ACMEDir        string `yaml:"acme_dir" json:"acme_dir"`
+	DecoyOrigin    string `yaml:"decoy_origin" json:"decoy_origin"`
+	GANIface       string `yaml:"gan_iface" json:"gan_iface"`
+	GANPort        int    `yaml:"gan_port" json:"gan_port"`
+	GANMaxPadding  int    `yaml:"gan_max_padding" json:"gan_max_padding"`
+	Secret         string `yaml:"secret" json:"secret"`
+	QUICListenAddr string `yaml:"quic_listen_addr" json:"quic_listen_addr"`
+	ExtraPorts     []int  `yaml:"extra_ports,omitempty" json:"extra_ports,omitempty"`
+	QUICExtraPorts []int  `yaml:"quic_extra_ports,omitempty" json:"quic_extra_ports,omitempty"`
+}
+
+type GRPCConfig struct {
+	Enabled    bool   `yaml:"enabled" json:"enabled"`
+	ListenAddr string `yaml:"listen_addr" json:"listen_addr"`
+	ServerName string `yaml:"server_name" json:"server_name"`
+	TLSCert    string `yaml:"tls_cert" json:"tls_cert"`
+	TLSKey     string `yaml:"tls_key" json:"tls_key"`
+	ExtraPorts []int  `yaml:"extra_ports,omitempty" json:"extra_ports,omitempty"`
+}
+
+type YaDiskConfig struct {
+	Enabled    bool   `yaml:"enabled" json:"enabled"`
+	OAuthToken string `yaml:"oauth_token" json:"oauth_token"`
+	SessionID  string `yaml:"session_id" json:"session_id"`
+}
+
+type ServerSettings struct {
+	Name         string   `yaml:"name" json:"name"`
+	ListenAddr   string   `yaml:"listen_addr" json:"listen_addr"`
+	TUNName      string   `yaml:"tun_name" json:"tun_name"`
+	MTU          int      `yaml:"mtu" json:"mtu"`
+	Workers      int      `yaml:"workers" json:"workers"`
+	GracefulStop Duration `yaml:"graceful_stop" json:"graceful_stop"`
+	PrivateKey   string   `yaml:"private_key" json:"private_key"`
+	UUID         string   `yaml:"uuid" json:"uuid"`
+	PublicURL    string   `yaml:"public_url" json:"public_url"`
+}
+
+type TransportConfig struct {
+	UDP struct {
+		Enabled       bool   `yaml:"enabled"`
+		ListenAddr    string `yaml:"listen_addr"`
+		MaxPacketSize int    `yaml:"max_packet_size"`
+		BufferSize    int    `yaml:"buffer_size"`
+		Workers       int    `yaml:"workers"`
+	} `yaml:"udp"`
+
+	TCP struct {
+		Enabled    bool   `yaml:"enabled"`
+		ListenAddr string `yaml:"listen_addr"`
+	} `yaml:"tcp"`
+}
+
+type SessionConfig struct {
+	MaxSessions       int      `yaml:"max_sessions"`
+	SessionTimeout    Duration `yaml:"session_timeout"`
+	CleanupInterval   Duration `yaml:"cleanup_interval"`
+	KeepaliveInterval Duration `yaml:"keepalive_interval"`
+	RekeyInterval     Duration `yaml:"rekey_interval"`
+}
+
+type RoutingConfig struct {
+	RulesFile    string `yaml:"rules_file"`
+	DefaultRoute string `yaml:"default_route"`
+
+	Geo struct {
+		Enabled        bool     `yaml:"enabled"`
+		GeoIPFile      string   `yaml:"geoip_file"`
+		GeoSiteFile    string   `yaml:"geosite_file"`
+		UpdateInterval Duration `yaml:"update_interval"`
+	} `yaml:"geo"`
+
+	DNS struct {
+		Enabled     bool   `yaml:"enabled"`
+		Upstream    string `yaml:"upstream"`
+		FakeIPRange string `yaml:"fakeip_range"`
+	} `yaml:"dns"`
+}
+
+type ObfuscationConfig struct {
+	Enabled     bool   `yaml:"enabled"`
+	Profile     string `yaml:"profile"`
+	ThreatLevel int    `yaml:"threat_level"`
+
+	Padding struct {
+		Enabled bool `yaml:"enabled"`
+		MinSize int  `yaml:"min_size"`
+		MaxSize int  `yaml:"max_size"`
+	} `yaml:"padding"`
+
+	Chaff struct {
+		Enabled  bool     `yaml:"enabled"`
+		Interval Duration `yaml:"interval"`
+		MinSize  int      `yaml:"min_size"`
+		MaxSize  int      `yaml:"max_size"`
+	} `yaml:"chaff"`
+}
+
+type APIConfig struct {
+	Enabled           bool     `yaml:"enabled"`
+	ListenAddr        string   `yaml:"listen_addr"`
+	AuthToken         string   `yaml:"auth_token"`
+	WebRoot           string   `yaml:"web_root"`
+	EnableCORS        bool     `yaml:"enable_cors"`
+	AllowedOrigins    []string `yaml:"allowed_origins"`
+	TLSCert           string   `yaml:"tls_cert"`
+	TLSKey            string   `yaml:"tls_key"`
+	AdminUsername     string   `yaml:"admin_username"`
+	AdminPassword     string   `yaml:"admin_password"`
+	AdminPasswordHash string   `yaml:"admin_password_hash"`
+	LoginRateLimit    int      `yaml:"login_rate_limit"`
+}
+
+type LoggingConfig struct {
+	Level  string `yaml:"level"`
+	Format string `yaml:"format"`
+	Output string `yaml:"output"`
+	File   string `yaml:"file"`
+}
+
+type Provider struct {
+	*base.Module
+	mu           sync.RWMutex
+	config       *ServerConfig
+	configPath   string
+	watchers     map[string][]chan interface{}
+	watchersMu   sync.RWMutex
+	fileWatcher  chan struct{}
+	lastModified time.Time
+}
+
+func New(configPath string) (*Provider, error) {
+	p := &Provider{
+		Module:      base.NewModule(ModuleName, ModuleVersion, nil),
+		configPath:  configPath,
+		config:      DefaultServerConfig(),
+		watchers:    make(map[string][]chan interface{}),
+		fileWatcher: make(chan struct{}),
+	}
+
+	return p, nil
+}
+
+type Duration time.Duration
+
+func (d Duration) D() time.Duration { return time.Duration(d) }
+
+func (d *Duration) UnmarshalYAML(value *yaml.Node) error {
+	if value.Kind != yaml.ScalarNode {
+		return &yaml.TypeError{Errors: []string{fmt.Sprintf("line %d: duration must be a scalar, keeping default", value.Line)}}
+	}
+
+	if n, err := strconv.ParseInt(value.Value, 10, 64); err == nil {
+		*d = Duration(time.Duration(n) * time.Second)
+		return nil
+	}
+
+	dur, err := time.ParseDuration(value.Value)
+	if err != nil {
+		return &yaml.TypeError{Errors: []string{fmt.Sprintf("line %d: cannot parse %q as duration (use integer seconds or '30s'), keeping default", value.Line, value.Value)}}
+	}
+	*d = Duration(dur)
+	return nil
 }
 
 func (p *Provider) SaveConfig(path string) error {
@@ -202,96 +466,6 @@ func (p *Provider) Start() error {
 	return nil
 }
 
-type CacheConfig struct {
-	RedisURL string `yaml:"redis_url" json:"redis_url"`
-}
-type BotConfig struct {
-	Enabled         bool    `yaml:"enabled" json:"enabled"`
-	Token           string  `yaml:"token" json:"token"`
-	Debug           bool    `yaml:"debug" json:"debug"`
-	AdminID         int64   `yaml:"admin_id" json:"admin_id"`
-	MonitorAdminIDs []int64 `yaml:"monitor_admin_ids" json:"monitor_admin_ids"`
-}
-
-func (c *BotConfig) Validate() error {
-	if c.Enabled && c.Token == "" {
-		return fmt.Errorf("bot token is required when enabled")
-	}
-	return nil
-}
-
-type DatabaseConfig struct {
-	PostgresURL string `yaml:"postgres_url" json:"postgres_url"`
-	MaxConns    int    `yaml:"max_conns" json:"max_conns"`
-	MinConns    int    `yaml:"min_conns" json:"min_conns"`
-}
-
-type NATSConfig struct {
-	Enabled bool   `yaml:"enabled" json:"enabled"`
-	URL     string `yaml:"url" json:"url"`
-	Prefix  string `yaml:"prefix" json:"prefix"`
-}
-
-type UpdateConfig struct {
-	Enabled       bool     `yaml:"enabled" json:"enabled"`
-	ManifestURL   string   `yaml:"manifest_url" json:"manifest_url"`
-	PublicKey     string   `yaml:"public_key" json:"public_key"`
-	Channel       string   `yaml:"channel" json:"channel"`
-	CheckInterval Duration `yaml:"check_interval" json:"check_interval"`
-}
-
-type CorrelationConfig struct {
-	Enabled         bool `yaml:"enabled" json:"enabled"`
-	PaddingEnabled  bool `yaml:"padding" json:"padding"`
-	JitterEnabled   bool `yaml:"jitter" json:"jitter"`
-	CoverTraffic    bool `yaml:"cover_traffic" json:"cover_traffic"`
-	MaxJitterMs     int  `yaml:"max_jitter_ms" json:"max_jitter_ms"`
-	CoverRateMs     int  `yaml:"cover_rate_ms" json:"cover_rate_ms"`
-	RateBytesPerSec int  `yaml:"rate_bytes_per_sec" json:"rate_bytes_per_sec"`
-}
-
-type SNIBypassConfig struct {
-	Enabled      bool   `yaml:"enabled" json:"enabled"`
-	Mode         string `yaml:"mode" json:"mode"`
-	FragmentSize int    `yaml:"fragment_size" json:"fragment_size"`
-	Fingerprint  string `yaml:"fingerprint" json:"fingerprint"`
-}
-
-type VKRelayConfig struct {
-	Enabled    bool   `yaml:"enabled" json:"enabled"`
-	Mode       string `yaml:"mode" json:"mode"`
-	Token      string `yaml:"token" json:"token"`
-	GroupID    int64  `yaml:"group_id" json:"group_id"`
-	PeerID     int64  `yaml:"peer_id" json:"peer_id"`
-	ServerMode bool   `yaml:"server_mode" json:"server_mode"`
-	StreamKey  string `yaml:"stream_key" json:"stream_key"`
-}
-
-type OutboundConfig struct {
-	Tag      string                 `yaml:"tag" json:"tag"`
-	Protocol string                 `yaml:"protocol" json:"protocol"`
-	Address  string                 `yaml:"address" json:"address"`
-	Settings map[string]interface{} `yaml:"settings" json:"settings"`
-	Chain    []string               `yaml:"chain" json:"chain"`
-}
-
-type InboundConfig struct {
-	Tag      string `yaml:"tag" json:"tag"`
-	Protocol string `yaml:"protocol" json:"protocol"`
-	Listen   string `yaml:"listen" json:"listen"`
-	Port     int    `yaml:"port" json:"port"`
-	Ports    []int  `yaml:"ports,omitempty" json:"ports,omitempty"`
-
-	Mode       string `yaml:"mode,omitempty" json:"mode,omitempty"`
-	RemoteAddr string `yaml:"remote_addr,omitempty" json:"remote_addr,omitempty"`
-
-	Settings map[string]interface{} `yaml:"settings" json:"settings"`
-
-	StreamSettings StreamConfig `yaml:"stream_settings" json:"stream_settings"`
-
-	Sniffing SniffingConfig `yaml:"sniffing" json:"sniffing"`
-}
-
 func (c *InboundConfig) AllPorts() []int {
 	seen := make(map[int]struct{})
 	var out []int
@@ -304,143 +478,6 @@ func (c *InboundConfig) AllPorts() []int {
 		}
 	}
 	return out
-}
-
-type StreamConfig struct {
-	Network  string                 `yaml:"network" json:"network"`
-	Security string                 `yaml:"security" json:"security"`
-	TLS      TLSConfig              `yaml:"tls" json:"tls"`
-	WS       WebSocketConfig        `yaml:"ws" json:"ws"`
-	H2C      H2CStreamConfig        `yaml:"h2c" json:"h2c"`
-	Params   map[string]interface{} `yaml:"params,omitempty" json:"params,omitempty"`
-}
-
-type TLSConfig struct {
-	CertFile string `yaml:"cert_file" json:"cert_file"`
-	KeyFile  string `yaml:"key_file" json:"key_file"`
-}
-
-type WebSocketConfig struct {
-	Path string `yaml:"path" json:"path"`
-}
-
-type H2CStreamConfig struct {
-	Path string `yaml:"path" json:"path"`
-}
-
-type SniffingConfig struct {
-	Enabled      bool     `yaml:"enabled" json:"enabled"`
-	DestOverride []string `yaml:"dest_override" json:"dest_override"`
-}
-
-type ChameleonConfig struct {
-	Enabled        bool   `yaml:"enabled" json:"enabled"`
-	ListenAddr     string `yaml:"listen_addr" json:"listen_addr"`
-	TLSCert        string `yaml:"tls_cert" json:"tls_cert"`
-	TLSKey         string `yaml:"tls_key" json:"tls_key"`
-	Domain         string `yaml:"domain" json:"domain"`
-	ACMEDir        string `yaml:"acme_dir" json:"acme_dir"`
-	DecoyOrigin    string `yaml:"decoy_origin" json:"decoy_origin"`
-	GANIface       string `yaml:"gan_iface" json:"gan_iface"`
-	GANPort        int    `yaml:"gan_port" json:"gan_port"`
-	GANMaxPadding  int    `yaml:"gan_max_padding" json:"gan_max_padding"`
-	Secret         string `yaml:"secret" json:"secret"`
-	QUICListenAddr string `yaml:"quic_listen_addr" json:"quic_listen_addr"`
-	ExtraPorts     []int  `yaml:"extra_ports,omitempty" json:"extra_ports,omitempty"`
-}
-
-type ServerSettings struct {
-	Name         string   `yaml:"name" json:"name"`
-	ListenAddr   string   `yaml:"listen_addr" json:"listen_addr"`
-	TUNName      string   `yaml:"tun_name" json:"tun_name"`
-	MTU          int      `yaml:"mtu" json:"mtu"`
-	Workers      int      `yaml:"workers" json:"workers"`
-	GracefulStop Duration `yaml:"graceful_stop" json:"graceful_stop"`
-	PrivateKey   string   `yaml:"private_key" json:"private_key"`
-	UUID         string   `yaml:"uuid" json:"uuid"`
-	PublicURL    string   `yaml:"public_url" json:"public_url"`
-}
-
-type TransportConfig struct {
-	UDP struct {
-		Enabled       bool   `yaml:"enabled"`
-		ListenAddr    string `yaml:"listen_addr"`
-		MaxPacketSize int    `yaml:"max_packet_size"`
-		BufferSize    int    `yaml:"buffer_size"`
-		Workers       int    `yaml:"workers"`
-	} `yaml:"udp"`
-
-	TCP struct {
-		Enabled    bool   `yaml:"enabled"`
-		ListenAddr string `yaml:"listen_addr"`
-	} `yaml:"tcp"`
-}
-
-type SessionConfig struct {
-	MaxSessions       int      `yaml:"max_sessions"`
-	SessionTimeout    Duration `yaml:"session_timeout"`
-	CleanupInterval   Duration `yaml:"cleanup_interval"`
-	KeepaliveInterval Duration `yaml:"keepalive_interval"`
-	RekeyInterval     Duration `yaml:"rekey_interval"`
-}
-
-type RoutingConfig struct {
-	RulesFile    string `yaml:"rules_file"`
-	DefaultRoute string `yaml:"default_route"`
-
-	Geo struct {
-		Enabled        bool     `yaml:"enabled"`
-		GeoIPFile      string   `yaml:"geoip_file"`
-		GeoSiteFile    string   `yaml:"geosite_file"`
-		UpdateInterval Duration `yaml:"update_interval"`
-	} `yaml:"geo"`
-
-	DNS struct {
-		Enabled     bool   `yaml:"enabled"`
-		Upstream    string `yaml:"upstream"`
-		FakeIPRange string `yaml:"fakeip_range"`
-	} `yaml:"dns"`
-}
-
-type ObfuscationConfig struct {
-	Enabled     bool   `yaml:"enabled"`
-	Profile     string `yaml:"profile"`
-	ThreatLevel int    `yaml:"threat_level"`
-
-	Padding struct {
-		Enabled bool `yaml:"enabled"`
-		MinSize int  `yaml:"min_size"`
-		MaxSize int  `yaml:"max_size"`
-	} `yaml:"padding"`
-
-	Chaff struct {
-		Enabled  bool     `yaml:"enabled"`
-		Interval Duration `yaml:"interval"`
-		MinSize  int      `yaml:"min_size"`
-		MaxSize  int      `yaml:"max_size"`
-	} `yaml:"chaff"`
-}
-
-type APIConfig struct {
-	Enabled           bool     `yaml:"enabled"`
-	ListenAddr        string   `yaml:"listen_addr"`
-	AuthToken         string   `yaml:"auth_token"`
-	WebRoot           string   `yaml:"web_root"`
-	EnableCORS        bool     `yaml:"enable_cors"`
-	AllowedOrigins    []string `yaml:"allowed_origins"`
-	TLSCert           string   `yaml:"tls_cert"`
-	TLSKey            string   `yaml:"tls_key"`
-	AdminUsername     string   `yaml:"admin_username"`
-	AdminPassword     string   `yaml:"admin_password"`
-	AdminPasswordHash string   `yaml:"admin_password_hash"`
-	LoginRateLimit    int      `yaml:"login_rate_limit"`
-}
-
-type LoggingConfig struct {
-	Level  string `yaml:"level"`
-	Format string `yaml:"format"`
-	Output string `yaml:"output"`
-	File   string `yaml:"file"`
 }
 
 func DefaultServerConfig() *ServerConfig {
@@ -520,29 +557,6 @@ func DefaultServerConfig() *ServerConfig {
 			MonitorAdminIDs: []int64{},
 		},
 	}
-}
-
-type Provider struct {
-	*base.Module
-	mu           sync.RWMutex
-	config       *ServerConfig
-	configPath   string
-	watchers     map[string][]chan interface{}
-	watchersMu   sync.RWMutex
-	fileWatcher  chan struct{}
-	lastModified time.Time
-}
-
-func New(configPath string) (*Provider, error) {
-	p := &Provider{
-		Module:      base.NewModule(ModuleName, ModuleVersion, nil),
-		configPath:  configPath,
-		config:      DefaultServerConfig(),
-		watchers:    make(map[string][]chan interface{}),
-		fileWatcher: make(chan struct{}),
-	}
-
-	return p, nil
 }
 
 func (p *Provider) Stop() error {

@@ -10,29 +10,35 @@ import (
 )
 
 type ClientConfig struct {
-	Server               string   `yaml:"server" json:"server"`
-	ServerAlts           []string `yaml:"server_alts,omitempty" json:"server_alts,omitempty"`
-	ServerTCP            string   `yaml:"server_tcp" json:"server_tcp"`
-	ServerWS             string   `yaml:"server_ws" json:"server_ws"`
-	ChameleonAddr        string   `yaml:"chameleon_addr" json:"chameleon_addr"`
-	ChameleonSNI         string   `yaml:"chameleon_sni" json:"chameleon_sni"`
-	ChameleonCertPin     string   `yaml:"chameleon_cert_pin" json:"chameleon_cert_pin"`
-	ChameleonQUICAddr    string   `yaml:"chameleon_quic_addr" json:"chameleon_quic_addr"`
-	ChameleonStripeOn    bool     `yaml:"chameleon_stripe_on" json:"chameleon_stripe_on"`
-	ChameleonStripeN     int      `yaml:"chameleon_stripe_n" json:"chameleon_stripe_n"`
-	ChameleonStripeStart int      `yaml:"chameleon_stripe_start" json:"chameleon_stripe_start"`
-	ServerWS2            string   `yaml:"server_ws2" json:"server_ws2"`
-	TUN                  string   `yaml:"tun" json:"tun"`
-	TunIP                string   `yaml:"tun_ip" json:"tun_ip"`
-	TunGateway           string   `yaml:"tun_gateway" json:"tun_gateway"`
-	TunPrefix            int      `yaml:"tun_prefix" json:"tun_prefix"`
-	Metrics              string   `yaml:"metrics" json:"metrics"`
-	ServerPub            string   `yaml:"server_pub" json:"server_pub"`
-	PSK                  string   `yaml:"psk" json:"psk"`
-	DualMode             bool     `yaml:"dual_mode" json:"dual_mode"`
-	StunSrv              string   `yaml:"stun_srv" json:"stun_srv"`
-	ProxyMode            bool     `yaml:"proxy_mode" json:"proxy_mode"`
-	KeepaliveSec         int      `yaml:"keepalive" json:"keepalive"`
+	Server              string   `yaml:"server" json:"server"`
+	ServerAlts          []string `yaml:"server_alts,omitempty" json:"server_alts,omitempty"`
+	ServerTCP           string   `yaml:"server_tcp" json:"server_tcp"`
+	ServerWS            string   `yaml:"server_ws" json:"server_ws"`
+	WhisperaAddr        string   `yaml:"whispera_addr" json:"whispera_addr"`
+	WhisperaSNI         string   `yaml:"whispera_sni" json:"whispera_sni"`
+	WhisperaCertPin     string   `yaml:"whispera_cert_pin" json:"whispera_cert_pin"`
+	WhisperaQUICAddr    string   `yaml:"whispera_quic_addr" json:"whispera_quic_addr"`
+	WhisperaStripeOn    bool     `yaml:"whispera_stripe_on" json:"whispera_stripe_on"`
+	WhisperaStripeN     int      `yaml:"whispera_stripe_n" json:"whispera_stripe_n"`
+	WhisperaStripeStart int      `yaml:"whispera_stripe_start" json:"whispera_stripe_start"`
+	GRPCAddr            string   `yaml:"grpc_addr" json:"grpc_addr"`
+	GRPCServerName      string   `yaml:"grpc_server_name" json:"grpc_server_name"`
+	GRPCUseTLS          bool     `yaml:"grpc_use_tls" json:"grpc_use_tls"`
+	YaDiskOAuthToken    string   `yaml:"yadisk_oauth_token" json:"yadisk_oauth_token"`
+	DisableNeural       bool     `yaml:"disable_neural" json:"disable_neural"`
+	YaDiskSessionID     string   `yaml:"yadisk_session_id" json:"yadisk_session_id"`
+	ServerWS2           string   `yaml:"server_ws2" json:"server_ws2"`
+	TUN                 string   `yaml:"tun" json:"tun"`
+	TunIP               string   `yaml:"tun_ip" json:"tun_ip"`
+	TunGateway          string   `yaml:"tun_gateway" json:"tun_gateway"`
+	TunPrefix           int      `yaml:"tun_prefix" json:"tun_prefix"`
+	Metrics             string   `yaml:"metrics" json:"metrics"`
+	ServerPub           string   `yaml:"server_pub" json:"server_pub"`
+	PSK                 string   `yaml:"psk" json:"psk"`
+	DualMode            bool     `yaml:"dual_mode" json:"dual_mode"`
+	StunSrv             string   `yaml:"stun_srv" json:"stun_srv"`
+	ProxyMode           bool     `yaml:"proxy_mode" json:"proxy_mode"`
+	KeepaliveSec        int      `yaml:"keepalive" json:"keepalive"`
 
 	SplitTunnel      bool   `yaml:"split_tunnel" json:"split_tunnel"`
 	SplitTunnelRules string `yaml:"split_tunnel_rules" json:"split_tunnel_rules"`
