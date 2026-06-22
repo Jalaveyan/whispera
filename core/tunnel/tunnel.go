@@ -24,7 +24,6 @@ import (
 	"whispera/common/runtime/interfaces"
 	asnbypass "whispera/core/asn_bypass"
 	"whispera/core/killswitch"
-	"whispera/core/protocol"
 	"whispera/neural"
 )
 
@@ -102,14 +101,23 @@ func (s TunnelState) String() string {
 	}
 }
 
-type ChameleonOptions struct {
-	EnableChameleon   bool
-	ChameleonAddr     string
-	ChameleonSNI      string
-	ChameleonSecret   []byte
-	ChameleonCertPin  string
-	ChameleonQUICAddr string
-	ChameleonMux      int
+type WhisperaOptions struct {
+	EnableWhispera   bool
+	WhisperaAddr     string
+	WhisperaSNI      string
+	WhisperaSecret   []byte
+	WhisperaCertPin  string
+	WhisperaQUICAddr string
+	WhisperaMux      int
+
+	EnableGRPC     bool
+	GRPCAddr       string
+	GRPCServerName string
+	GRPCUseTLS     bool
+
+	EnableYaDisk     bool
+	YaDiskOAuthToken string
+	YaDiskSessionID  string
 }
 
 type MLOptions struct {
@@ -124,6 +132,8 @@ type Config struct {
 	ServerAddr           string
 	ServerAddrTCP        string
 	Transport            string
+	PSK                  []byte
+	DisableNeural        bool
 	TransportWhitelist   []string
 	TransportBlacklist   []string
 	KeepaliveInterval    time.Duration
@@ -145,7 +155,7 @@ type Config struct {
 	ResidentialProxies []string
 	EnableJA3Randomize bool
 
-	ChameleonOptions
+	WhisperaOptions
 	MLOptions
 
 	BehavioralProfile string
@@ -278,11 +288,8 @@ type Manager struct {
 	dataPlane interfaces.DataPlane
 	crypto    interfaces.CryptoProvider
 
-	keepaliveCancel context.CancelFunc
-	rotationTicker  *time.Ticker
-	rotationCancel  context.CancelFunc
-	rekeyTicker     *time.Ticker
-	rekeyCancel     context.CancelFunc
+	keepalive *keepaliveController
+	rotation  *rotationManager
 
 	reconnectAttempts uint32
 	reconnecting      int32
@@ -296,37 +303,15 @@ type Manager struct {
 
 	onStateChange func(TunnelState)
 
-	killSwitch *killswitch.KillSwitch
+	killSwitch killSwitchController
 
 	obfuscator        interfaces.Obfuscator
-	asnBypassDialer   *asnbypass.Dialer
+	asnBypassDialer   tcpBypassDialer
 	isTransportSecure bool
 
-	transportSecureOverride int32
-	forceObfuscation        int32
-
-	russianSNIs     []string
-	russianSNIsMu   sync.RWMutex
-	currentSNI      string
-	lastRotation    time.Time
-	connAgent       *neural.RLConnAgent
-	connAgentStop   chan struct{}
-	rateSamplerStop chan struct{}
-	gpLastDn        uint64
-	gpLastUp        uint64
-	gpLastSample    time.Time
-	scaleAccBytes   uint64
-	scaleLastEval   time.Time
-	scaleMu         sync.Mutex
-	chScaleOpening  int32
-	gameLn          gameLane
-	transportAgent  *neural.RLTransportAgent
-	kaAgent         *neural.RLKeepaliveAgent
-	boAgent         *neural.RLBackoffAgent
-	jitterAgent     *neural.RLJitterAgent
-	serverAgent     *neural.RLServerAgent
-	chunkAgent      *neural.RLChunkAgent
-	tspuDetector    *neural.TSPUDetector
+	poolHealth *poolHealthSampler
+	gameLane   *gameLaneManager
+	ml         *mlOrchestrator
 
 	boFailCount     int32
 	boLastSuccessAt int64
@@ -335,13 +320,7 @@ type Manager struct {
 
 	goroutineLimiter *base.GoroutineLimiter
 
-	rateLimitKB     int32
-	tlsFragmentSize int32
-
-	spoofIPs []string
-	spoofIdx uint64
-
-	fedSyncOnce sync.Once
+	connCfg connConfig
 
 	lastGoodMu         sync.RWMutex
 	lastGoodSNI        string
@@ -350,24 +329,17 @@ type Manager struct {
 
 	qualityRTTEWMA int64
 	missedKAs      int32
-	netCtxOnce     sync.Once
-	pubIP          atomic.Value
-	asnVal         atomic.Value
-	ccVal          atomic.Value
-	blockAvoid     atomic.Value
-
-	chameleonSessionCache any
 }
 
 func (m *Manager) getMuxConfig() *mux.Config {
 	base := 8 + mrand.Intn(7)
 
 	frameSize := 65535
-	if m.chunkAgent != nil {
+	if m.ml.chunkAgent != nil {
 		rttMs := float64(atomic.LoadInt64(&m.qualityRTTEWMA)) / 1e6
 		upBytes := float64(atomic.LoadUint64(&m.bytesUp))
 		dnBytes := float64(atomic.LoadUint64(&m.bytesDown))
-		frameSize = m.chunkAgent.Decide(neural.ChunkView{
+		frameSize = m.ml.chunkAgent.Decide(neural.ChunkView{
 			RTTMs:      rttMs,
 			BytesUpSec: upBytes / 60.0,
 			BytesDnSec: dnBytes / 60.0,
@@ -398,15 +370,18 @@ func New(cfg *Config) (*Manager, error) {
 	}
 
 	m := &Manager{
-		Module:                base.NewModule(ModuleName, ModuleVersion, []string{"handshake.handler"}),
-		config:                cfg,
-		streamConns:           make(map[uint16]*managedConn),
-		readCh:                make(chan *buf.Buffer, 4096),
-		goroutineLimiter:      base.NewGoroutineLimiter(1024),
-		reconnectDone:         make(chan struct{}),
-		forceObfuscation:      forceObfs,
-		chameleonSessionCache: protocol.NewSessionCache(128),
+		Module:           base.NewModule(ModuleName, ModuleVersion, []string{"handshake.handler"}),
+		config:           cfg,
+		streamConns:      make(map[uint16]*managedConn),
+		readCh:           make(chan *buf.Buffer, 4096),
+		goroutineLimiter: base.NewGoroutineLimiter(1024),
+		reconnectDone:    make(chan struct{}),
 	}
+	m.connCfg.forceObfuscation.Store(forceObfs)
+	m.keepalive = newKeepaliveController(m)
+	m.rotation = newRotationManager(m)
+	m.poolHealth = newPoolHealthSampler(m)
+	m.gameLane = newGameLaneManager(m)
 	m.cb = newCircuitBreaker()
 	m.sm = newTunnelStateMachine(m.onStateTransition)
 	m.initStreamShards()
@@ -462,13 +437,7 @@ func New(cfg *Config) (*Manager, error) {
 		}
 	}
 
-	m.connAgent = neural.NewRLConnAgent(cfg.SNIModelDir)
-	m.kaAgent = neural.NewRLKeepaliveAgent(cfg.SNIModelDir)
-	m.boAgent = neural.NewRLBackoffAgent(cfg.SNIModelDir)
-	m.jitterAgent = neural.NewRLJitterAgent(cfg.SNIModelDir)
-	m.serverAgent = neural.NewRLServerAgent(cfg.SNIModelDir)
-	m.chunkAgent = neural.NewRLChunkAgent(cfg.SNIModelDir)
-	m.tspuDetector = neural.NewTSPUDetector()
+	m.ml = newMLOrchestrator(m, cfg.SNIModelDir, !cfg.DisableNeural)
 
 	go m.runWeightSnapshotLoop()
 
@@ -482,11 +451,11 @@ func New(cfg *Config) (*Manager, error) {
 	}
 
 	if cfg.RateLimitKB > 0 {
-		atomic.StoreInt32(&m.rateLimitKB, int32(cfg.RateLimitKB))
+		m.connCfg.SetRateLimitKB(cfg.RateLimitKB)
 	}
 
 	if cfg.EnableIPSpoof && len(cfg.SpoofSourceIPs) > 0 {
-		m.spoofIPs = cfg.SpoofSourceIPs
+		m.connCfg.SetSpoofIPs(cfg.SpoofSourceIPs)
 	}
 
 	return m, nil
@@ -546,14 +515,6 @@ func (m *Manager) Connect(ctx context.Context) error {
 		}
 	}
 
-	if m.config.MLServerURL != "" {
-		m.mlStartFederatedSync(ctx)
-		m.mlStartTransportWatchdog(ctx)
-		if rec, conf := m.mlRecommendTransport(); rec != "" && conf >= 0.55 {
-			m.config.Transport = rec
-		}
-	}
-
 	return m.connectInternal(ctx, false)
 }
 
@@ -565,7 +526,7 @@ func (m *Manager) connectInternal(ctx context.Context, isRotation bool) error {
 	}
 
 	targetPoolSize := 2
-	if m.config.EnableChameleon {
+	if m.config.EnableWhispera {
 		targetPoolSize = 1
 	}
 	var connectedPool []*managedConn
@@ -608,7 +569,7 @@ func (m *Manager) connectInternal(ctx context.Context, isRotation bool) error {
 	for i := 0; i < targetPoolSize; i++ {
 		idx := i
 		go func() {
-			if idx > 0 && m.config.EnableChameleon {
+			if idx > 0 && m.config.EnableWhispera {
 				time.Sleep(time.Duration(mrand.Intn(40)) * time.Millisecond)
 			}
 			spawnConnection(idx)
@@ -676,14 +637,13 @@ func (m *Manager) connectInternal(ctx context.Context, isRotation bool) error {
 	if !isRotation {
 		m.startKeepalive()
 		m.startRekey()
-		m.startConnAgent()
 		m.startConnRateSampler()
 		m.connectedAt = time.Now()
 		m.lastPong = time.Now()
 		m.setState(StateConnected)
 
 		m.connMu.RLock()
-		sniSnapshot := m.currentSNI
+		sniSnapshot := m.rotation.currentSNI
 		m.connMu.RUnlock()
 		m.lastGoodMu.Lock()
 		m.lastGoodSNI = sniSnapshot
@@ -769,7 +729,6 @@ func (m *Manager) removeDeadConn(mc *managedConn) {
 
 func (m *Manager) Disconnect() {
 	m.stopKeepalive()
-	m.stopConnAgent()
 	m.stopConnRateSampler()
 
 	m.connMu.Lock()
@@ -872,17 +831,16 @@ func (m *Manager) Reconnect(ctx context.Context) error {
 
 		m.connMu.Lock()
 		if attempts == 1 && zeroRTTSNI != "" {
-			m.currentSNI = zeroRTTSNI
+			m.rotation.currentSNI = zeroRTTSNI
 			if zeroRTTTransport != "" {
 				m.config.Transport = zeroRTTTransport
 			}
 		} else {
-			m.currentSNI = ""
+			m.rotation.currentSNI = ""
 		}
 		m.connMu.Unlock()
 
 		dialStart := time.Now()
-		usedTransport := m.config.Transport
 		var err error
 		if attempts == 1 && zeroRTTSNI != "" {
 			err = m.connectInternal(ctx, false)
@@ -891,12 +849,11 @@ func (m *Manager) Reconnect(ctx context.Context) error {
 		}
 		dialLatency := float64(time.Since(dialStart).Milliseconds())
 		if err == nil {
-			m.mlSendFeedback(usedTransport, true, dialLatency)
-			if m.boAgent != nil {
-				m.boAgent.RecordOutcome(true)
+			if m.ml.boAgent != nil {
+				m.ml.boAgent.RecordOutcome(true)
 			}
-			if m.serverAgent != nil {
-				m.serverAgent.RecordOutcome(true, dialLatency)
+			if m.ml.serverAgent != nil {
+				m.ml.serverAgent.RecordOutcome(true, dialLatency)
 			}
 			atomic.StoreInt32(&m.boFailCount, 0)
 			atomic.StoreInt64(&m.boLastSuccessAt, time.Now().Unix())
@@ -907,36 +864,36 @@ func (m *Manager) Reconnect(ctx context.Context) error {
 			return nil
 		}
 
-		if m.tspuDetector != nil {
+		if m.ml.tspuDetector != nil {
 			errStr := err.Error()
 			dialDur := time.Duration(dialLatency) * time.Millisecond
 			if strings.Contains(errStr, "reset") {
-				m.tspuDetector.RecordRST(m.currentSNI, dialDur)
+				m.ml.tspuDetector.RecordRST(m.rotation.currentSNI, dialDur)
 			}
-			if dpiType, conf := m.tspuDetector.DetectTSPU(); dpiType != neural.DPITypeNone && conf >= 0.65 {
+			if dpiType, conf := m.ml.tspuDetector.DetectTSPU(); dpiType != neural.DPITypeNone && conf >= 0.65 {
 				if cm := neural.TSPUCountermeasure(dpiType); cm != "" && cm != m.config.Transport {
 					m.config.Transport = cm
 				}
 			}
 		}
 		failCount := atomic.AddInt32(&m.boFailCount, 1)
-		if m.boAgent != nil {
-			m.boAgent.RecordOutcome(false)
+		if m.ml.boAgent != nil {
+			m.ml.boAgent.RecordOutcome(false)
 		}
-		if m.serverAgent != nil {
-			m.serverAgent.RecordOutcome(false, dialLatency)
+		if m.ml.serverAgent != nil {
+			m.ml.serverAgent.RecordOutcome(false, dialLatency)
 		}
 		m.circuitBreakerFail()
 
 		var backoffDelay time.Duration
-		if m.boAgent != nil {
+		if m.ml.boAgent != nil {
 			errStr := ""
 			lastSuc := atomic.LoadInt64(&m.boLastSuccessAt)
 			secSince := 0.0
 			if lastSuc > 0 {
 				secSince = float64(time.Now().Unix() - lastSuc)
 			}
-			backoffDelay = m.boAgent.Decide(neural.BackoffView{
+			backoffDelay = m.ml.boAgent.Decide(neural.BackoffView{
 				ConsecutiveFails:    int(failCount),
 				LastErrType:         neural.ClassifyBackoffErr(errStr),
 				TimeSinceSuccessSec: secSince,
@@ -971,7 +928,7 @@ func (m *Manager) readLoop(mc *managedConn) {
 	}()
 
 	var inputReader io.Reader = mc
-	if m.obfuscator != nil && !m.isTransportSecure && atomic.LoadInt32(&m.transportSecureOverride) == 0 {
+	if m.obfuscator != nil && !m.isTransportSecure && m.connCfg.TransportSecureOverride() == 0 {
 		inputReader = &deobfuscatingReader{r: mc, obf: m.obfuscator}
 	}
 	reader := bufio.NewReaderSize(inputReader, 262144)
@@ -991,7 +948,7 @@ func (m *Manager) readLoop(mc *managedConn) {
 		default:
 		}
 
-		if !m.isTransportSecure || atomic.LoadInt32(&m.forceObfuscation) != 0 {
+		if !m.isTransportSecure || m.connCfg.ForceObfuscation() != 0 {
 			peek, err := reader.Peek(5)
 			if err != nil {
 				if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
@@ -1082,13 +1039,6 @@ func (m *Manager) readLoop(mc *managedConn) {
 						if isWrappedFrame {
 							consecutiveGarbage = 0
 							continue
-						}
-
-						if len(tlsPayload) > 0 {
-							headerPeek := tlsPayload
-							if len(headerPeek) > 16 {
-								headerPeek = headerPeek[:16]
-							}
 						}
 					}
 
@@ -1201,13 +1151,13 @@ func (m *Manager) readLoop(mc *managedConn) {
 				rttMs = float64(rtt.Milliseconds())
 			}
 			atomic.StoreInt32(&m.missedKAs, 0)
-			if m.kaAgent != nil || m.jitterAgent != nil {
+			if m.ml.kaAgent != nil || m.ml.jitterAgent != nil {
 				quality := math.Max(0, 1.0-rttMs/500.0)
-				if m.kaAgent != nil {
-					m.kaAgent.RecordOutcome(quality)
+				if m.ml.kaAgent != nil {
+					m.ml.kaAgent.RecordOutcome(quality)
 				}
-				if m.jitterAgent != nil {
-					m.jitterAgent.RecordOutcome(quality)
+				if m.ml.jitterAgent != nil {
+					m.ml.jitterAgent.RecordOutcome(quality)
 				}
 			}
 			b.Release()
@@ -1314,7 +1264,7 @@ func (m *Manager) OpenStream(ctx context.Context, proto byte, addr string, port 
 
 	var sess *mux.Session
 	var onClose func()
-	if proto == protoUDP && m.config.EnableChameleon {
+	if proto == protoUDP && m.config.EnableWhispera {
 		if gs, gerr := m.gameSession(ctx); gerr == nil {
 			sess, onClose = gs, m.gameStreamClosed
 		}
@@ -1402,7 +1352,7 @@ func (m *Manager) Send(data []byte) error {
 	if len(data) > 0 {
 		neural.GlobalFlowObserver.RecordPacket(len(data))
 	}
-	if limitKB := atomic.LoadInt32(&m.rateLimitKB); limitKB > 0 && len(data) > 0 {
+	if limitKB := m.connCfg.rateLimitKB.Load(); limitKB > 0 && len(data) > 0 {
 		limitBPS := int64(limitKB) * 1024
 		sleepNs := int64(len(data)) * int64(time.Second) / limitBPS
 		if sleepNs > 0 {
@@ -1418,7 +1368,7 @@ func (m *Manager) Send(data []byte) error {
 		frameType = data[2]
 	}
 
-	if m.obfuscator != nil && !m.isTransportSecure && atomic.LoadInt32(&m.transportSecureOverride) == 0 && frameType != FrameTypeData {
+	if m.obfuscator != nil && !m.isTransportSecure && m.connCfg.TransportSecureOverride() == 0 && frameType != FrameTypeData {
 		obfuscated, delay, err := m.obfuscator.Process(data, interfaces.DirectionOutbound)
 		if err != nil {
 			return fmt.Errorf("outbound obfuscation failed: %w", err)
@@ -1535,11 +1485,13 @@ func (m *Manager) monitorDrainingConn(mc *managedConn) {
 
 		if now.After(graceUntil) {
 			active := 0
+			m.connMu.RLock()
 			for _, c := range m.streamConns {
 				if c == mc {
 					active++
 				}
 			}
+			m.connMu.RUnlock()
 			if active == 0 {
 				break
 			}
@@ -1571,147 +1523,14 @@ closeNow:
 	mc.Close()
 }
 
-func (m *Manager) startConnRateSampler() {
-	if !m.config.EnableChameleon {
-		return
-	}
-	m.stopConnRateSampler()
-	stop := make(chan struct{})
-	m.rateSamplerStop = stop
-	go func() {
-		ticker := time.NewTicker(3 * time.Second)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-stop:
-				return
-			case <-ticker.C:
-			}
-			m.sampleConnRates()
-		}
-	}()
-}
+func (m *Manager) startConnRateSampler() { m.poolHealth.start() }
 
-func (m *Manager) stopConnRateSampler() {
-	if m.rateSamplerStop != nil {
-		select {
-		case <-m.rateSamplerStop:
-		default:
-			close(m.rateSamplerStop)
-		}
-		m.rateSamplerStop = nil
-	}
-}
+func (m *Manager) stopConnRateSampler() { m.poolHealth.stop() }
 
-func (m *Manager) sampleConnRates() {
-	m.connMu.RLock()
-	pool := append([]*managedConn(nil), m.activePool...)
-	m.connMu.RUnlock()
-
-	nowNs := time.Now().UnixNano()
-	for _, mc := range pool {
-		if mc == nil || mc.session == nil {
-			continue
-		}
-		_, _, rx, tx := mc.session.Stats()
-		bytes := rx + tx
-		prevBytes := mc.lastSampledBytes.Load()
-		prevNs := mc.lastSampleNs.Load()
-		mc.lastSampledBytes.Store(bytes)
-		mc.lastSampleNs.Store(nowNs)
-		if prevNs == 0 {
-			continue
-		}
-		elapsedNs := nowNs - prevNs
-		if elapsedNs <= 0 {
-			continue
-		}
-		delta := int64(bytes) - int64(prevBytes)
-		if delta < 0 {
-			delta = 0
-		}
-		mbps := float64(delta) * 8 / (float64(elapsedNs) / 1e9) / 1e6
-		mc.rateMbpsX100.Store(int64(mbps * 100))
-	}
-}
-
-func (m *Manager) healthyPool(pool []*managedConn) []*managedConn {
-	if len(pool) <= 1 {
-		return pool
-	}
-	rates := make([]int64, 0, len(pool))
-	for _, mc := range pool {
-		r := mc.rateMbpsX100.Load()
-		if r > 0 {
-			rates = append(rates, r)
-		}
-	}
-	if len(rates) == 0 {
-		return pool
-	}
-	sortInt64(rates)
-	median := rates[len(rates)/2]
-	threshold := median * 30 / 100
-	if threshold < 200 {
-		threshold = 200
-	}
-
-	healthy := make([]*managedConn, 0, len(pool))
-	for _, mc := range pool {
-		r := mc.rateMbpsX100.Load()
-		if r == 0 || r >= threshold {
-			healthy = append(healthy, mc)
-		}
-	}
-	return healthy
-}
-
-func sortInt64(a []int64) {
-	for i := 1; i < len(a); i++ {
-		for j := i; j > 0 && a[j-1] > a[j]; j-- {
-			a[j-1], a[j] = a[j], a[j-1]
-		}
-	}
-}
-
-func (m *Manager) startConnAgent() {
-	m.stopConnAgent()
-	if m.connAgent == nil {
-		return
-	}
-	if m.config.EnableChameleon {
-		return
-	}
-	stop := make(chan struct{})
-	m.connAgentStop = stop
-	go func() {
-		ticker := time.NewTicker(15 * time.Second)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-stop:
-				return
-			case <-ticker.C:
-			}
-		}
-	}()
-}
-
-func (m *Manager) stopConnAgent() {
-	if m.connAgentStop != nil {
-		select {
-		case <-m.connAgentStop:
-		default:
-			close(m.connAgentStop)
-		}
-		m.connAgentStop = nil
-	}
-}
+func (m *Manager) healthyPool(pool []*managedConn) []*managedConn { return m.poolHealth.healthy(pool) }
 
 const (
-	chScaleGrowPerConn   = 1.0 * 1024 * 1024
 	chScaleShrinkPerConn = 256 * 1024
-	chScaleMaxConns      = 256
 	scaleEvalBytes       = 2 * 1024 * 1024
 	browserConnBudget    = 2
 	chGameLaneReserve    = 1
@@ -1720,201 +1539,17 @@ const (
 	protoUDP             = 0x11
 )
 
-func (m *Manager) chameleonDial() (func(context.Context) (net.Conn, error), bool) {
-	if !m.config.EnableChameleon || len(m.config.ChameleonSecret) == 0 {
-		return nil, false
-	}
-	addr := m.config.ChameleonAddr
-	if addr == "" {
-		addr = m.config.ServerAddr
-	}
-	sni := m.config.ChameleonSNI
-	var sniList []string
-	if sni == "" || net.ParseIP(sni) != nil {
-		sni = ""
-		sniList = asnbypass.WhitelistSNIPool()
-	}
-	var tcpDialer func(context.Context, string, string) (net.Conn, error)
-	if m.asnBypassDialer != nil {
-		tcpDialer = m.asnBypassDialer.DialTCP
-	}
-	cCfg := &protocol.ClientConfig{
-		ServerAddr:    addr,
-		ServerName:    sni,
-		ServerNames:   sniList,
-		SharedSecret:  m.config.ChameleonSecret,
-		ServerCertPin: m.config.ChameleonCertPin,
-		SessionCache:  m.chameleonSessionCache,
-		TCPDialer:     tcpDialer,
-		EnableQUIC:    m.config.ChameleonQUICAddr != "",
-		QUICAddr:      m.config.ChameleonQUICAddr,
-	}
-	return func(ctx context.Context) (net.Conn, error) {
-		return protocol.Client(ctx, cCfg)
-	}, true
-}
-
-func (m *Manager) gameDial() func(context.Context) (net.Conn, error) {
-	if d, ok := m.chameleonDial(); ok {
-		return d
-	}
-	return nil
-}
-
-type gameLane struct {
-	mu   sync.Mutex
-	sess *mux.Session
-	conn net.Conn
-	refs int
-	idle *time.Timer
-}
+func (m *Manager) gameDial() func(context.Context) (net.Conn, error) { return m.gameLane.dial() }
 
 func (m *Manager) gameSession(ctx context.Context) (*mux.Session, error) {
-	dial := m.gameDial()
-	if dial == nil {
-		return nil, fmt.Errorf("game lane: no chameleon dial")
-	}
-	g := &m.gameLn
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	if g.idle != nil {
-		g.idle.Stop()
-		g.idle = nil
-	}
-	if g.sess != nil && !g.sess.IsClosed() {
-		g.refs++
-		return g.sess, nil
-	}
-	conn, err := dial(ctx)
-	if err != nil {
-		return nil, err
-	}
-	sess, err := mux.Client(conn, m.getMuxConfig())
-	if err != nil {
-		conn.Close()
-		return nil, err
-	}
-	g.conn = conn
-	g.sess = sess
-	g.refs = 1
-	return sess, nil
+	return m.gameLane.session(ctx)
 }
 
-func (m *Manager) gameLaneActive() bool {
-	g := &m.gameLn
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	return g.refs > 0
-}
+func (m *Manager) gameLaneActive() bool { return m.gameLane.active() }
 
-func (m *Manager) gameStreamClosed() {
-	g := &m.gameLn
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	if g.refs > 0 {
-		g.refs--
-	}
-	if g.refs == 0 && g.sess != nil && g.idle == nil {
-		g.idle = time.AfterFunc(gameIdleTimeout, func() {
-			g.mu.Lock()
-			defer g.mu.Unlock()
-			g.idle = nil
-			if g.refs == 0 && g.sess != nil {
-				g.sess.Close()
-				if g.conn != nil {
-					g.conn.Close()
-				}
-				g.sess = nil
-				g.conn = nil
-			}
-		})
-	}
-}
+func (m *Manager) gameStreamClosed() { m.gameLane.streamClosed() }
 
-func (m *Manager) feedScale(n int) {
-	if n <= 0 || !m.config.EnableChameleon {
-		return
-	}
-	sum := atomic.AddUint64(&m.scaleAccBytes, uint64(n))
-	if sum >= scaleEvalBytes && atomic.CompareAndSwapUint64(&m.scaleAccBytes, sum, 0) {
-		m.evalScale()
-	}
-}
-
-func (m *Manager) evalScale() {
-	m.scaleMu.Lock()
-	now := time.Now()
-	last := m.scaleLastEval
-	m.scaleLastEval = now
-	m.scaleMu.Unlock()
-	if last.IsZero() {
-		return
-	}
-	dt := now.Sub(last).Seconds()
-	if dt <= 0 {
-		return
-	}
-	rate := float64(scaleEvalBytes) / dt
-
-	m.connMu.RLock()
-	poolSize := len(m.activePool)
-	m.connMu.RUnlock()
-	if poolSize == 0 {
-		return
-	}
-	base := m.config.ChameleonMux
-	if base < 1 {
-		base = 16
-	}
-
-	perConn := rate / float64(poolSize)
-
-	switch {
-	case perConn >= chScaleGrowPerConn:
-		if atomic.LoadInt32(&m.chScaleOpening) != 0 {
-			return
-		}
-		grow := poolSize / 4
-		if grow < 1 {
-			grow = 1
-		}
-
-		atomic.StoreInt32(&m.chScaleOpening, int32(grow))
-		for i := 0; i < grow; i++ {
-			safeGo("chScaleOpen", func() {
-				defer atomic.AddInt32(&m.chScaleOpening, -1)
-				_, cancel := context.WithTimeout(context.Background(), m.config.ConnectionTimeout)
-				defer cancel()
-			})
-		}
-	case perConn < chScaleShrinkPerConn && poolSize > base:
-		if m.closeIdlePoolConn(base) {
-		}
-	}
-}
-
-func (m *Manager) closeIdlePoolConn(base int) bool {
-	m.connMu.Lock()
-	defer m.connMu.Unlock()
-	if len(m.activePool) <= base {
-		return false
-	}
-	inUse := make(map[*managedConn]int, len(m.streamConns))
-	for _, c := range m.streamConns {
-		inUse[c]++
-	}
-	for i := len(m.activePool) - 1; i >= 0; i-- {
-		c := m.activePool[i]
-		if c == m.activeConn || inUse[c] > 0 {
-			continue
-		}
-		m.activePool = append(m.activePool[:i], m.activePool[i+1:]...)
-		m.drainingConns = append(m.drainingConns, c)
-		go m.monitorDrainingConn(c)
-		return true
-	}
-	return false
-}
+func (m *Manager) feedScale(n int) { m.gameLane.feedScale(n) }
 
 func (m *Manager) GetState() TunnelState { return m.sm.Get() }
 
@@ -1965,105 +1600,6 @@ func (m *Manager) DialStream(ctx context.Context, network, addr string) (net.Con
 	return m.OpenStream(ctx, proto, host, port)
 }
 
-func (m *Manager) startKeepalive() {
-	m.stopKeepalive()
-	m.sendKeepalive()
+func (m *Manager) startKeepalive() { m.keepalive.start() }
 
-	ctx, cancel := context.WithCancel(context.Background())
-	m.keepaliveCancel = cancel
-
-	go func() {
-		for {
-			rttMs := float64(atomic.LoadInt64(&m.qualityRTTEWMA)) / 1e6
-			missed := int(atomic.LoadInt32(&m.missedKAs))
-			kaView := neural.KeepaliveView{RTTMs: rttMs, MissedKAs: missed}
-
-			base := m.config.KeepaliveInterval
-			if m.kaAgent != nil {
-				base = m.kaAgent.Decide(kaView)
-			}
-
-			jitterFrac := 0.30
-			if m.jitterAgent != nil {
-				jitterFrac = m.jitterAgent.Decide(neural.JitterView{
-					RTTMs: rttMs, MissedKAs: missed,
-				})
-			}
-
-			jitter := time.Duration(float64(base) * jitterFrac * (2*mrand.Float64() - 1))
-			timer := time.NewTimer(base + jitter)
-			select {
-			case <-ctx.Done():
-				timer.Stop()
-				return
-			case <-timer.C:
-				m.sendKeepalive()
-			}
-		}
-	}()
-}
-
-func (m *Manager) stopKeepalive() {
-	if m.keepaliveCancel != nil {
-		m.keepaliveCancel()
-	}
-}
-
-func (m *Manager) sendKeepalive() {
-	if !m.lastPong.IsZero() && m.GetState() == StateConnected {
-		silentDuration := time.Since(m.lastPong)
-		maxSilence := 90 * time.Second
-		if silentDuration > maxSilence {
-			go m.Reconnect(m.Context())
-			return
-		}
-
-		if !m.lastKeepalive.IsZero() && m.lastPong.Before(m.lastKeepalive) {
-			missed := atomic.AddInt32(&m.missedKAs, 1)
-			if m.kaAgent != nil {
-				m.kaAgent.RecordOutcome(0)
-			}
-			if m.jitterAgent != nil {
-				m.jitterAgent.RecordOutcome(0)
-			}
-			threshold := m.config.QualityMissedKeepalives
-			if threshold > 0 && int(missed) >= threshold {
-				atomic.StoreInt32(&m.missedKAs, 0)
-				go m.Reconnect(m.Context())
-				return
-			}
-		}
-
-		halfInterval := m.config.KeepaliveInterval / 2
-		if halfInterval > 0 && silentDuration < halfInterval {
-			m.lastKeepalive = time.Now()
-			atomic.StoreInt32(&m.missedKAs, 0)
-			return
-		}
-	}
-
-	pingFrame := make([]byte, 8)
-	pingFrame[2] = 0x06
-
-	sendTimeout := m.config.KeepaliveInterval
-	if sendTimeout <= 0 {
-		sendTimeout = 30 * time.Second
-	}
-	done := make(chan error, 1)
-	go func() { done <- m.Send(pingFrame) }()
-
-	select {
-	case err := <-done:
-		if err != nil {
-			if m.GetState() == StateConnected {
-				go m.Reconnect(m.Context())
-			}
-		} else {
-			m.lastKeepalive = time.Now()
-		}
-	case <-time.After(sendTimeout):
-		if m.GetState() == StateConnected {
-			go m.Reconnect(m.Context())
-		}
-	}
-}
+func (m *Manager) stopKeepalive() { m.keepalive.stop() }

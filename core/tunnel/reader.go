@@ -7,7 +7,7 @@ import (
 
 type deobfuscatingReader struct {
 	r   io.Reader
-	obf interfaces.Obfuscator
+	obf interfaces.ObfuscationProcessor
 }
 
 func (dr *deobfuscatingReader) Read(p []byte) (int, error) {

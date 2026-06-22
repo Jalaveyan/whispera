@@ -10,7 +10,7 @@ import (
 func (m *Manager) dialManagedConn(ctx context.Context, id string) (*managedConn, error) {
 	dial := m.gameDial()
 	if dial == nil {
-		return nil, fmt.Errorf("dial: no chameleon dialer available")
+		return nil, fmt.Errorf("dial: no whispera dialer available")
 	}
 
 	conn, err := dial(ctx)

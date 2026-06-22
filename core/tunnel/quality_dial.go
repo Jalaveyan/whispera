@@ -1,7 +1,6 @@
 package tunnel
 
 import (
-	"fmt"
 	mrand "math/rand"
 	"sync/atomic"
 	"time"
@@ -66,64 +65,4 @@ func (m *Manager) getReconnectDelay() time.Duration {
 
 func (m *Manager) Stats() (bytesUp, bytesDown uint64) {
 	return atomic.LoadUint64(&m.bytesUp), atomic.LoadUint64(&m.bytesDown)
-}
-
-func (m *Manager) GetTransport() string {
-	return m.config.Transport
-}
-
-func (m *Manager) SetTransport(transport string) {
-	m.config.Transport = transport
-}
-
-func (m *Manager) SetSpoofIPs(ips []string) {
-	m.connMu.Lock()
-	m.spoofIPs = ips
-	m.connMu.Unlock()
-}
-
-func (m *Manager) SetRateLimit(kbps int) {
-	atomic.StoreInt32(&m.rateLimitKB, int32(kbps))
-}
-
-func (m *Manager) GetRateLimit() int {
-	return int(atomic.LoadInt32(&m.rateLimitKB))
-}
-
-func (m *Manager) SetTLSFragmentSize(size int) {
-	if size < 0 {
-		size = 0
-	}
-	atomic.StoreInt32(&m.tlsFragmentSize, int32(size))
-	if m.config != nil {
-		m.config.TLSFragmentSize = size
-	}
-}
-
-func (m *Manager) GetTLSFragmentSize() int {
-	return int(atomic.LoadInt32(&m.tlsFragmentSize))
-}
-
-func (m *Manager) SetForceObfuscation(enabled bool) {
-	if enabled {
-		atomic.StoreInt32(&m.transportSecureOverride, 0)
-		atomic.StoreInt32(&m.forceObfuscation, 1)
-	} else {
-		atomic.StoreInt32(&m.transportSecureOverride, 1)
-		atomic.StoreInt32(&m.forceObfuscation, 0)
-	}
-}
-
-func (m *Manager) IsForceObfuscation() bool {
-	return atomic.LoadInt32(&m.transportSecureOverride) == 0
-}
-
-func (m *Manager) SetBehavioralProfile(profile string) error {
-	if m.obfuscator == nil {
-		return fmt.Errorf("obfuscator not initialized")
-	}
-	if profile == "" {
-		return nil
-	}
-	return m.obfuscator.SetProfile(profile)
 }
