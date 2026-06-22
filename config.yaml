@@ -39,7 +39,7 @@ api:
   admin_username: "admin"
   admin_password: "admin"
 
-chameleon:
+whispera:
   enabled: true
   listen_addr: ":443"
   domain: ""
@@ -47,3 +47,19 @@ chameleon:
   tls_cert: ""
   tls_key: ""
   decoy_origin: ""
+  quic_listen_addr: ""
+  extra_ports: []
+  quic_extra_ports: []
+
+grpc:
+  enabled: false
+  listen_addr: ":50051"
+  server_name: ""
+  tls_cert: ""
+  tls_key: ""
+  extra_ports: []
+
+yadisk:
+  enabled: false
+  oauth_token: ""
+  session_id: ""

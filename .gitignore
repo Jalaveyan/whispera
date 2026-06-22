@@ -104,3 +104,6 @@ internal/obfuscation/ml/*.spec
 
 # Local agent / IDE state — must never be committed
 .claude/
+
+# Runtime-generated GAN model state
+/ml_models/

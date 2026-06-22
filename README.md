@@ -26,6 +26,16 @@ This is for creating a key
 whispera create-key -user <your_username> -port <your_port>
 ```
 
+-user <name> required — username (login via Whispera Auth)
+-port <port> required — dedicated listening port for this user
+-transport whispera|grpc|quick|yadisk (default: whispera)
+-quic enable/disable tunneling over QUIC instead of TCP
+-quic-port <port> dedicated QUIC port (0 = reuse shared port)
+-yadisk-token <token> Yandex.Disk OAuth token (YADISK transport only)
+-yadisk-session <id> Yandex.Disk session/folder ID (automatically generated if empty)
+-neural enable/disable RL agents + GAN seeding for this user
+-sni <realdomain> clone a real domain certificate and provide it via SNI for this key
+
 This is for creating a sub
 
 ```bash
@@ -54,69 +64,16 @@ CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 \
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
   go build -o whispera-ml-server ./cmd/mlserver
 ```
-## Configuration example
-
-```yaml
-transport:
-  udp:
-    enabled: true
-    listen_addr: ":8443"
-    max_packet_size: 65535
-    buffer_size: 4194304
-    workers: 16
-
-obfuscation:
-  enabled: true
-  ml_enabled: true
-  default_profile: "ml"
-
-network:
-  tun_name: "Whispera"
-  tun_ip: "198.18.0.1"
-  tun_mtu: 1500
-  dns: "1.1.1.1"
-
-session:
-  max_sessions: 10000
-  idle_timeout: 300
-  cleanup_interval: 60
-
-rate_limit:
-  handshake: 100
-  packets: 10000000
-
-logging:
-  level: "info"
-  format: "json"
-
-api:
-  enabled: true
-  listen_addr: ":8080"
-  web_root: ""
-  enable_cors: true
-  auth_token: "whispera_admin_token"
-  admin_username: "admin"
-  admin_password: "admin"
-
-chameleon:
-  enabled: true
-  listen_addr: ":443"
-  domain: ""
-  acme_dir: "/var/lib/whispera/acme"
-  tls_cert: ""
-  tls_key: ""
-  decoy_origin: ""
-```
 
 ## If you need a cascade, I recommend using this instruction
 
-Install a whisper on each relay
+Install a whispera on each relay
 
 ```bash
 curl -sSL https://raw.githubusercontent.com/Jalaveyan/Whispera/main/install.sh | bash -s -- relay
 ```
 
-Chameleon secret (copy to master):
+Whispera secret (copy to master):
 ```bash
 a1b2c3...== # this is an example
 ```
@@ -135,19 +92,19 @@ outbounds:
     protocol: whispera
     address: IP_RELAY1:443
     settings:
-      chameleon_secret: "SECRET_RELAY1"
+      whispera_secret: "SECRET_RELAY1"
 
   - tag: relay2
     protocol: whispera
     address: IP_RELAY2:443
     settings:
-      chameleon_secret: "SECRET_RELAY2"
+      whispera_secret: "SECRET_RELAY2"
 
   - tag: exit
     protocol: whispera
     address: IP_EXIT:443
     settings:
-      chameleon_secret: "SECRET_EXIT"
+      whispera_secret: "SECRET_EXIT"
     chain: ["relay1", "relay2"]
 ```
 
