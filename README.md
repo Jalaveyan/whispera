@@ -23,7 +23,7 @@ Select item 18
 This is for creating a key
 
 ```bash
-whispera create-key -user <your_username> -port <your_port>
+whispera create-key -user <your_username> -port <your_port> -sni <realdomain>
 ```
 
 Available options
@@ -44,8 +44,6 @@ Available options
 -yadisk-session <id> Yandex.Disk session/folder ID (automatically generated if empty)
 
 -neural enable/disable RL agents + GAN seeding for this user
-
--sni <realdomain> clone a real domain certificate and provide it via SNI for this key
 ```
 
 This is for creating a sub
