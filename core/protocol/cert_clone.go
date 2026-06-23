@@ -1,7 +1,8 @@
 package protocol
 
 import (
-	"crypto/ed25519"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
@@ -80,12 +81,12 @@ func CloneCertToFiles(domain, outCert, outKey string) (*ClonedCertInfo, error) {
 		return nil, fmt.Errorf("build certificate template: %w", err)
 	}
 
-	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return nil, fmt.Errorf("generate keypair: %w", err)
 	}
 
-	derBytes, err := x509.CreateCertificate(rand.Reader, template, template, pub, priv)
+	derBytes, err := x509.CreateCertificate(rand.Reader, template, template, &priv.PublicKey, priv)
 	if err != nil {
 		return nil, fmt.Errorf("create certificate: %w", err)
 	}

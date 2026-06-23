@@ -2,7 +2,8 @@ package main
 
 import (
 	"context"
-	"crypto/ed25519"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/x509"
 	"crypto/x509/pkix"
@@ -842,7 +843,7 @@ func ensureWhisperaServerCert(sc *config.ServerConfig) {
 }
 
 func generateSelfSignedCert(certPath, keyPath string) error {
-	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return err
 	}
@@ -859,7 +860,7 @@ func generateSelfSignedCert(certPath, keyPath string) error {
 		KeyUsage:     x509.KeyUsageDigitalSignature,
 		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 	}
-	der, err := x509.CreateCertificate(rand.Reader, template, template, pub, priv)
+	der, err := x509.CreateCertificate(rand.Reader, template, template, &priv.PublicKey, priv)
 	if err != nil {
 		return err
 	}
