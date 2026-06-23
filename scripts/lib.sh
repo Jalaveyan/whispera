@@ -215,6 +215,16 @@ _enable_whispera_in_config() {
     local cfg="${CONF_PATH}/config.yaml"
     [[ -f "$cfg" ]] || return
 
+    if grep -q "^chameleon:" "$cfg"; then
+        awk '
+            /^chameleon:[[:space:]]*$/ { skip=1; next }
+            skip && /^[^[:space:]]/ { skip=0 }
+            skip { next }
+            { print }
+        ' "$cfg" > "$cfg.tmp" && mv "$cfg.tmp" "$cfg"
+        log_info "Removed stale chameleon: config block (superseded by whispera:)"
+    fi
+
     local decoy_first="${WHISPERA_DECOY_SITES%%,*}"
     decoy_first="${decoy_first:-https://ria.ru/}"
     local decoy_origin="${decoy_first%%/}"
