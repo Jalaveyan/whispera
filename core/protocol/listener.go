@@ -6,7 +6,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"io"
 	stdlog "log"
 	mrand "math/rand"
 	"net"
@@ -22,6 +21,13 @@ import (
 
 type noDelayListener struct {
 	*net.TCPListener
+}
+
+type serverErrLogWriter struct{}
+
+func (serverErrLogWriter) Write(p []byte) (int, error) {
+	traceLog.Warnw("whispera_server_error", "msg", strings.TrimSpace(string(p)))
+	return len(p), nil
 }
 
 func ListenAndServe(ctx context.Context, cfg *ServerConfig) error {
@@ -126,7 +132,10 @@ func ListenAndServe(ctx context.Context, cfg *ServerConfig) error {
 		Addr:      listenAddr,
 		Handler:   mux,
 		TLSConfig: tlsCfg,
-		ErrorLog:  stdlog.New(io.Discard, "", 0),
+		ErrorLog:  stdlog.New(serverErrLogWriter{}, "", 0),
+		ConnState: func(c net.Conn, state http.ConnState) {
+			traceLog.Infow("whispera_conn_state", "remote", c.RemoteAddr().String(), "state", state.String())
+		},
 	}
 
 	if err := http2.ConfigureServer(srv, &http2.Server{
