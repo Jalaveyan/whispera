@@ -1126,6 +1126,7 @@ func (m *Manager) readLoop(mc *managedConn) {
 				continue
 			} else {
 				log.Error("RESYNC failed: No embedded TLS header found. Closing connection.")
+				m.handleReadError(mc, fmt.Errorf("resync failed: no embedded TLS header found"))
 				return
 			}
 		}

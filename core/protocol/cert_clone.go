@@ -1,6 +1,7 @@
 package protocol
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -31,10 +32,14 @@ func fetchRealCert(domain string) (*x509.Certificate, error) {
 	}
 	addr := net.JoinHostPort(host, "443")
 
-	conn, err := tls.Dial("tcp", addr, &tls.Config{ServerName: host})
+	dialCtx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	dialer := tls.Dialer{Config: &tls.Config{ServerName: host}}
+	rawConn, err := dialer.DialContext(dialCtx, "tcp", addr)
 	if err != nil {
 		return nil, fmt.Errorf("tls dial %s: %w", addr, err)
 	}
+	conn := rawConn.(*tls.Conn)
 	defer conn.Close()
 
 	certs := conn.ConnectionState().PeerCertificates

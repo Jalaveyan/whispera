@@ -21,6 +21,8 @@ type ConnectionPool struct {
 	conns      map[string][]*PooledConn
 	ttl        time.Duration
 	maxPerHost int
+	quit       chan struct{}
+	closeOnce  sync.Once
 }
 
 func NewConnectionPool(ttl time.Duration, maxPerHost int) *ConnectionPool {
@@ -28,6 +30,7 @@ func NewConnectionPool(ttl time.Duration, maxPerHost int) *ConnectionPool {
 		conns:      make(map[string][]*PooledConn),
 		ttl:        ttl,
 		maxPerHost: maxPerHost,
+		quit:       make(chan struct{}),
 	}
 
 	go pool.cleanupLoop()
@@ -114,8 +117,13 @@ func (cp *ConnectionPool) cleanupLoop() {
 	ticker := time.NewTicker(cp.ttl / 2)
 	defer ticker.Stop()
 
-	for range ticker.C {
-		cp.cleanupSafe()
+	for {
+		select {
+		case <-cp.quit:
+			return
+		case <-ticker.C:
+			cp.cleanupSafe()
+		}
 	}
 }
 
@@ -154,6 +162,10 @@ func (cp *ConnectionPool) cleanup() {
 }
 
 func (cp *ConnectionPool) Close() {
+	cp.closeOnce.Do(func() {
+		close(cp.quit)
+	})
+
 	cp.mu.Lock()
 	defer cp.mu.Unlock()
 

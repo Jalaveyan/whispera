@@ -36,21 +36,27 @@ func (w *WindowsKillSwitch) IsSupported() bool {
 	return err == nil
 }
 
-func (w *WindowsKillSwitch) Enable(vpnServerIP net.IP, vpnPort int, allowLAN, allowDNS bool, allowedIPs []net.IP) error {
+func (w *WindowsKillSwitch) Enable(vpnServerIP net.IP, vpnPort int, allowLAN, allowDNS bool, allowedIPs []net.IP) (err error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	defer func() {
+		if err != nil {
+			w.cleanupRules()
+			w.rulesActive = false
+		}
+	}()
 	w.cleanupRules()
-	if err := w.addRule(ruleAllowLocal, "in", "allow", "localip=127.0.0.1"); err != nil {
+	if err = w.addRule(ruleAllowLocal, "in", "allow", "localip=127.0.0.1"); err != nil {
 		return fmt.Errorf("failed to allow loopback in: %w", err)
 	}
-	if err := w.addRule(ruleAllowLocal+"-Out", "out", "allow", "localip=127.0.0.1"); err != nil {
+	if err = w.addRule(ruleAllowLocal+"-Out", "out", "allow", "localip=127.0.0.1"); err != nil {
 		return fmt.Errorf("failed to allow loopback out: %w", err)
 	}
 	vpnIP := vpnServerIP.String()
-	if err := w.addRule(ruleAllowVPN+"-In", "in", "allow", fmt.Sprintf("remoteip=%s", vpnIP)); err != nil {
+	if err = w.addRule(ruleAllowVPN+"-In", "in", "allow", fmt.Sprintf("remoteip=%s", vpnIP)); err != nil {
 		return fmt.Errorf("failed to allow VPN in: %w", err)
 	}
-	if err := w.addRule(ruleAllowVPN+"-Out", "out", "allow", fmt.Sprintf("remoteip=%s", vpnIP)); err != nil {
+	if err = w.addRule(ruleAllowVPN+"-Out", "out", "allow", fmt.Sprintf("remoteip=%s", vpnIP)); err != nil {
 		return fmt.Errorf("failed to allow VPN out: %w", err)
 	}
 	if allowLAN {
@@ -82,10 +88,10 @@ func (w *WindowsKillSwitch) Enable(vpnServerIP net.IP, vpnPort int, allowLAN, al
 		if err := w.addRule(ruleName+"-Out", "out", "allow", fmt.Sprintf("remoteip=%s", ipStr)); err != nil {
 		}
 	}
-	if err := w.addBlockAllRule(ruleBlockAll+"-In", "in"); err != nil {
+	if err = w.addBlockAllRule(ruleBlockAll+"-In", "in"); err != nil {
 		return fmt.Errorf("failed to block all inbound: %w", err)
 	}
-	if err := w.addBlockAllRule(ruleBlockAll+"-Out", "out"); err != nil {
+	if err = w.addBlockAllRule(ruleBlockAll+"-Out", "out"); err != nil {
 		return fmt.Errorf("failed to block all outbound: %w", err)
 	}
 

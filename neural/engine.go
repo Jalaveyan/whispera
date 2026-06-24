@@ -1663,7 +1663,9 @@ func netParams(net *GorgoniaNet) int {
 }
 
 func (e *NativeMLEngine) GetCurrentDPILevel() (dpiType int, confidence float64) {
+	e.mu.RLock()
 	samples := e.replayBuf.getAll()
+	e.mu.RUnlock()
 	if len(samples) == 0 {
 		return 0, 0
 	}

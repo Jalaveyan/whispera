@@ -152,9 +152,16 @@ func (om *OutboundManager) AddOutbound(cfg config.OutboundConfig) error {
 }
 
 func (om *OutboundManager) dialCascade(ctx context.Context, hops []string, finalAddr string) (net.Conn, error) {
+	if len(hops) == 0 {
+		return nil, fmt.Errorf("cascade: empty hop chain")
+	}
+
 	om.mu.RLock()
 	firstMgr := om.outbounds[hops[0]]
 	om.mu.RUnlock()
+	if firstMgr == nil {
+		return nil, fmt.Errorf("cascade: hop %q not found", hops[0])
+	}
 
 	if len(hops) == 1 {
 		return firstMgr.DialStream(ctx, "tcp", finalAddr)

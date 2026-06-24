@@ -75,20 +75,6 @@ type KeyGenOptions struct {
 	TransportConfig   map[string]interface{}
 }
 
-var data struct {
-	Name    string      `json:"ps"`
-	Add     string      `json:"add"`
-	Port    interface{} `json:"port"`
-	ID      string      `json:"id"`
-	Net     string      `json:"net"`
-	Type    string      `json:"type"`
-	Host    string      `json:"host"`
-	Path    string      `json:"path"`
-	TLS     string      `json:"tls"`
-	SNI     string      `json:"sni"`
-	SvcName string      `json:"serviceName"`
-}
-
 func (ck *ConnectionKey) IsExpired() bool {
 	return ck.ExpiresAt > 0 && time.Now().Unix() > ck.ExpiresAt
 }
@@ -137,6 +123,9 @@ func ParseConnectionKey(key string) (*ConnectionKey, error) {
 						}
 						if val := q.Get("ml"); val != "" && ck.MLServerURL == "" {
 							ck.MLServerURL = val
+						}
+						if ck.Server == "" && ck.ServerTCP == "" {
+							return nil, fmt.Errorf("key must contain at least one server address (server or server_tcp)")
 						}
 						return &ck, nil
 					}
@@ -223,6 +212,10 @@ func ParseConnectionKey(key string) (*ConnectionKey, error) {
 					ck.TransportConfig = tc
 				}
 			}
+		}
+
+		if ck.Server == "" && ck.ServerTCP == "" {
+			return nil, fmt.Errorf("key must contain at least one server address (server or server_tcp)")
 		}
 
 		return ck, nil

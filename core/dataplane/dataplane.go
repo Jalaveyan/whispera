@@ -77,6 +77,9 @@ type Processor struct {
 	natTable      map[string]*natEntry
 	natTableMu    sync.RWMutex
 
+	closeMu sync.RWMutex
+	closed  bool
+
 	packetsIn      uint64
 	packetsOut     uint64
 	bytesIn        uint64
@@ -150,8 +153,13 @@ func (p *Processor) Start() error {
 }
 
 func (p *Processor) Stop() error {
-	close(p.inboundQueue)
-	close(p.outboundQueue)
+	p.closeMu.Lock()
+	if !p.closed {
+		p.closed = true
+		close(p.inboundQueue)
+		close(p.outboundQueue)
+	}
+	p.closeMu.Unlock()
 	p.workerPool.Stop()
 
 	p.PublishEvent(events.EventTypeModuleStopped, nil)
@@ -358,6 +366,13 @@ func (p *Processor) QueueInbound(packet *interfaces.Packet, session interfaces.S
 		Session: session,
 	}
 
+	p.closeMu.RLock()
+	defer p.closeMu.RUnlock()
+	if p.closed {
+		atomic.AddUint64(&p.packetsDropped, 1)
+		return false
+	}
+
 	select {
 	case p.inboundQueue <- job:
 		return true
@@ -374,6 +389,13 @@ func (p *Processor) QueueOutbound(data []byte, session interfaces.Session) bool 
 	job := &packetJob{
 		Data:    dataCopy,
 		Session: session,
+	}
+
+	p.closeMu.RLock()
+	defer p.closeMu.RUnlock()
+	if p.closed {
+		atomic.AddUint64(&p.packetsDropped, 1)
+		return false
 	}
 
 	select {

@@ -1,6 +1,7 @@
 package protocol
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/binary"
@@ -179,7 +180,9 @@ func relayToOrigin(conn net.Conn, raw []byte, addr string) {
 	if addr == "" {
 		return
 	}
-	upstream, err := net.DialTimeout("tcp", addr, camoDialTimeout)
+	dialCtx, cancel := context.WithTimeout(context.Background(), camoDialTimeout)
+	defer cancel()
+	upstream, err := (&net.Dialer{}).DialContext(dialCtx, "tcp", addr)
 	if err != nil {
 		return
 	}
@@ -267,6 +270,12 @@ func (l *camouflageListener) handle(conn net.Conn) {
 		traceLog.Infow("camo_no_hello", "remote", remote, "err", err)
 		conn.Close()
 		return
+	}
+	if err == nil {
+		if drift, found := probeCamoMarkerDrift(l.keysFn(), ph.random, ph.keyShare); found {
+			traceLog.Warnw("camo_marker_drift_suspected", "remote", remote, "sni", ph.sni,
+				"drift_windows", drift, "drift_seconds", drift*camoWindowSeconds)
+		}
 	}
 	target := l.decoyAddr(ph.sni)
 	traceLog.Infow("camo_relay_decoy", "remote", remote, "sni", ph.sni, "hello_err", err, "target", target)

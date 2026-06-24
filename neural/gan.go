@@ -125,13 +125,13 @@ func (g *TrafficGAN) Load(path string) error {
 	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if len(state.DiscLayers) > 0 {
+	if validLayers(state.DiscLayers, FlowFeatureSize, 1) {
 		g.disc = &gnet.GorgoniaNet{Layers: state.DiscLayers}
 		if state.DiscAdam != nil {
 			g.discAdam = state.DiscAdam
 		}
 	}
-	if len(state.GenLayers) > 0 {
+	if validLayers(state.GenLayers, FlowFeatureSize, 3) {
 		g.gen = &gnet.GorgoniaNet{Layers: state.GenLayers}
 		if state.GenAdam != nil {
 			g.genAdam = state.GenAdam

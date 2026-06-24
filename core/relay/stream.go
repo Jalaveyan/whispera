@@ -248,7 +248,9 @@ func (s *Stream) SetWriter(w ResponseWriter) {
 }
 
 func (s *Stream) sendFrame(f *Frame) error {
+	s.mu.RLock()
 	writer := s.writer
+	s.mu.RUnlock()
 
 	if writer == nil {
 		return fmt.Errorf("no writer")
@@ -514,10 +516,19 @@ func (s *Stream) readFromTarget() {
 	bufp := streamReadBufPool.Get().(*[]byte)
 	buf := *bufp
 	defer streamReadBufPool.Put(bufp)
-	s.conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+
+	s.mu.RLock()
+	conn := s.conn
+	writer := s.writer
+	s.mu.RUnlock()
+	if conn == nil || writer == nil {
+		return
+	}
+
+	conn.SetReadDeadline(time.Now().Add(60 * time.Second))
 
 	for {
-		n, err := s.conn.Read(buf[HeaderSize:])
+		n, err := conn.Read(buf[HeaderSize:])
 		if err != nil {
 			if err != io.EOF {
 				s.fsm.Event(EventError)
@@ -531,7 +542,7 @@ func (s *Stream) readFromTarget() {
 			atomic.AddUint64(&s.bytesIn, uint64(n))
 			now := time.Now()
 			atomic.StoreInt64(&s.lastTNano, now.UnixNano())
-			s.conn.SetReadDeadline(now.Add(60 * time.Second))
+			conn.SetReadDeadline(now.Add(60 * time.Second))
 
 			if s.sackEnabled {
 				s.sackTracker.RecordPacket(s.seqNum)
@@ -544,7 +555,7 @@ func (s *Stream) readFromTarget() {
 
 				WriteFrameHeader(encodedBuf, s.ID, FrameData, 0, len(encodedBuf)-HeaderSize)
 
-				if err := s.writer.Write(encodedBuf); err != nil {
+				if err := writer.Write(encodedBuf); err != nil {
 					packetPool.Put(encodedBuf)
 					return
 				}
@@ -553,13 +564,13 @@ func (s *Stream) readFromTarget() {
 				parityPackets := s.fecEncoder.GetParityPackets(s.seqNum, HeaderSize)
 				for _, pkt := range parityPackets {
 					WriteFrameHeader(pkt, s.ID, FrameData, 0, len(pkt)-HeaderSize)
-					s.writer.Write(pkt)
+					writer.Write(pkt)
 					packetPool.Put(pkt)
 					s.seqNum++
 				}
 			} else {
 				WriteFrameHeader(buf, s.ID, FrameData, 0, n)
-				if err := s.writer.Write(buf[:HeaderSize+n]); err != nil {
+				if err := writer.Write(buf[:HeaderSize+n]); err != nil {
 					return
 				}
 			}
@@ -574,7 +585,7 @@ func (s *Stream) readFromTarget() {
 				padBuf = padBuf[:HeaderSize+paddingNeeded]
 
 				WriteFrameHeader(padBuf, s.ID, FramePadding, 0, paddingNeeded)
-				s.writer.Write(padBuf)
+				writer.Write(padBuf)
 				packetPool.Put(padBuf)
 			}
 		}
@@ -591,6 +602,14 @@ func (s *Stream) readUDPFromTarget() {
 
 	const Headroom = 300
 
+	s.mu.RLock()
+	udpConn := s.udpConn
+	writer := s.writer
+	s.mu.RUnlock()
+	if udpConn == nil || writer == nil {
+		return
+	}
+
 	for {
 		select {
 		case <-s.closeChan:
@@ -604,8 +623,8 @@ func (s *Stream) readUDPFromTarget() {
 			buf = make([]byte, Headroom+4096)
 		}
 
-		s.udpConn.SetReadDeadline(time.Now().Add(5 * time.Minute))
-		n, err := s.udpConn.Read(buf[Headroom:])
+		udpConn.SetReadDeadline(time.Now().Add(5 * time.Minute))
+		n, err := udpConn.Read(buf[Headroom:])
 		if err != nil {
 			packetPool.Put(buf)
 			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
@@ -622,7 +641,7 @@ func (s *Stream) readUDPFromTarget() {
 			atomic.AddUint64(&s.bytesIn, uint64(n))
 			atomic.StoreInt64(&s.lastTNano, time.Now().UnixNano())
 
-			rAddr := s.udpConn.RemoteAddr()
+			rAddr := udpConn.RemoteAddr()
 			udpAddr, ok := rAddr.(*net.UDPAddr)
 			if !ok {
 				continue
@@ -639,7 +658,7 @@ func (s *Stream) readUDPFromTarget() {
 				return
 			}
 
-			if err := s.writer.Write(packet); err != nil {
+			if err := writer.Write(packet); err != nil {
 				packetPool.Put(buf)
 			} else {
 				packetPool.Put(buf)
@@ -660,6 +679,14 @@ func (s *Stream) readRelayUDP() {
 
 	const Headroom = 300
 
+	s.mu.RLock()
+	udpConn := s.udpConn
+	writer := s.writer
+	s.mu.RUnlock()
+	if udpConn == nil || writer == nil {
+		return
+	}
+
 	for {
 		select {
 		case <-s.closeChan:
@@ -673,8 +700,8 @@ func (s *Stream) readRelayUDP() {
 			buf = make([]byte, Headroom+4096)
 		}
 
-		s.udpConn.SetReadDeadline(time.Now().Add(5 * time.Minute))
-		n, addr, err := s.udpConn.ReadFromUDP(buf[Headroom:])
+		udpConn.SetReadDeadline(time.Now().Add(5 * time.Minute))
+		n, addr, err := udpConn.ReadFromUDP(buf[Headroom:])
 		if err != nil {
 			packetPool.Put(buf)
 			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
@@ -702,7 +729,7 @@ func (s *Stream) readRelayUDP() {
 				return
 			}
 
-			if err := s.writer.Write(packet); err != nil {
+			if err := writer.Write(packet); err != nil {
 				packetPool.Put(buf)
 				return
 			}
@@ -723,6 +750,8 @@ func (s *Stream) cleanupResources() {
 		s.windowCond.Broadcast()
 	})
 
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.conn != nil {
 		s.conn.Close()
 		s.conn = nil
@@ -950,7 +979,9 @@ func (s *Stream) flushEarlyData() {
 		return
 	}
 
+	s.mu.RLock()
 	conn := s.conn
+	s.mu.RUnlock()
 	if conn == nil {
 		return
 	}

@@ -845,10 +845,6 @@ func ensureWhisperaServerCert(sc *config.ServerConfig) {
 	sc.Whispera.TLSKey = keyPath
 }
 
-// certHasStaleSigAlg reports whether the PEM certificate at path was signed
-// with a key type (e.g. Ed25519) that real browsers/uTLS fingerprints don't
-// advertise in signature_algorithms, which breaks the TLS handshake even
-// though the certificate file itself loads fine.
 func certHasStaleSigAlg(certPath string) bool {
 	data, err := os.ReadFile(certPath)
 	if err != nil {

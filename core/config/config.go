@@ -378,8 +378,10 @@ func (p *Provider) Update(fn func(*ServerConfig)) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	oldConfig := *p.config
-	fn(p.config)
+	oldConfig := p.config
+	newConfig := *p.config
+	fn(&newConfig)
+	p.config = &newConfig
 
 	if p.configPath != "" {
 		if err := p.saveConfig(p.configPath); err != nil {
@@ -387,7 +389,7 @@ func (p *Provider) Update(fn func(*ServerConfig)) error {
 		}
 	}
 
-	p.notifyChanges(&oldConfig, p.config)
+	p.notifyChanges(oldConfig, p.config)
 
 	go p.SendNotification("Configuration updated successfully via API.")
 

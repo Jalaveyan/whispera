@@ -598,7 +598,6 @@ func (d *Dialer) dialGRPC(ctx context.Context, addr string) (net.Conn, error) {
 }
 
 func (d *Dialer) getUTLSFingerprint() *utls.ClientHelloID {
-
 	fp := d.config.TLSFingerprint
 
 	fingerprintMap := map[string]*utls.ClientHelloID{
