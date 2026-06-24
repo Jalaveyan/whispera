@@ -212,9 +212,17 @@ func (pa *ProxyAgent) SelectTransport() (string, string) {
 	}
 
 	if shouldExplore(pa.config.ExploreRate) {
-		idx := cryptoRandN(len(pa.arms))
-		candidate := pa.config.Candidates[idx]
-		return candidate.Name, candidate.Server
+		enabled := make([]int, 0, len(pa.config.Candidates))
+		for i, c := range pa.config.Candidates {
+			if c.Enabled {
+				enabled = append(enabled, i)
+			}
+		}
+		if len(enabled) > 0 {
+			idx := enabled[cryptoRandN(len(enabled))]
+			candidate := pa.config.Candidates[idx]
+			return candidate.Name, candidate.Server
+		}
 	}
 
 	totalAttempts := 0

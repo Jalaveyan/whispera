@@ -17,6 +17,9 @@ func (dr *deobfuscatingReader) Read(p []byte) (int, error) {
 		if derr != nil {
 			return 0, derr
 		}
+		if len(res) > len(p) {
+			return 0, io.ErrShortBuffer
+		}
 		copy(p, res)
 		return len(res), err
 	}

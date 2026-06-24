@@ -77,6 +77,8 @@ type TransportEntry struct {
 	cancel context.CancelFunc
 	mu     sync.Mutex
 
+	restarting int32
+
 	onEncapsulate func(outerID string)
 }
 

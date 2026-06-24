@@ -900,10 +900,13 @@ func (m *Manager) Reconnect(ctx context.Context) error {
 			})
 		} else {
 			backoffDelay = delay
-			delay = time.Duration(float64(delay) * 2)
-			if delay > m.config.ReconnectMaxDelay {
-				delay = m.config.ReconnectMaxDelay
-			}
+		}
+		delay = time.Duration(float64(delay) * 2)
+		if delay > m.config.ReconnectMaxDelay {
+			delay = m.config.ReconnectMaxDelay
+		}
+		if backoffDelay < delay {
+			backoffDelay = delay
 		}
 
 		select {

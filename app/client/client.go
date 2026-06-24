@@ -617,6 +617,11 @@ func main() {
 	}
 
 	restartEntry := func(e *TransportEntry, tunnelCfg *tunnel.Config) {
+		if !atomic.CompareAndSwapInt32(&e.restarting, 0, 1) {
+			return
+		}
+		defer atomic.StoreInt32(&e.restarting, 0)
+
 		e.mu.Lock()
 		if e.cancel != nil {
 			e.cancel()
@@ -642,8 +647,10 @@ func main() {
 		}
 
 		newCtx, newCancel := context.WithCancel(ctx)
+		e.mu.Lock()
 		e.mgr = newMgr
 		e.cancel = newCancel
+		e.mu.Unlock()
 
 		connStart := time.Now()
 		if err := newMgr.Connect(newCtx); err != nil {
@@ -771,7 +778,7 @@ func main() {
 	for _, tr := range transports {
 		knownTransports[tr] = true
 	}
-	for _, extra := range []string{"tcp", "udp", "websocket", "grpc", "quic"} {
+	for _, extra := range []string{"tcp", "udp", "grpc", "quic"} {
 		if !knownTransports[extra] {
 			agentCfg.Candidates = append(agentCfg.Candidates, agent.TransportCandidate{
 				Name:     extra,
@@ -997,6 +1004,17 @@ func main() {
 		ticker := time.NewTicker(1 * time.Second)
 		defer ticker.Stop()
 		var primaryReconnecting int32
+		var primaryFailStreak int32
+		backoffForStreak := func(streak int32) time.Duration {
+			d := time.Second
+			for i := int32(0); i < streak && d < 60*time.Second; i++ {
+				d *= 2
+			}
+			if d > 60*time.Second {
+				d = 60 * time.Second
+			}
+			return d
+		}
 		for {
 			select {
 			case <-ctx.Done():
@@ -1043,14 +1061,17 @@ func main() {
 							stdlog.Printf("Transport watchdog: activating standby transport %s", tr)
 
 							go func(entry *TransportEntry) {
-								entry.Status = connStatusConnecting
 								restartEntry(entry, buildBaseCfg(entry))
 
-								if entry.Status == connStatusConnected && entry.mgr != nil && entry.mgr.IsConnected() {
-									socksMod.SetTunnel(entry.mgr)
-									stdlog.Printf("Transport watchdog: standby %s now active", entry.Transport)
-								}
+								entry.mu.Lock()
+								connected := entry.Status == connStatusConnected && entry.mgr != nil
+								mgr := entry.mgr
+								tr := entry.Transport
 								entry.mu.Unlock()
+								if connected && mgr.IsConnected() {
+									socksMod.SetTunnel(mgr)
+									stdlog.Printf("Transport watchdog: standby %s now active", tr)
+								}
 							}(e)
 							break
 						}
@@ -1062,7 +1083,7 @@ func main() {
 				if enabled && atomic.CompareAndSwapInt32(&primaryReconnecting, 0, 1) {
 					go func() {
 						defer atomic.StoreInt32(&primaryReconnecting, 0)
-						time.Sleep(1 * time.Second)
+						time.Sleep(backoffForStreak(atomic.LoadInt32(&primaryFailStreak)))
 
 						if globalAgent != nil {
 							if recTr, _ := globalAgent.SelectTransport(); recTr != "" {
@@ -1081,11 +1102,15 @@ func main() {
 
 						restartEntry(primaryEntry, targetCfg)
 						primaryEntry.mu.Lock()
-						if primaryEntry.Status == connStatusConnected && primaryEntry.mgr != nil {
+						connected := primaryEntry.Status == connStatusConnected && primaryEntry.mgr != nil
+						primaryEntry.mu.Unlock()
+						if connected {
+							atomic.StoreInt32(&primaryFailStreak, 0)
 							socksMod.SetTunnel(primaryEntry.mgr)
 							stdlog.Printf("Transport watchdog: primary reconnected, SOCKS restored")
+						} else {
+							atomic.AddInt32(&primaryFailStreak, 1)
 						}
-						primaryEntry.mu.Unlock()
 					}()
 				}
 			}
