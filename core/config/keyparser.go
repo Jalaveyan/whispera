@@ -40,6 +40,8 @@ type ConnectionKey struct {
 	WhisperaQUICAddr string `json:"whispera_quic_addr,omitempty"`
 	WhisperaCertPin  string `json:"whispera_pin,omitempty"`
 
+	ChameleonAddr string `json:"chameleon_addr,omitempty"`
+
 	GRPCAddr       string `json:"grpc_addr,omitempty"`
 	GRPCServerName string `json:"grpc_server_name,omitempty"`
 	GRPCUseTLS     bool   `json:"grpc_use_tls,omitempty"`
@@ -262,6 +264,11 @@ func ParseConnectionKey(key string) (*ConnectionKey, error) {
 }
 
 func (ck *ConnectionKey) ToClientConfig() *ClientConfig {
+	whisperaAddr := ck.WhisperaAddr
+	if whisperaAddr == "" {
+		whisperaAddr = ck.ChameleonAddr
+	}
+
 	cfg := &ClientConfig{
 		Server:           ck.Server,
 		ServerAlts:       append([]string(nil), ck.ServerAlts...),
@@ -276,7 +283,7 @@ func (ck *ConnectionKey) ToClientConfig() *ClientConfig {
 		Transport:        ck.Transport,
 		MLServerURL:      ck.MLServerURL,
 		MLToken:          ck.MLToken,
-		WhisperaAddr:     ck.WhisperaAddr,
+		WhisperaAddr:     whisperaAddr,
 		WhisperaSNI:      ck.WhisperaSNI,
 		WhisperaQUICAddr: ck.WhisperaQUICAddr,
 		WhisperaCertPin:  ck.WhisperaCertPin,
