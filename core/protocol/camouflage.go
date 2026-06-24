@@ -253,6 +253,58 @@ func (l *camouflageListener) acceptLoop() {
 	}
 }
 
+var decoyIPRate struct {
+	mu        sync.Mutex
+	seen      map[string]time.Time
+	count     map[string]int
+	lastClean time.Time
+}
+
+func init() {
+	decoyIPRate.seen = make(map[string]time.Time)
+	decoyIPRate.count = make(map[string]int)
+	decoyIPRate.lastClean = time.Now()
+}
+
+const (
+	decoyRateWindow = 10 * time.Second
+	decoyRateMax    = 20
+)
+
+// decoyIPRateAllow caps how many decoy-relay dials a single source IP can
+// trigger per window — without this, a scanner hammering the camouflage gate
+// with a non-matching ClientHello can force unbounded real outbound TCP
+// connections to the decoy origin (each handle() call dials out for free).
+func decoyIPRateAllow(remote string) bool {
+	ip := remote
+	if h, _, err := net.SplitHostPort(remote); err == nil {
+		ip = h
+	}
+
+	decoyIPRate.mu.Lock()
+	defer decoyIPRate.mu.Unlock()
+
+	now := time.Now()
+	if now.Sub(decoyIPRate.lastClean) > time.Minute {
+		for k, t := range decoyIPRate.seen {
+			if now.Sub(t) > decoyRateWindow {
+				delete(decoyIPRate.seen, k)
+				delete(decoyIPRate.count, k)
+			}
+		}
+		decoyIPRate.lastClean = now
+	}
+
+	last, ok := decoyIPRate.seen[ip]
+	if !ok || now.Sub(last) > decoyRateWindow {
+		decoyIPRate.seen[ip] = now
+		decoyIPRate.count[ip] = 1
+		return true
+	}
+	decoyIPRate.count[ip]++
+	return decoyIPRate.count[ip] <= decoyRateMax
+}
+
 func (l *camouflageListener) handle(conn net.Conn) {
 	remote := conn.RemoteAddr().String()
 	ph, err := peekClientHello(conn)
@@ -277,6 +329,12 @@ func (l *camouflageListener) handle(conn net.Conn) {
 				"drift_windows", drift, "drift_seconds", drift*camoWindowSeconds)
 		}
 	}
+	if !decoyIPRateAllow(remote) {
+		traceLog.Infow("camo_relay_decoy_throttled", "remote", remote, "sni", ph.sni)
+		conn.Close()
+		return
+	}
+
 	target := l.decoyAddr(ph.sni)
 	traceLog.Infow("camo_relay_decoy", "remote", remote, "sni", ph.sni, "hello_err", err, "target", target)
 	relayToOrigin(conn, ph.raw, target)
