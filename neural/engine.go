@@ -157,6 +157,7 @@ type NativeMLEngine struct {
 	trainLoss       float64
 	stopTraining    chan struct{}
 	stopSelfLearn   chan struct{}
+	selfLearnWG     sync.WaitGroup
 
 	labeledBuf *ReplayBuffer
 
@@ -357,7 +358,9 @@ func (e *NativeMLEngine) selfLearnLoop() {
 		case <-ticker.C:
 			after := atomic.LoadInt64(&e.samplesAfterTrain)
 			if after >= RetrainThreshold && !e.IsTraining() {
+				e.selfLearnWG.Add(1)
 				go func() {
+					defer e.selfLearnWG.Done()
 					e.Train(30)
 					atomic.StoreInt64(&e.samplesAfterTrain, 0)
 					atomic.AddInt64(&e.retrainCount, 1)
@@ -1506,6 +1509,7 @@ func (e *NativeMLEngine) Close() {
 		close(e.stopSelfLearn)
 	}
 	e.StopTraining()
+	e.selfLearnWG.Wait()
 	e.saveModel()
 }
 
@@ -1531,7 +1535,12 @@ func (e *NativeMLEngine) saveModel() {
 	if err != nil {
 		return
 	}
-	os.WriteFile(filepath.Join(e.modelDir, "gorgonia_mlp.json"), data, 0600)
+	path := filepath.Join(e.modelDir, "gorgonia_mlp.json")
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0600); err != nil {
+		return
+	}
+	_ = os.Rename(tmp, path)
 }
 
 func (e *NativeMLEngine) loadModel() {
@@ -1547,16 +1556,16 @@ func (e *NativeMLEngine) loadModel() {
 		return
 	}
 	e.mu.Lock()
-	if len(state.TrafficLayers) > 0 {
+	if validLayers(state.TrafficLayers, InputSize, TrafficClasses) {
 		e.trafficNet = layersToNet(state.TrafficLayers)
 	}
-	if len(state.DPILayers) > 0 {
+	if validLayers(state.DPILayers, InputSize, DPIClasses) {
 		e.dpiNet = layersToNet(state.DPILayers)
 	}
-	if len(state.AnomalyLayers) > 0 {
+	if validLayers(state.AnomalyLayers, InputSize, 1) {
 		e.anomalyNet = layersToNet(state.AnomalyLayers)
 	}
-	if len(state.TransportLayers) > 0 {
+	if validLayers(state.TransportLayers, TransportFeatures, TransportChoices) {
 		e.transportNet = layersToNet(state.TransportLayers)
 	}
 	if state.Normalizer != nil && len(state.Normalizer.Mean) > 0 {

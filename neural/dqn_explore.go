@@ -14,6 +14,9 @@ type StickyExplorer struct {
 func (s *StickyExplorer) Explore(epsilon float64, n int) (int, bool) {
 	if s.remaining > 0 {
 		s.remaining--
+		if n > 0 && s.held >= n {
+			s.held = n - 1
+		}
 		return s.held, true
 	}
 	if mrand.Float64() < epsilon {

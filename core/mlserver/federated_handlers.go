@@ -36,7 +36,7 @@ func (s *MLServer) handleFedImport(w http.ResponseWriter, r *http.Request) {
 		Transports map[string]*TransportStats `json:"transports"`
 		Weights    *neural.ModelState         `json:"weights"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(io.LimitReader(r.Body, 10*1024*1024)).Decode(&req); err != nil {
 		http.Error(w, "invalid json", http.StatusBadRequest)
 		return
 	}

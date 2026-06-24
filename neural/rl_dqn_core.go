@@ -94,11 +94,15 @@ func (c *dqnCore) ExportWeights() []gnet.LayerDef {
 	return copyLayers(c.qNet)
 }
 
-func (c *dqnCore) ImportWeights(layers []gnet.LayerDef) {
+func (c *dqnCore) ImportWeights(layers []gnet.LayerDef) bool {
+	if !validLayers(layers, c.cfg.stateSize, c.cfg.numActions) {
+		return false
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.qNet.LoadWeights(layers)
 	c.target = gnet.Clone(c.qNet)
+	return true
 }
 
 func (c *dqnCore) stepsTaken() int64 {

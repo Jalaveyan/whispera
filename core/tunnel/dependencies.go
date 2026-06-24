@@ -20,7 +20,7 @@ type tcpBypassDialer interface {
 
 type weightExportable interface {
 	ExportWeights() []gnet.LayerDef
-	ImportWeights(layers []gnet.LayerDef)
+	ImportWeights(layers []gnet.LayerDef) bool
 }
 
 type keepaliveDecisionAgent interface {

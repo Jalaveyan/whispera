@@ -534,7 +534,12 @@ func (a *RLTransportAgent) savePolicyLocked() {
 		return
 	}
 	os.MkdirAll(a.modelDir, 0700)
-	os.WriteFile(filepath.Join(a.modelDir, "rl_policy.json"), data, 0600)
+	path := filepath.Join(a.modelDir, "rl_policy.json")
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0600); err != nil {
+		return
+	}
+	_ = os.Rename(tmp, path)
 }
 
 func (a *RLTransportAgent) loadPolicy() bool {

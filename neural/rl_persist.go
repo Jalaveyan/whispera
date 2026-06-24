@@ -26,7 +26,12 @@ func saveRLMiniPolicy(dir, filename string, layers []gnet.LayerDef, epsilon floa
 		return
 	}
 	os.MkdirAll(dir, 0700)
-	os.WriteFile(filepath.Join(dir, filename), data, 0600) //nolint:errcheck
+	path := filepath.Join(dir, filename)
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0600); err != nil {
+		return
+	}
+	os.Rename(tmp, path) //nolint:errcheck
 }
 
 func validLayers(layers []gnet.LayerDef, wantIn, wantOut int) bool {

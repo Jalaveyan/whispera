@@ -446,6 +446,7 @@ func (r *GANRunner) Start() error {
 
 func (r *GANRunner) Stop() {
 	close(r.stopCh)
+	r.collector.Stop()
 	if r.savePath != "" {
 		if err := r.gan.Save(r.savePath); err != nil {
 			log.Error("GAN: save state failed: %v", err)

@@ -4,6 +4,7 @@ package neural
 
 import (
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/gopacket/gopacket"
@@ -12,10 +13,11 @@ import (
 )
 
 type PCAPCollector struct {
-	iface  string
-	port   int
-	out    chan LabeledFlow
-	stopCh chan struct{}
+	iface     string
+	port      int
+	out       chan LabeledFlow
+	stopCh    chan struct{}
+	closeOnce sync.Once
 }
 
 func NewPCAPCollector(iface string, port int) *PCAPCollector {
@@ -28,6 +30,13 @@ func NewPCAPCollector(iface string, port int) *PCAPCollector {
 }
 
 func (c *PCAPCollector) Out() <-chan LabeledFlow { return c.out }
+
+func (c *PCAPCollector) Stop() {
+	c.closeOnce.Do(func() {
+		close(c.stopCh)
+	})
+}
+
 func (c *PCAPCollector) Start() error {
 	tp, err := afpacket.NewTPacket(
 		afpacket.OptInterface(c.iface),

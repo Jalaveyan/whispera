@@ -144,6 +144,7 @@ func (fa *FlowAnalyzer) Update(flowKey string, packetFeatures []float64) []float
 	copy(cPrev, state.Cell)
 	fa.mu.Unlock()
 
+	fa.mu.RLock()
 	step := fa.lstmForward(packetFeatures, hPrev, cPrev)
 
 	output := make([]float64, FlowOutputSize)
@@ -154,6 +155,7 @@ func (fa *FlowAnalyzer) Update(flowKey string, packetFeatures []float64) []float
 		}
 		output[j] = sum
 	}
+	fa.mu.RUnlock()
 
 	fa.mu.Lock()
 	copy(state.Hidden, step.HidNew)
@@ -246,6 +248,10 @@ func (fa *FlowAnalyzer) LearnOnline(flowKey string, trueClass int) {
 	lr := FlowLearnRate
 
 	lastH := steps[histLen-1].HidNew
+
+	fa.mu.Lock()
+	defer fa.mu.Unlock()
+
 	output := make([]float64, FlowOutputSize)
 	for j := 0; j < FlowOutputSize; j++ {
 		sum := fa.Bo[j]
@@ -261,9 +267,6 @@ func (fa *FlowAnalyzer) LearnOnline(flowKey string, trueClass int) {
 		dOutput[j] = probs[j]
 	}
 	dOutput[trueClass] -= 1.0
-
-	fa.mu.Lock()
-	defer fa.mu.Unlock()
 
 	for i := 0; i < H; i++ {
 		for j := 0; j < FlowOutputSize; j++ {
@@ -342,16 +345,15 @@ func (fa *FlowAnalyzer) updateGateWeights(Wx, Wh, B, dGate, x, hPrev []float64, 
 
 func (fa *FlowAnalyzer) GetFlowConfidence(flowKey string) (classID int, confidence float64) {
 	fa.mu.RLock()
+	defer fa.mu.RUnlock()
+
 	state, exists := fa.flows[flowKey]
-	fa.mu.RUnlock()
 	if !exists || state.PacketNum < 3 {
 		return -1, 0
 	}
 
-	fa.mu.RLock()
 	hidden := make([]float64, FlowHiddenSize)
 	copy(hidden, state.Hidden)
-	fa.mu.RUnlock()
 
 	output := make([]float64, FlowOutputSize)
 	for j := 0; j < FlowOutputSize; j++ {

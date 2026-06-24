@@ -253,7 +253,8 @@ func (dc *DataCollector) CollectSample(sample TrafficSample) {
 	}
 
 	if dc.onNewSample != nil {
-		go dc.onNewSample(sample)
+		cb := dc.onNewSample
+		go cb(sample)
 	}
 }
 
@@ -289,6 +290,7 @@ func (dc *DataCollector) GetMetrics() RuntimeMetrics {
 
 	dc.mu.RLock()
 	sampleCount := len(dc.samples)
+	lastSave := dc.lastSave
 	dc.mu.RUnlock()
 
 	return RuntimeMetrics{
@@ -300,7 +302,7 @@ func (dc *DataCollector) GetMetrics() RuntimeMetrics {
 		Accuracy:           accuracy,
 		AvgLatency:         avgLatency,
 		SampleCount:        sampleCount,
-		LastSave:           dc.lastSave,
+		LastSave:           lastSave,
 	}
 }
 
@@ -395,8 +397,10 @@ func (dc *DataCollector) backgroundSaveLoop() {
 }
 
 func (dc *DataCollector) SetMLServer(url, token string) {
+	dc.mu.Lock()
 	dc.mlServerURL = url
 	dc.mlToken = token
+	dc.mu.Unlock()
 	if url != "" {
 		uploadHTTPClient = buildUploadHTTPClient(url)
 		go dc.backgroundUploadLoop()
@@ -422,12 +426,10 @@ func buildUploadHTTPClient(mlServerURL string) *http.Client {
 var uploadHTTPClient = buildUploadHTTPClient("")
 
 func (dc *DataCollector) UploadToMLServer() error {
-	if dc.mlServerURL == "" {
-		return nil
-	}
-
 	dc.mu.RLock()
-	if len(dc.samples) == 0 {
+	mlServerURL := dc.mlServerURL
+	mlToken := dc.mlToken
+	if mlServerURL == "" || len(dc.samples) == 0 {
 		dc.mu.RUnlock()
 		return nil
 	}
@@ -451,7 +453,7 @@ func (dc *DataCollector) UploadToMLServer() error {
 		return err
 	}
 
-	baseURL := dc.mlServerURL
+	baseURL := mlServerURL
 	if baseURL[len(baseURL)-1] != '/' {
 		baseURL += "/"
 	}
@@ -460,8 +462,8 @@ func (dc *DataCollector) UploadToMLServer() error {
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	if dc.mlToken != "" {
-		req.Header.Set("Authorization", "Bearer "+dc.mlToken)
+	if mlToken != "" {
+		req.Header.Set("Authorization", "Bearer "+mlToken)
 	}
 
 	resp, err := uploadHTTPClient.Do(req)
@@ -480,10 +482,14 @@ func (dc *DataCollector) UploadToMLServer() error {
 // downloadAggregatedModel fetches the server-side FedAvg model and blends it
 // into the local engine weights (alpha=0.7 trusts local data more).
 func (dc *DataCollector) downloadAggregatedModel() error {
-	if dc.mlServerURL == "" {
+	dc.mu.RLock()
+	mlServerURL := dc.mlServerURL
+	mlToken := dc.mlToken
+	dc.mu.RUnlock()
+	if mlServerURL == "" {
 		return nil
 	}
-	baseURL := dc.mlServerURL
+	baseURL := mlServerURL
 	if baseURL[len(baseURL)-1] != '/' {
 		baseURL += "/"
 	}
@@ -491,8 +497,8 @@ func (dc *DataCollector) downloadAggregatedModel() error {
 	if err != nil {
 		return err
 	}
-	if dc.mlToken != "" {
-		req.Header.Set("Authorization", "Bearer "+dc.mlToken)
+	if mlToken != "" {
+		req.Header.Set("Authorization", "Bearer "+mlToken)
 	}
 	resp, err := uploadHTTPClient.Do(req)
 	if err != nil {
@@ -537,7 +543,9 @@ func (dc *DataCollector) backgroundDownloadLoop() {
 }
 
 func (dc *DataCollector) SetOnNewSample(callback func(sample TrafficSample)) {
+	dc.mu.Lock()
 	dc.onNewSample = callback
+	dc.mu.Unlock()
 }
 
 func (fs *FeatureStatistics) Update(features []float64) {

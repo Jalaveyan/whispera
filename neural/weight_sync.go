@@ -46,17 +46,27 @@ func copyLayers(net *gnet.GorgoniaNet) []gnet.LayerDef {
 	return out
 }
 
-func (a *RLKeepaliveAgent) ExportWeights() []gnet.LayerDef       { return a.core.ExportWeights() }
-func (a *RLKeepaliveAgent) ImportWeights(layers []gnet.LayerDef) { a.core.ImportWeights(layers) }
+func (a *RLKeepaliveAgent) ExportWeights() []gnet.LayerDef { return a.core.ExportWeights() }
+func (a *RLKeepaliveAgent) ImportWeights(layers []gnet.LayerDef) bool {
+	return a.core.ImportWeights(layers)
+}
 
-func (a *RLJitterAgent) ExportWeights() []gnet.LayerDef       { return a.core.ExportWeights() }
-func (a *RLJitterAgent) ImportWeights(layers []gnet.LayerDef) { a.core.ImportWeights(layers) }
+func (a *RLJitterAgent) ExportWeights() []gnet.LayerDef { return a.core.ExportWeights() }
+func (a *RLJitterAgent) ImportWeights(layers []gnet.LayerDef) bool {
+	return a.core.ImportWeights(layers)
+}
 
-func (a *RLChunkAgent) ExportWeights() []gnet.LayerDef       { return a.core.ExportWeights() }
-func (a *RLChunkAgent) ImportWeights(layers []gnet.LayerDef) { a.core.ImportWeights(layers) }
+func (a *RLChunkAgent) ExportWeights() []gnet.LayerDef { return a.core.ExportWeights() }
+func (a *RLChunkAgent) ImportWeights(layers []gnet.LayerDef) bool {
+	return a.core.ImportWeights(layers)
+}
 
-func (a *RLBackoffAgent) ExportWeights() []gnet.LayerDef       { return a.core.ExportWeights() }
-func (a *RLBackoffAgent) ImportWeights(layers []gnet.LayerDef) { a.core.ImportWeights(layers) }
+func (a *RLBackoffAgent) ExportWeights() []gnet.LayerDef { return a.core.ExportWeights() }
+func (a *RLBackoffAgent) ImportWeights(layers []gnet.LayerDef) bool {
+	return a.core.ImportWeights(layers)
+}
 
-func (a *RLServerAgent) ExportWeights() []gnet.LayerDef       { return a.core.ExportWeights() }
-func (a *RLServerAgent) ImportWeights(layers []gnet.LayerDef) { a.core.ImportWeights(layers) }
+func (a *RLServerAgent) ExportWeights() []gnet.LayerDef { return a.core.ExportWeights() }
+func (a *RLServerAgent) ImportWeights(layers []gnet.LayerDef) bool {
+	return a.core.ImportWeights(layers)
+}

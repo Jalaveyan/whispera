@@ -1,6 +1,9 @@
 package neural
 
-import "testing"
+import (
+	"net"
+	"testing"
+)
 
 func drain(out chan LabeledFlow) (LabeledFlow, bool) {
 	select {
@@ -66,15 +69,17 @@ func TestFlowAggregator_IgnoresOffPort(t *testing.T) {
 }
 
 func TestFlowAggregator_RegistryTunnelLabel(t *testing.T) {
-	FlowRegistry.Register("7.7.7.7:44444", FlowTunnel)
-	defer FlowRegistry.Delete("7.7.7.7:44444")
+	client := &net.TCPAddr{IP: net.ParseIP("7.7.7.7"), Port: 44444}
+	server := &net.TCPAddr{IP: net.ParseIP("9.1.1.1"), Port: 443}
+	FlowRegistry.RegisterConn(client, server, FlowTunnel)
+	defer FlowRegistry.DeleteConn(client, server)
 
 	out := make(chan LabeledFlow, 4)
 	agg := newFlowAggregator(443, out)
 
 	base := 4000.0
 	for i := 0; i < 8; i++ {
-		agg.observe(base+float64(i)*0.02, "7.7.7.7", "0.0.0.0", 44444, 443, 1200)
+		agg.observe(base+float64(i)*0.02, "7.7.7.7", "9.1.1.1", 44444, 443, 1200)
 	}
 	agg.sweep(base + 100)
 

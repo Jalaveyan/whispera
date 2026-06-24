@@ -149,18 +149,28 @@ func (ml *mlOrchestrator) importWeights(snap *neural.WeightSnapshot) {
 		return
 	}
 	if ml.kaAgent != nil && len(snap.Keepalive) > 0 {
-		ml.kaAgent.ImportWeights(snap.Keepalive)
+		if !ml.kaAgent.ImportWeights(snap.Keepalive) {
+			log.Error("ML: keepalive weight import rejected, shape mismatch")
+		}
 	}
 	if ml.jitterAgent != nil && len(snap.Jitter) > 0 {
-		ml.jitterAgent.ImportWeights(snap.Jitter)
+		if !ml.jitterAgent.ImportWeights(snap.Jitter) {
+			log.Error("ML: jitter weight import rejected, shape mismatch")
+		}
 	}
 	if ml.chunkAgent != nil && len(snap.Chunk) > 0 {
-		ml.chunkAgent.ImportWeights(snap.Chunk)
+		if !ml.chunkAgent.ImportWeights(snap.Chunk) {
+			log.Error("ML: chunk weight import rejected, shape mismatch")
+		}
 	}
 	if ml.boAgent != nil && len(snap.Backoff) > 0 {
-		ml.boAgent.ImportWeights(snap.Backoff)
+		if !ml.boAgent.ImportWeights(snap.Backoff) {
+			log.Error("ML: backoff weight import rejected, shape mismatch")
+		}
 	}
 	if ml.serverAgent != nil && len(snap.Server) > 0 {
-		ml.serverAgent.ImportWeights(snap.Server)
+		if !ml.serverAgent.ImportWeights(snap.Server) {
+			log.Error("ML: server weight import rejected, shape mismatch")
+		}
 	}
 }
