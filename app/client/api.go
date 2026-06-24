@@ -37,7 +37,14 @@ func startControlServer(ctx context.Context) {
 	mux.HandleFunc("/global-sni", handleGlobalSNI)
 	mux.HandleFunc("/logs", handleLogs)
 
-	srv := &http.Server{Addr: controlAddr, Handler: mux}
+	limitBody := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+			next.ServeHTTP(w, r)
+		})
+	}
+
+	srv := &http.Server{Addr: controlAddr, Handler: limitBody(mux)}
 	go func() {
 		<-ctx.Done()
 		srv.Close()
@@ -732,7 +739,7 @@ func runSpeedTest(ctx context.Context, proxyAddr, target, token string, download
 		resp.Body.Close()
 		latencies = append(latencies, time.Since(start))
 	}
-	res.LatencyMs = medianMs(latencies)
+	res.LatencyMs = minMs(latencies)
 
 	authHdr := "Bearer " + token
 
@@ -801,7 +808,7 @@ func buildSOCKS5Client(proxyAddr string) (*http.Client, error) {
 	}, nil
 }
 
-func medianMs(ds []time.Duration) float64 {
+func minMs(ds []time.Duration) float64 {
 	if len(ds) == 0 {
 		return 0
 	}

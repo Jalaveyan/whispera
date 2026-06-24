@@ -1031,16 +1031,20 @@ func main() {
 
 				isRST := wasConnected && (currentMgr == nil || !currentMgr.IsConnected())
 				if isRST {
+					primaryEntry.mu.Lock()
 					primaryEntry.Status = connStatusRST
 					primaryEntry.Error = "connection reset by peer"
+					primaryEntry.mu.Unlock()
 					stdlog.Printf("Transport watchdog: primary %s got RST", transports[0])
 				}
 
 				activated := false
 				entries := pool.List()
 				for _, e := range entries {
+					e.mu.Lock()
 					status := e.Status
 					mgr := e.mgr
+					e.mu.Unlock()
 					if status == connStatusConnected && mgr != nil && mgr.IsConnected() && mgr != currentMgr {
 						socksMod.SetTunnel(mgr)
 						stdlog.Printf("Transport watchdog: switched SOCKS to %s", e.Transport)
@@ -1078,7 +1082,9 @@ func main() {
 					}
 				}
 
+				primaryEntry.mu.Lock()
 				enabled := primaryEntry.Enabled
+				primaryEntry.mu.Unlock()
 
 				if enabled && atomic.CompareAndSwapInt32(&primaryReconnecting, 0, 1) {
 					go func() {
@@ -1213,13 +1219,14 @@ func fetchAndApplyMLWeights(ctx context.Context, mgr *tunnel.Manager, weightsURL
 		stdlog.Printf("[ml-sync] fetch failed: %v", err)
 		return
 	}
+	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		stdlog.Printf("[ml-sync] server returned %d", resp.StatusCode)
 		return
 	}
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024))
 	if err != nil {
 		stdlog.Printf("[ml-sync] read body: %v", err)
 		return

@@ -1097,7 +1097,10 @@ func handlePacket(data []byte, addr net.Addr) {
 		return
 	}
 
-	sess, _ := globalSessionMgr.GetSessionByAddr(addr)
+	sess, ok := globalSessionMgr.GetSessionByAddr(addr)
+	if !ok || sess == nil {
+		return
+	}
 
 	payload := data
 

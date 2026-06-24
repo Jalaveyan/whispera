@@ -149,7 +149,9 @@ func (m *JWTManager) ValidateAccessToken(tokenStr string) (*Claims, error) {
 		return nil, fmt.Errorf("token expired")
 	}
 
+	m.mu.RLock()
 	_, revoked := m.revokedJTIs[claims.Jti]
+	m.mu.RUnlock()
 
 	if revoked {
 		return nil, fmt.Errorf("token revoked")
@@ -246,6 +248,7 @@ func (m *JWTManager) cleanupLoop() {
 	for range ticker.C {
 		now := time.Now()
 
+		m.mu.Lock()
 		for jti, exp := range m.revokedJTIs {
 			if now.After(exp) {
 				delete(m.revokedJTIs, jti)
@@ -256,6 +259,7 @@ func (m *JWTManager) cleanupLoop() {
 				delete(m.refreshTokens, k)
 			}
 		}
+		m.mu.Unlock()
 	}
 }
 
