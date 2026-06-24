@@ -22,9 +22,6 @@ const (
 	camoDialTimeout   = 5 * time.Second
 )
 
-// deriveCamoKey derives the steganographic ClientHello-marker key from a
-// tunnel PSK. Kept separate from DeriveKeys so a leak of one purpose's key
-// doesn't help with the other.
 func deriveCamoKey(psk []byte) []byte {
 	if len(psk) != 32 {
 		return nil
@@ -34,13 +31,6 @@ func deriveCamoKey(psk []byte) []byte {
 	return mac.Sum(nil)
 }
 
-// extractX25519KeyShare pulls out the connection's own ephemeral ECDHE
-// public key. It is unique per TLS connection by construction (freshly
-// generated for every handshake), which is what the marker is bound to
-// instead of a replay cache: a captured ClientHello can be copied onto a
-// new TCP connection verbatim, but the attacker still lacks the matching
-// ECDHE private key and can never complete a working tunnel with it, so
-// there is nothing to gain by replaying it.
 func extractX25519KeyShare(shares []utls.KeyShare) []byte {
 	for _, ks := range shares {
 		if ks.Group == utls.X25519 {
@@ -61,13 +51,6 @@ func camoMarkerForWindow(key []byte, window int64, keyShare []byte) [32]byte {
 	return out
 }
 
-// buildCamoMarker produces 32 bytes that are placed verbatim into the
-// ClientHello's Random field. To an observer it is indistinguishable from a
-// genuine random nonce; to a server holding the same PSK it authenticates
-// the connection without any extra round trip. Binding it to this
-// connection's own key_share means two connections opened in the same time
-// window (e.g. a client retry) never collide, and a copied ClientHello
-// can't be reused to authenticate a different connection.
 func buildCamoMarker(key []byte, keyShare []byte) [32]byte {
 	w := time.Now().Unix() / camoWindowSeconds
 	return camoMarkerForWindow(key, w, keyShare)
@@ -92,8 +75,29 @@ func camoMarkerMatches(keys [][]byte, random []byte, keyShare []byte) bool {
 	return false
 }
 
-// peekedHello holds the verbatim wire bytes consumed while sniffing a
-// ClientHello, plus the parsed fields we need to make a routing decision.
+func probeCamoMarkerDrift(keys [][]byte, random []byte, keyShare []byte) (driftWindows int64, found bool) {
+	if len(random) != 32 || len(keys) == 0 || len(keyShare) == 0 {
+		return 0, false
+	}
+	w := time.Now().Unix() / camoWindowSeconds
+	for _, key := range keys {
+		if len(key) == 0 {
+			continue
+		}
+		for offset := int64(camoWindowTol + 1); offset <= clockDriftProbeWindows; offset++ {
+			up := camoMarkerForWindow(key, w+offset, keyShare)
+			if hmac.Equal(up[:], random) {
+				return offset, true
+			}
+			down := camoMarkerForWindow(key, w-offset, keyShare)
+			if hmac.Equal(down[:], random) {
+				return -offset, true
+			}
+		}
+	}
+	return 0, false
+}
+
 type peekedHello struct {
 	raw      []byte
 	random   []byte
@@ -101,10 +105,6 @@ type peekedHello struct {
 	keyShare []byte
 }
 
-// peekClientHello reassembles a (possibly record-fragmented) TLS ClientHello
-// off conn without consuming more than the handshake message itself, so the
-// exact bytes can be replayed either into our own TLS stack or onward to a
-// real origin server.
 func peekClientHello(conn net.Conn) (*peekedHello, error) {
 	_ = conn.SetReadDeadline(time.Now().Add(camoPeekTimeout))
 	defer conn.SetReadDeadline(time.Time{})
@@ -159,9 +159,6 @@ func peekClientHello(conn net.Conn) (*peekedHello, error) {
 	}
 }
 
-// prefixConn replays previously-consumed bytes before resuming reads from
-// the underlying connection, so a peeked ClientHello can be handed to the
-// real TLS stack as if nothing had been read yet.
 type prefixConn struct {
 	net.Conn
 	prefix []byte
@@ -177,11 +174,6 @@ func (c *prefixConn) Read(b []byte) (int, error) {
 	return c.Conn.Read(b)
 }
 
-// relayToOrigin forwards a connection verbatim (starting with the bytes
-// already consumed while peeking) to a real upstream server, byte for byte,
-// without ever terminating TLS itself. Anyone without the PSK marker, be it
-// a browser, a scanner, or active-probing DPI, sees a completely genuine
-// connection to the destination they asked for.
 func relayToOrigin(conn net.Conn, raw []byte, addr string) {
 	defer conn.Close()
 	if addr == "" {
@@ -205,9 +197,6 @@ func relayToOrigin(conn net.Conn, raw []byte, addr string) {
 	<-done
 }
 
-// camoDecoyAddr resolves the real address to forward unauthenticated
-// connections to: the SNI the client actually asked for when valid,
-// falling back to the configured decoy origin otherwise.
 func camoDecoyAddr(decoyOrigin string) func(sni string) string {
 	fallbackHost := ""
 	if decoyOrigin != "" {
@@ -229,10 +218,6 @@ func camoDecoyAddr(decoyOrigin string) func(sni string) string {
 	}
 }
 
-// camouflageListener sits between the raw TCP accept loop and the TLS
-// listener. Connections that open with a PSK-marked ClientHello are handed
-// through to our TLS stack unchanged; everything else is transparently
-// relayed to a real origin server and never reaches our TLS stack at all.
 type camouflageListener struct {
 	net.Listener
 	ready     chan net.Conn
@@ -301,8 +286,6 @@ func (l *camouflageListener) Close() error {
 	return l.Listener.Close()
 }
 
-// camoKeysFunc builds the per-connection PSK lookup closure for a server,
-// covering both the single shared-secret deployment and multi-user ones.
 func camoKeysFunc(cfg *ServerConfig) func() [][]byte {
 	return func() [][]byte {
 		keys := make([][]byte, 0, 4)
