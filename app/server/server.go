@@ -1228,16 +1228,10 @@ func handleTCPConnection(conn net.Conn, hsHandler *handshake.Handler) {
 			globalRelay.ServeTunnel(stats.WrapConn(conn, addr.String()), false)
 		}
 	} else {
-		conn.SetReadDeadline(time.Time{})
-
 		logger.Trace().Infow("raw_tcp_no_handshake",
 			"remote", addr.String(),
 			"first_byte", fmt.Sprintf("0x%02x", firstByte[0]),
 		)
-
-		if globalRelay != nil {
-			globalRelay.ServeTunnel(stats.WrapConn(&prependConn{Conn: conn, prepend: []byte{firstByte[0]}}, addr.String()), false)
-		}
 	}
 }
 
