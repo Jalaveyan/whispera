@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"time"
 
+	quicgo "github.com/quic-go/quic-go"
 	http3 "github.com/quic-go/quic-go/http3"
 	utls "github.com/refraction-networking/utls"
 	"golang.org/x/net/http2"
@@ -162,6 +163,22 @@ func Client(ctx context.Context, cfg *ClientConfig) (net.Conn, error) {
 			TLSClientConfig:    tlsCfgQUIC,
 			QUICConfig:         chromeLikeQUICConfig(),
 			DisableCompression: true,
+			Dial: func(ctx context.Context, addr string, tlsConf *tls.Config, qCfg *quicgo.Config) (*quicgo.Conn, error) {
+				udpAddr, err := net.ResolveUDPAddr("udp", addr)
+				if err != nil {
+					return nil, err
+				}
+				pconn, err := net.ListenUDP("udp", nil)
+				if err != nil {
+					return nil, err
+				}
+				if camoKey := deriveCamoKey(cfg.SharedSecret); camoKey != nil {
+					if probe, perr := buildQUICCamoProbe(camoKey, sni); perr == nil {
+						_, _ = pconn.WriteToUDP(probe, udpAddr)
+					}
+				}
+				return quicgo.Dial(ctx, pconn, udpAddr, tlsConf, qCfg)
+			},
 		}
 	} else {
 		tunnelTransport = h2Transport

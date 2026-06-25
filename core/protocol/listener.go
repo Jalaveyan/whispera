@@ -149,6 +149,9 @@ func ListenAndServe(ctx context.Context, cfg *ServerConfig) error {
 		cfg.proxy = newDecoyProxy(cfg.DecoyOrigin)
 	}
 
+	camoKeys := camoKeysFunc(cfg)
+	camoAddr := camoDecoyAddr(cfg.DecoyOrigin)
+
 	var h3srv *http3.Server
 	var extraH3srvs []*http3.Server
 	if cfg.QUICListenAddr != "" && cfg.TLSCert != "" {
@@ -158,29 +161,33 @@ func ListenAndServe(ctx context.Context, cfg *ServerConfig) error {
 		}
 		cfg.altSvcHeader = fmt.Sprintf(`h3=":%s"; ma=2592000`, port)
 		h3srv = &http3.Server{
-			Addr:       cfg.QUICListenAddr,
 			Handler:    mux,
 			TLSConfig:  http3.ConfigureTLSConfig(tlsCfg.Clone()),
 			QUICConfig: chromeLikeQUICConfig(),
 		}
-		go func() {
-			if err := h3srv.ListenAndServeTLS(cfg.TLSCert, cfg.TLSKey); err != nil {
-			}
-		}()
+		if pconn, err := net.ListenPacket("udp", cfg.QUICListenAddr); err == nil {
+			camoConn := newQUICCamoConn(pconn, camoKeys, camoAddr)
+			go func() {
+				if err := h3srv.Serve(camoConn); err != nil {
+				}
+			}()
+		}
 
 		for _, extraQUICAddr := range cfg.ExtraQUICListenAddrs {
 			extraQUICAddr := extraQUICAddr
 			extraH3srv := &http3.Server{
-				Addr:       extraQUICAddr,
 				Handler:    mux,
 				TLSConfig:  http3.ConfigureTLSConfig(tlsCfg.Clone()),
 				QUICConfig: chromeLikeQUICConfig(),
 			}
 			extraH3srvs = append(extraH3srvs, extraH3srv)
-			go func() {
-				if err := extraH3srv.ListenAndServeTLS(cfg.TLSCert, cfg.TLSKey); err != nil {
-				}
-			}()
+			if pconn, err := net.ListenPacket("udp", extraQUICAddr); err == nil {
+				camoConn := newQUICCamoConn(pconn, camoKeys, camoAddr)
+				go func() {
+					if err := extraH3srv.Serve(camoConn); err != nil {
+					}
+				}()
+			}
 		}
 	}
 
@@ -194,9 +201,6 @@ func ListenAndServe(ctx context.Context, cfg *ServerConfig) error {
 		}
 		srv.Close()
 	}()
-
-	camoKeys := camoKeysFunc(cfg)
-	camoAddr := camoDecoyAddr(cfg.DecoyOrigin)
 
 	for _, extraAddr := range cfg.ExtraListenAddrs {
 		extraAddr := extraAddr
