@@ -323,16 +323,6 @@ func RunCreateKeyCmd() {
 
 	whisperaOpts := apiserver.WhisperaKeyOptions{}
 	if effectiveTransport == "whispera" {
-		whisperaCertPin := ""
-		if sc.Whispera.Domain == "" && sc.Whispera.TLSCert != "" {
-			pin, pinErr := apiserver.ComputeWhisperaCertPin(sc.Whispera.TLSCert)
-			if pinErr != nil {
-				fmt.Fprintf(os.Stderr, "Warning: could not compute whispera cert pin: %v (client will not pin the server cert)\n", pinErr)
-			} else {
-				whisperaCertPin = pin
-			}
-		}
-
 		whisperaQUICAddr := ""
 		if enableQUIC {
 			if sc.Whispera.QUICListenAddr == "" {
@@ -376,12 +366,9 @@ func RunCreateKeyCmd() {
 		whisperaSNI := sc.Whispera.Domain
 		sniToClone := *sniFlag
 		if sniToClone == "" && whisperaSNI == "" {
-			// No explicit -sni and no ACME domain to fall back to: pick a
-			// stable default rather than leave this key without any SNI,
-			// which would make the client fall back to its unbacked random
-			// pool and get a server cert that doesn't match what it sent.
 			sniToClone = protocol.DefaultSNIFor(*user)
 		}
+		servedCertPath := sc.Whispera.TLSCert
 		if sniToClone != "" {
 			certPath, keyPath, ok := protocol.SNICertPaths(decoyCertDir, sniToClone)
 			if !ok {
@@ -393,10 +380,23 @@ func RunCreateKeyCmd() {
 					fmt.Fprintf(os.Stderr, "Warning: failed to clone certificate for SNI %q: %v — falling back to the server's default cert\n", sniToClone, err)
 				} else {
 					whisperaSNI = sniToClone
+					servedCertPath = certPath
 					fmt.Printf("Cloned TLS certificate for SNI %s (subject=%s, valid %s -> %s)\n",
 						sniToClone, info.Subject, info.NotBefore.Format(time.RFC3339), info.NotAfter.Format(time.RFC3339))
 				}
 			}
+		}
+
+		whisperaCertPin := ""
+		if servedCertPath != "" {
+			pin, pinErr := apiserver.ComputeWhisperaCertPin(servedCertPath)
+			if pinErr != nil {
+				fmt.Fprintf(os.Stderr, "Warning: could not compute whispera cert pin: %v (client will not pin the server cert — vulnerable to MITM)\n", pinErr)
+			} else {
+				whisperaCertPin = pin
+			}
+		} else {
+			fmt.Fprintln(os.Stderr, "Warning: no static cert file to pin (pure ACME mode) — client will not pin the server cert and is vulnerable to MITM")
 		}
 
 		whisperaOpts = apiserver.WhisperaKeyOptions{
