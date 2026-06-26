@@ -187,6 +187,14 @@ func (fd *FECDecoder) DecodeFEC(packet []byte, seqNum uint32) (recovered []byte,
 	return nil, false
 }
 
+func (fd *FECDecoder) Forget(blockStartSeq uint32, k, m int) {
+	fd.bufferMutex.Lock()
+	defer fd.bufferMutex.Unlock()
+	for i := 0; i < k+m; i++ {
+		delete(fd.packetBuffer, blockStartSeq+uint32(i))
+	}
+}
+
 func (fd *FECDecoder) Reconstruct(blockStartSeq uint32, k, m int) [][]byte {
 	shards := make([][]byte, k+m)
 	haveObj := 0

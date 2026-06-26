@@ -5,6 +5,8 @@ import (
 	"net"
 	"sync"
 	"time"
+
+	quicgo "github.com/quic-go/quic-go"
 )
 
 type ClientConfig struct {
@@ -18,6 +20,7 @@ type ClientConfig struct {
 
 	EnableQUIC bool
 	QUICAddr   string
+	OnQUICConn func(*quicgo.Conn)
 }
 
 type ServerConfig struct {

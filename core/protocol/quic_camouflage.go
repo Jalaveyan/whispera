@@ -16,7 +16,7 @@ const (
 
 type quicDecoySession struct {
 	upstream   net.Conn
-	lastActive int64 // UnixNano, atomic
+	lastActive int64
 	closeOnce  sync.Once
 }
 
@@ -64,13 +64,6 @@ func (s *quicDecoySession) Close() {
 	s.closeOnce.Do(func() { s.upstream.Close() })
 }
 
-// quicCamoConn wraps the UDP socket behind the QUIC/HTTP-3 listener with the
-// same camouflage gate the TCP path applies via camouflageListener: every
-// new peer's first datagram must carry a valid camo marker (delivered via a
-// one-shot probe Initial packet, see buildQUICCamoProbe in client.go) before
-// its real QUIC traffic is handed to quic-go. Unauthenticated peers are
-// transparently NAT-relayed to the real origin for their SNI, exactly like
-// an unmatched TCP ClientHello.
 type quicCamoConn struct {
 	net.PacketConn
 	keysFn    func() [][]byte
@@ -104,6 +97,7 @@ func (c *quicCamoConn) ReadFrom(p []byte) (int, net.Addr, error) {
 		c.mu.Lock()
 		if exp, ok := c.realPeers[key]; ok {
 			if time.Now().Before(exp) {
+				c.realPeers[key] = time.Now().Add(quicCamoTrustWindow)
 				c.mu.Unlock()
 				return n, addr, nil
 			}

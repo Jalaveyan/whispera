@@ -177,7 +177,11 @@ func Client(ctx context.Context, cfg *ClientConfig) (net.Conn, error) {
 						_, _ = pconn.WriteToUDP(probe, udpAddr)
 					}
 				}
-				return quicgo.Dial(ctx, pconn, udpAddr, tlsConf, qCfg)
+				qconn, derr := quicgo.Dial(ctx, pconn, udpAddr, tlsConf, qCfg)
+				if derr == nil && cfg.OnQUICConn != nil {
+					cfg.OnQUICConn(qconn)
+				}
+				return qconn, derr
 			},
 		}
 	} else {
@@ -214,10 +218,12 @@ func Client(ctx context.Context, cfg *ClientConfig) (net.Conn, error) {
 	select {
 	case err := <-connected:
 		if err != nil {
+			tunnelCancel()
 			pc.Close()
 			return nil, fmt.Errorf("whispera: tunnel POST not established: %w", err)
 		}
 	case <-ctx.Done():
+		tunnelCancel()
 		pc.Close()
 		return nil, ctx.Err()
 	}

@@ -14,10 +14,15 @@ import (
 	"sync/atomic"
 	"time"
 
+	quicgo "github.com/quic-go/quic-go"
 	http3 "github.com/quic-go/quic-go/http3"
 	"golang.org/x/crypto/acme/autocert"
 	"golang.org/x/net/http2"
 )
+
+func quicConnContext(ctx context.Context, c *quicgo.Conn) context.Context {
+	return context.WithValue(ctx, rtConnContextKey, c)
+}
 
 type noDelayListener struct {
 	*net.TCPListener
@@ -161,9 +166,10 @@ func ListenAndServe(ctx context.Context, cfg *ServerConfig) error {
 		}
 		cfg.altSvcHeader = fmt.Sprintf(`h3=":%s"; ma=2592000`, port)
 		h3srv = &http3.Server{
-			Handler:    mux,
-			TLSConfig:  http3.ConfigureTLSConfig(tlsCfg.Clone()),
-			QUICConfig: chromeLikeQUICConfig(),
+			Handler:     mux,
+			TLSConfig:   http3.ConfigureTLSConfig(tlsCfg.Clone()),
+			QUICConfig:  chromeLikeQUICConfig(),
+			ConnContext: quicConnContext,
 		}
 		if pconn, err := net.ListenPacket("udp", cfg.QUICListenAddr); err == nil {
 			camoConn := newQUICCamoConn(pconn, camoKeys, camoAddr)
@@ -176,9 +182,10 @@ func ListenAndServe(ctx context.Context, cfg *ServerConfig) error {
 		for _, extraQUICAddr := range cfg.ExtraQUICListenAddrs {
 			extraQUICAddr := extraQUICAddr
 			extraH3srv := &http3.Server{
-				Handler:    mux,
-				TLSConfig:  http3.ConfigureTLSConfig(tlsCfg.Clone()),
-				QUICConfig: chromeLikeQUICConfig(),
+				Handler:     mux,
+				TLSConfig:   http3.ConfigureTLSConfig(tlsCfg.Clone()),
+				QUICConfig:  chromeLikeQUICConfig(),
+				ConnContext: quicConnContext,
 			}
 			extraH3srvs = append(extraH3srvs, extraH3srv)
 			if pconn, err := net.ListenPacket("udp", extraQUICAddr); err == nil {
@@ -383,6 +390,10 @@ func handleClientStream(w http.ResponseWriter, r *http.Request, cfg *ServerConfi
 	remote := staticAddr{"tcp", r.RemoteAddr}
 	conn := newHTTPStreamConn(r.Body, w, flusher.Flush, local, remote, effectiveGANDecide(cfg, userID))
 	fc := NewFrameConn(conn)
+
+	if quicConn, ok := r.Context().Value(rtConnContextKey).(*quicgo.Conn); ok {
+		RegisterRTQUICConn(sessionID, quicConn)
+	}
 
 	if cfg.OnConn != nil {
 		cfg.OnConn(fc, userID)
