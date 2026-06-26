@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+
+	"whispera/core/protocol"
 )
 
 type RouteRule struct {
@@ -103,6 +105,14 @@ func (r *MultiRouter) DialStream(ctx context.Context, network, addr string) (net
 	}
 	t := r.resolve(host)
 	return t.DialStream(ctx, network, addr)
+}
+
+func (r *MultiRouter) RTDatagram(ctx context.Context, addr string) (*protocol.RTDatagramClient, func(), bool) {
+	t := r.resolve(addr)
+	if t == nil {
+		return nil, nil, false
+	}
+	return t.RTDatagram(ctx, addr)
 }
 
 func (r *MultiRouter) resolve(host string) TunnelManager {

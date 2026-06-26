@@ -179,14 +179,14 @@ func TestHealthyPoolPassesThroughSmallPools(t *testing.T) {
 	}
 }
 
-func TestGameDialNilWithoutWhispera(t *testing.T) {
+func TestRTDialNilWithoutWhispera(t *testing.T) {
 	m := newTestManager(t)
 
-	if dial := m.gameDial(); dial != nil {
-		t.Error("gameDial() != nil, want nil when EnableWhispera is false")
+	if dial := m.rtDial(); dial != nil {
+		t.Error("rtDial() != nil, want nil when EnableWhispera is false")
 	}
-	if m.gameLaneActive() {
-		t.Error("gameLaneActive() = true on fresh Manager")
+	if m.rtLaneActive() {
+		t.Error("rtLaneActive() = true on fresh Manager")
 	}
 }
 

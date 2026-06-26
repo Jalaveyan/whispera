@@ -14,6 +14,7 @@ import (
 	"whispera/common/buf"
 	"whispera/common/runtime/base"
 	"whispera/common/runtime/interfaces"
+	"whispera/core/protocol"
 )
 
 const (
@@ -50,6 +51,12 @@ type TunnelManager interface {
 	IsConnected() bool
 	OpenStream(ctx context.Context, proto byte, addr string, port uint16) (net.Conn, error)
 	DialStream(ctx context.Context, network, addr string) (net.Conn, error)
+	// RTDatagram returns the optional FEC-protected QUIC datagram channel
+	// for the low-latency real-time lane (addr picks the bridge tunnel, same
+	// as OpenStream/DialStream), plus a release func to call once the caller
+	// is done with it. ok is false when the real-time lane isn't on QUIC —
+	// callers should fall back to OpenStream in that case.
+	RTDatagram(ctx context.Context, addr string) (*protocol.RTDatagramClient, func(), bool)
 }
 
 func New(cfg *Config) (*Module, error) {
@@ -226,14 +233,24 @@ func (m *Module) handleUDPRelay(udpConn *net.UDPConn, tcpConn net.Conn) {
 	defer udpConn.Close()
 
 	streams := make(map[string]net.Conn)
+	rtTargets := make(map[string]func())
 	var streamsMu sync.Mutex
+
+	var gd *protocol.RTDatagramClient
+	var rtRelease func()
 
 	defer func() {
 		streamsMu.Lock()
 		for _, s := range streams {
 			s.Close()
 		}
+		for _, unregister := range rtTargets {
+			unregister()
+		}
 		streamsMu.Unlock()
+		if rtRelease != nil {
+			rtRelease()
+		}
 	}()
 
 	go func() {
@@ -267,8 +284,9 @@ func (m *Module) handleUDPRelay(udpConn *net.UDPConn, tcpConn net.Conn) {
 		dstKey := fmt.Sprintf("%s:%d", dstHost, dstPort)
 
 		streamsMu.Lock()
-		stream, exists := streams[dstKey]
-		if !exists {
+		stream, hasStream := streams[dstKey]
+		_, hasRTTarget := rtTargets[dstKey]
+		if !hasStream && !hasRTTarget {
 			m.mu.RLock()
 			tunnel := m.tunnel
 			m.mu.RUnlock()
@@ -278,50 +296,80 @@ func (m *Module) handleUDPRelay(udpConn *net.UDPConn, tcpConn net.Conn) {
 				continue
 			}
 
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			stream, err = tunnel.OpenStream(ctx, 0x11, dstHost, dstPort)
-			cancel()
-			if err != nil {
-				streamsMu.Unlock()
-				stdlog.Printf("[SOCKS5-UDP] DialStream %s: %v", dstKey, err)
-				continue
-			}
-			streams[dstKey] = stream
-
-			go func(stream net.Conn, dstKey, dstHost string, dstPort uint16) {
-				defer func() {
-					streamsMu.Lock()
-					delete(streams, dstKey)
-					streamsMu.Unlock()
-					stream.Close()
-				}()
-				defer func() {
-					if r := recover(); r != nil {
-						stdlog.Printf("[SOCKS5-UDP] PANIC in stream reader: %v\n%s", r, debug.Stack())
-					}
-				}()
-
-				hdr := make([]byte, 2)
-				respBuf := make([]byte, 65535)
-				for {
-					if _, err := io.ReadFull(stream, hdr); err != nil {
-						return
-					}
-					sz := int(binary.BigEndian.Uint16(hdr))
-					if sz == 0 || sz > len(respBuf) {
-						return
-					}
-					if _, err := io.ReadFull(stream, respBuf[:sz]); err != nil {
-						return
-					}
-					if clientAddr != nil {
-						reply := buildUDPReply(dstHost, dstPort, respBuf[:sz])
-						udpConn.WriteToUDP(reply, clientAddr)
-					}
+			if gd == nil {
+				if cand, release, ok := tunnel.RTDatagram(context.Background(), dstHost); ok {
+					gd = cand
+					rtRelease = release
 				}
-			}(stream, dstKey, dstHost, dstPort)
+			}
+
+			if gd != nil {
+				ch, unregister := gd.RegisterTarget(dstHost, dstPort)
+				rtTargets[dstKey] = unregister
+				hasRTTarget = true
+				dstHost, dstPort := dstHost, dstPort
+				go func() {
+					for respPayload := range ch {
+						if clientAddr != nil {
+							reply := buildUDPReply(dstHost, dstPort, respPayload)
+							udpConn.WriteToUDP(reply, clientAddr)
+						}
+					}
+				}()
+			} else {
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				stream, err = tunnel.OpenStream(ctx, 0x11, dstHost, dstPort)
+				cancel()
+				if err != nil {
+					streamsMu.Unlock()
+					stdlog.Printf("[SOCKS5-UDP] DialStream %s: %v", dstKey, err)
+					continue
+				}
+				streams[dstKey] = stream
+				hasStream = true
+
+				go func(stream net.Conn, dstKey, dstHost string, dstPort uint16) {
+					defer func() {
+						streamsMu.Lock()
+						delete(streams, dstKey)
+						streamsMu.Unlock()
+						stream.Close()
+					}()
+					defer func() {
+						if r := recover(); r != nil {
+							stdlog.Printf("[SOCKS5-UDP] PANIC in stream reader: %v\n%s", r, debug.Stack())
+						}
+					}()
+
+					hdr := make([]byte, 2)
+					respBuf := make([]byte, 65535)
+					for {
+						if _, err := io.ReadFull(stream, hdr); err != nil {
+							return
+						}
+						sz := int(binary.BigEndian.Uint16(hdr))
+						if sz == 0 || sz > len(respBuf) {
+							return
+						}
+						if _, err := io.ReadFull(stream, respBuf[:sz]); err != nil {
+							return
+						}
+						if clientAddr != nil {
+							reply := buildUDPReply(dstHost, dstPort, respBuf[:sz])
+							udpConn.WriteToUDP(reply, clientAddr)
+						}
+					}
+				}(stream, dstKey, dstHost, dstPort)
+			}
 		}
 		streamsMu.Unlock()
+
+		if hasRTTarget {
+			if err := gd.SendUDP(dstHost, dstPort, payload); err != nil {
+				stdlog.Printf("[SOCKS5-UDP] rt datagram send %s: %v", dstKey, err)
+			}
+			continue
+		}
 
 		frame := make([]byte, 2+len(payload))
 		binary.BigEndian.PutUint16(frame[:2], uint16(len(payload)))
