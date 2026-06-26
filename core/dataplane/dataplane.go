@@ -105,7 +105,7 @@ func New(cfg *Config) (*Processor, error) {
 	om := NewOutboundManager()
 
 	p := &Processor{
-		Module:          base.NewModule(ModuleName, ModuleVersion, []string{"session.manager", "routing.engine"}),
+		Module:          base.NewModule(ModuleName, ModuleVersion, []string{"routing.engine"}),
 		config:          cfg,
 		workerPool:      base.NewWorkerPool(cfg.WorkerCount, cfg.BufferSize),
 		inboundQueue:    make(chan *packetJob, cfg.BufferSize),

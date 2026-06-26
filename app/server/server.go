@@ -33,15 +33,12 @@ import (
 	"whispera/common/log"
 	"whispera/common/runtime/base"
 	"whispera/common/runtime/events"
-	"whispera/common/runtime/interfaces"
 	"whispera/common/runtime/lifecycle"
 	"whispera/common/stats"
 	"whispera/common/update"
 	"whispera/core/apiserver"
 	"whispera/core/config"
-	"whispera/core/crypto"
 	"whispera/core/dataplane"
-	"whispera/core/handshake"
 	"whispera/core/keylimits"
 	server "whispera/core/manager"
 	"whispera/core/mlserver"
@@ -49,16 +46,12 @@ import (
 	protocol2 "whispera/core/protocol"
 	relay2 "whispera/core/relay"
 	"whispera/core/router"
-	"whispera/core/session"
 	"whispera/core/transport/grpc"
 	"whispera/core/transport/tcp"
-	"whispera/core/transport/udp"
 	"whispera/core/transport/yadisk"
 	"whispera/neural"
-	"whispera/neural/evasion"
 
 	_ "go.uber.org/automaxprocs"
-	"golang.org/x/crypto/curve25519"
 )
 
 var log = logger.Module("server")
@@ -124,16 +117,11 @@ var globalKeyLimits = keylimits.New(keylimits.Limits{
 })
 
 var (
-	globalHandshake    *handshake.Handler
-	globalDataPlane    *dataplane.Processor
-	globalSessionMgr   *session.Manager
-	globalUDPTransport *udp.Transport
-	globalRelay        *relay2.Server
-	globalObfuscator   interfaces.ObfuscationProcessor
+	globalDataPlane *dataplane.Processor
+	globalRelay     *relay2.Server
 
 	globalServerConfig *config.ServerConfig
 	globalRouter       *router.Engine
-	globalCorrelation  *evasion.CorrelationDefense
 	globalUpdater      *update.Updater
 
 	activeListeners = make(map[string]net.Listener)
@@ -142,43 +130,6 @@ var (
 	portH2CChans   = make(map[string]chan net.Conn)
 	portH2CChansMu sync.Mutex
 )
-
-var udpIPRate struct {
-	mu        sync.Mutex
-	seen      map[string]time.Time
-	lastClean time.Time
-}
-
-func init() {
-	udpIPRate.seen = make(map[string]time.Time)
-	udpIPRate.lastClean = time.Now()
-}
-
-func udpIPRateAllow(addr net.Addr) bool {
-	ip := addr.String()
-	if h, _, err := net.SplitHostPort(ip); err == nil {
-		ip = h
-	}
-
-	udpIPRate.mu.Lock()
-	defer udpIPRate.mu.Unlock()
-
-	now := time.Now()
-	if now.Sub(udpIPRate.lastClean) > time.Minute {
-		for k, v := range udpIPRate.seen {
-			if now.Sub(v) > 5*time.Second {
-				delete(udpIPRate.seen, k)
-			}
-		}
-		udpIPRate.lastClean = now
-	}
-
-	if last, ok := udpIPRate.seen[ip]; ok && now.Sub(last) < 200*time.Millisecond {
-		return false
-	}
-	udpIPRate.seen[ip] = now
-	return true
-}
 
 func StartInbound(inbound config.InboundConfig, serverConfig *config.ServerConfig) error {
 	listenersMutex.Lock()
@@ -245,7 +196,11 @@ func StartInbound(inbound config.InboundConfig, serverConfig *config.ServerConfi
 			}
 			go func() {
 				defer release()
-				handleTCPConnection(pConn, globalHandshake)
+				if globalRelay != nil {
+					globalRelay.ServeTunnel(stats.WrapConn(pConn, pConn.RemoteAddr().String()), false)
+				} else {
+					pConn.Close()
+				}
 			}()
 		}
 	}()
@@ -304,11 +259,7 @@ func StartReverseInbound(inbound config.InboundConfig, stopCh <-chan struct{}) {
 		backoff = 2 * time.Second
 
 		if globalRelay != nil {
-			if globalHandshake != nil {
-				handleTCPConnection(conn, globalHandshake)
-			} else {
-				globalRelay.ServeTunnel(stats.WrapConn(conn, conn.RemoteAddr().String()), false)
-			}
+			globalRelay.ServeTunnel(stats.WrapConn(conn, conn.RemoteAddr().String()), false)
 		} else {
 			conn.Close()
 		}
@@ -485,7 +436,6 @@ func createModules(manager *lifecycle.Manager, ctx context.Context) error {
 	)
 
 	if *listenAddr != "" {
-		serverConfig.Transport.UDP.ListenAddr = *listenAddr
 		serverConfig.Server.ListenAddr = *listenAddr
 	}
 	if *apiAddr != "" {
@@ -503,31 +453,6 @@ func createModules(manager *lifecycle.Manager, ctx context.Context) error {
 }
 
 func initCore(m *lifecycle.Manager, sc *config.ServerConfig) error {
-	cryptoProvider, err := crypto.New(&crypto.Config{
-		DefaultCipher: crypto.CipherChaCha20Poly1305,
-		EnableKeyPool: true,
-		KeyPoolSize:   100,
-	})
-	if err != nil {
-		return err
-	}
-	if err := m.Register(cryptoProvider); err != nil {
-		return err
-	}
-
-	sessionMgr, err := session.New(&session.Config{
-		MaxSessions:     sc.Session.MaxSessions,
-		SessionTimeout:  sc.Session.SessionTimeout.D(),
-		CleanupInterval: sc.Session.CleanupInterval.D(),
-	})
-	if err != nil {
-		return err
-	}
-	globalSessionMgr = sessionMgr
-	if err := m.Register(sessionMgr); err != nil {
-		return err
-	}
-
 	routerEngine, err := router.New(&router.Config{
 		MaxRules:    1000,
 		EnableCache: true,
@@ -552,38 +477,6 @@ func initCore(m *lifecycle.Manager, sc *config.ServerConfig) error {
 		}
 	}
 
-	handshakeHandler, err := handshake.New(&handshake.Config{
-		RateLimit:        100,
-		RateBurst:        50,
-		Timeout:          sc.Session.SessionTimeout.D(),
-		MaxPending:       1000,
-		EnableAntiReplay: true,
-	})
-	if err != nil {
-		return err
-	}
-	handshakeHandler.SetDependencies(cryptoProvider, sessionMgr)
-
-	if sc.Server.PrivateKey != "" {
-		var privateKey []byte
-		privateKey, err = base64.StdEncoding.DecodeString(sc.Server.PrivateKey)
-		if err != nil {
-			log.Fatalf("Invalid private key in config: %v (only Base64)", err)
-		}
-		if len(privateKey) != 32 {
-			log.Fatalf("Private key only 32 bytes (Base64)")
-		}
-		publicKey, err := curve25519.X25519(privateKey, curve25519.Basepoint)
-		if err != nil {
-			log.Fatalf("Failed to derive public key: %v", err)
-		}
-		handshakeHandler.SetStaticKeys(publicKey, privateKey)
-	}
-	globalHandshake = handshakeHandler
-	if err := m.Register(handshakeHandler); err != nil {
-		return err
-	}
-
 	dataPlaneProcessor, err := dataplane.New(&dataplane.Config{
 		MTU:                 sc.Server.MTU,
 		WorkerCount:         sc.Server.Workers,
@@ -603,21 +496,6 @@ func initCore(m *lifecycle.Manager, sc *config.ServerConfig) error {
 }
 
 func initTransports(m *lifecycle.Manager, sc *config.ServerConfig, ctx context.Context, cfgProvider *config.Provider) error {
-	udpTransport, err := udp.New(&udp.Config{
-		ListenAddr:    sc.Transport.UDP.ListenAddr,
-		MaxPacketSize: sc.Transport.UDP.MaxPacketSize,
-		WorkerCount:   sc.Transport.UDP.Workers,
-		BufferSize:    sc.Transport.UDP.BufferSize,
-	})
-	if err != nil {
-		return err
-	}
-	udpTransport.OnPacket(handlePacket)
-	globalUDPTransport = udpTransport
-	if err := m.Register(udpTransport); err != nil {
-		return err
-	}
-
 	relayServer, err := relay2.New(&relay2.Config{
 		MaxStreams:     sc.Relay.MaxStreams,
 		EnableTCP:      sc.Relay.EnableTCP,
@@ -629,32 +507,6 @@ func initTransports(m *lifecycle.Manager, sc *config.ServerConfig, ctx context.C
 	if err != nil {
 		return err
 	}
-
-	relayServer.SetTransport(func(data []byte, addr net.Addr) error {
-		payload := data
-		if globalObfuscator != nil {
-			obfuscated, _, err := globalObfuscator.Process(data, interfaces.DirectionOutbound)
-			if err != nil {
-				return fmt.Errorf("failed to obfuscate relay frame: %w", err)
-			}
-			payload = obfuscated
-			if *debug {
-				fmt.Printf("[Relay] Obfuscated response %d -> %d bytes for %v\n", len(data), len(payload), addr)
-			}
-		}
-		if globalUDPTransport != nil {
-			_, err := globalUDPTransport.WriteTo(payload, addr)
-			return err
-		}
-		return nil
-	})
-
-	relayServer.SetRawPacketHandler(func(data []byte) error {
-		if globalDataPlane != nil {
-			return globalDataPlane.InjectPacket(data)
-		}
-		return fmt.Errorf("dataplane not available")
-	})
 
 	globalRelay = relayServer
 	relayServer.SetRouter(globalRouter)
@@ -722,7 +574,11 @@ func initTransports(m *lifecycle.Manager, sc *config.ServerConfig, ctx context.C
 					}
 					go func() {
 						defer release()
-						handleTCPConnection(conn, globalHandshake)
+						if globalRelay != nil {
+							globalRelay.ServeTunnel(stats.WrapConn(conn, conn.RemoteAddr().String()), false)
+						} else {
+							conn.Close()
+						}
 					}()
 				}
 			}()
@@ -755,10 +611,6 @@ func initOptional(m *lifecycle.Manager, sc *config.ServerConfig, ctx context.Con
 
 	if err := initYaDisk(m, sc); err != nil {
 		return err
-	}
-
-	if sc.Correlation.Enabled {
-		initCorrelationDefense(m, sc)
 	}
 
 	mlServer, err := initMLServer(m, sc)
@@ -1010,25 +862,6 @@ func initWhispera(m *lifecycle.Manager, sc *config.ServerConfig, ctx context.Con
 	go func() { _ = protocol2.ListenAndServe(ctx, cCfg) }()
 }
 
-func initCorrelationDefense(m *lifecycle.Manager, sc *config.ServerConfig) {
-	corrCfg := &evasion.CorrelationConfig{
-		Enabled:         true,
-		PaddingEnabled:  sc.Correlation.PaddingEnabled,
-		MixEnabled:      sc.Correlation.JitterEnabled,
-		ConstantRatePPS: sc.Correlation.RateBytesPerSec,
-	}
-	if sc.Correlation.MaxJitterMs > 0 {
-		corrCfg.DelayJitter = time.Duration(sc.Correlation.MaxJitterMs) * time.Millisecond
-	} else {
-		corrCfg.DelayJitter = 50 * time.Millisecond
-	}
-	if corrCfg.ConstantRatePPS <= 0 {
-		corrCfg.ConstantRatePPS = 100
-	}
-	globalCorrelation = evasion.NewCorrelationDefense(corrCfg)
-	m.OnShutdown(func() { globalCorrelation.Stop() })
-}
-
 func initMLServer(m *lifecycle.Manager, sc *config.ServerConfig) (*mlserver.MLServer, error) {
 	mlListenAddr := ":8000"
 	if sc.ML.ListenAddr != "" {
@@ -1070,169 +903,6 @@ func initUpdater(m *lifecycle.Manager, sc *config.ServerConfig) {
 	globalUpdater = update.NewUpdater(updateConfig)
 	globalUpdater.Start()
 	m.OnShutdown(func() { globalUpdater.Stop() })
-}
-
-func tryHandshakePacket(data []byte, addr net.Addr) bool {
-	if len(data) < 32 || len(data) > 96 || globalHandshake == nil {
-		return false
-	}
-	if !udpIPRateAllow(addr) {
-		return true
-	}
-
-	sess, err := globalHandshake.HandleHandshake(context.Background(), data, addr)
-	if err != nil || sess == nil {
-		return false
-	}
-
-	if response := globalHandshake.BuildResponse(sess); response != nil && globalUDPTransport != nil {
-		globalUDPTransport.WriteTo(response, addr)
-	}
-	return true
-}
-
-func handlePacket(data []byte, addr net.Addr) {
-	defer func() {
-		if r := recover(); r != nil {
-			log.Error("PANIC in handlePacket: %v\n%s", r, rtdebug.Stack())
-		}
-	}()
-
-	if tryHandshakePacket(data, addr) {
-		return
-	}
-
-	if globalSessionMgr == nil {
-		return
-	}
-
-	sess, ok := globalSessionMgr.GetSessionByAddr(addr)
-	if !ok || sess == nil {
-		return
-	}
-
-	payload := data
-
-	if globalObfuscator != nil {
-		deobfuscated, _, err := globalObfuscator.Process(data, interfaces.DirectionInbound)
-
-		if err == nil && len(deobfuscated) > 0 {
-			payload = deobfuscated
-		}
-	}
-
-	if globalCorrelation != nil {
-		payload = globalCorrelation.ProcessInbound(payload)
-
-		if len(payload) == 0 {
-			return
-		}
-
-		if len(payload) >= 1 && payload[0] == 0xFF {
-			return
-		}
-	}
-
-	if len(payload) >= 8 && globalRelay != nil {
-		frameType := payload[2]
-
-		if frameType >= 0x01 && frameType <= 0x08 {
-			dataLen := uint32(payload[4])<<24 | uint32(payload[5])<<16 | uint32(payload[6])<<8 | uint32(payload[7])
-
-			if int(dataLen) <= len(payload)-8 {
-				writer := &UDPResponseWriter{
-					transport:  globalUDPTransport,
-					addr:       addr,
-					obfuscator: globalObfuscator,
-					debug:      *debug,
-				}
-
-				var userID string
-				if val := sess.GetMetadata("user_id"); val != nil {
-					userID = val.(string)
-					writer.UserID = userID
-					stats.AddRx(userID, int64(len(payload)))
-				}
-
-				if err := globalRelay.ProcessFrame(payload, sess, writer); err != nil {
-					return
-				}
-			}
-		}
-	}
-
-	if globalDataPlane != nil {
-		packet := &interfaces.Packet{
-			SessionID: sess.ID(),
-			Payload:   payload,
-			SrcAddr:   addr,
-		}
-
-		if err := globalDataPlane.ProcessInbound(context.Background(), packet, sess); err != nil {
-			return
-		}
-	}
-}
-
-func handleTCPConnection(conn net.Conn, hsHandler *handshake.Handler) {
-	defer conn.Close()
-	defer func() {
-		if r := recover(); r != nil {
-			log.Error("PANIC in handleTCPConnection: %v\n%s", r, rtdebug.Stack())
-		}
-	}()
-
-	addr := conn.RemoteAddr()
-
-	conn.SetReadDeadline(time.Now().Add(3 * time.Second))
-
-	var firstByte [1]byte
-
-	if _, err := io.ReadFull(conn, firstByte[:]); err != nil {
-		return
-	}
-
-	if hsHandler != nil && firstByte[0] == byte(handshake.HandshakeTypeInit) {
-		rest := make([]byte, 63)
-
-		if _, err := io.ReadFull(conn, rest); err != nil {
-			return
-		}
-
-		padLen := int(rest[62])
-
-		buf := append(firstByte[:], rest...)
-
-		if padLen > 0 && padLen <= 32 {
-			extra := make([]byte, padLen)
-
-			if _, err := io.ReadFull(conn, extra); err == nil {
-				buf = append(buf, extra...)
-			}
-		}
-
-		conn.SetReadDeadline(time.Time{})
-
-		sess, err := hsHandler.HandleHandshake(context.Background(), buf, addr)
-		if err != nil {
-			return
-		}
-
-		if response := hsHandler.BuildResponse(sess); response != nil {
-			if _, err := conn.Write(response); err != nil {
-				return
-			}
-		}
-
-		if globalRelay != nil {
-			globalRelay.ServeTunnel(stats.WrapConn(conn, addr.String()), false)
-		}
-	} else {
-		logger.Trace().Infow("raw_tcp_no_handshake",
-			"remote", addr.String(),
-			"first_byte", fmt.Sprintf("0x%02x", firstByte[0]),
-		)
-	}
 }
 
 func verifyAltTransportAuth(conn net.Conn) bool {
@@ -1397,37 +1067,3 @@ func initYaDisk(m *lifecycle.Manager, sc *config.ServerConfig) error {
 	return nil
 }
 
-type UDPResponseWriter struct {
-	transport  *udp.Transport
-	addr       net.Addr
-	obfuscator interfaces.ObfuscationProcessor
-	debug      bool
-	UserID     string
-}
-
-func (w *UDPResponseWriter) Write(data []byte) error {
-	payload := data
-
-	if w.obfuscator != nil {
-		obfuscated, _, err := w.obfuscator.Process(data, interfaces.DirectionOutbound)
-		if err != nil {
-			return fmt.Errorf("obfuscation failed: %w", err)
-		}
-
-		payload = obfuscated
-	}
-
-	if w.transport == nil {
-		return fmt.Errorf("UDP not available")
-	}
-
-	n, err := w.transport.WriteTo(payload, w.addr)
-
-	if err == nil && n > 0 && w.UserID != "" {
-		stats.AddTx(w.UserID, int64(n))
-	}
-
-	return err
-}
-
-func (w *UDPResponseWriter) RemoteAddr() net.Addr { return w.addr }

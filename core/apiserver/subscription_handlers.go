@@ -230,15 +230,6 @@ func buildServerList(cfg *config.ServerConfig, serverIP string, preferredTranspo
 		servers = append(servers, cEntry)
 	}
 
-	if cfg.Transport.UDP.Enabled && (len(transportSet) == 0 || transportSet["udp"]) {
-		_, port, _ := splitHostPort(cfg.Transport.UDP.ListenAddr)
-		servers = append(servers, map[string]interface{}{
-			"name":      "udp",
-			"address":   serverIP,
-			"port":      port,
-			"transport": "udp",
-		})
-	}
 	if cfg.Transport.TCP.Enabled && (len(transportSet) == 0 || transportSet["tcp"]) {
 		_, port, _ := splitHostPort(cfg.Transport.TCP.ListenAddr)
 		servers = append(servers, map[string]interface{}{

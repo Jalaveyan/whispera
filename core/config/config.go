@@ -218,14 +218,6 @@ type ServerSettings struct {
 }
 
 type TransportConfig struct {
-	UDP struct {
-		Enabled       bool   `yaml:"enabled"`
-		ListenAddr    string `yaml:"listen_addr"`
-		MaxPacketSize int    `yaml:"max_packet_size"`
-		BufferSize    int    `yaml:"buffer_size"`
-		Workers       int    `yaml:"workers"`
-	} `yaml:"udp"`
-
 	TCP struct {
 		Enabled    bool   `yaml:"enabled"`
 		ListenAddr string `yaml:"listen_addr"`
@@ -491,21 +483,6 @@ func DefaultServerConfig() *ServerConfig {
 			MTU:          1420,
 			Workers:      8,
 			GracefulStop: Duration(30 * time.Second),
-		},
-		Transport: TransportConfig{
-			UDP: struct {
-				Enabled       bool   `yaml:"enabled"`
-				ListenAddr    string `yaml:"listen_addr"`
-				MaxPacketSize int    `yaml:"max_packet_size"`
-				BufferSize    int    `yaml:"buffer_size"`
-				Workers       int    `yaml:"workers"`
-			}{
-				Enabled:       true,
-				ListenAddr:    ":8443",
-				MaxPacketSize: 65535,
-				BufferSize:    4096,
-				Workers:       8,
-			},
 		},
 		Inbounds: []InboundConfig{
 			{
