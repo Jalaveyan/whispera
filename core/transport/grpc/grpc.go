@@ -364,6 +364,7 @@ func (s *tunnelServer) Tunnel(stream TunnelService_TunnelServer) error {
 	conn := &grpcServerConn{
 		stream:    stream,
 		transport: s.transport,
+		closeChan: make(chan struct{}),
 	}
 
 	select {
