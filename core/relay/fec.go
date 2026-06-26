@@ -8,6 +8,12 @@ import (
 	"github.com/klauspost/reedsolomon"
 )
 
+var packetPool = sync.Pool{
+	New: func() interface{} {
+		return make([]byte, 65536)
+	},
+}
+
 type FECEncoder struct {
 	k         int
 	m         int

@@ -15,6 +15,7 @@ import (
 	"sync/atomic"
 	"time"
 	"whispera/common/buf"
+	"whispera/common/dns"
 	"whispera/common/log"
 	mux2 "whispera/common/mux"
 	"whispera/common/runtime/base"
@@ -87,26 +88,50 @@ var udpCopyBufPool = sync.Pool{
 	},
 }
 
+var dohResolver = dns.NewResolver(dns.DefaultConfig())
+
+func lookupIPCached(host string) ([]net.IP, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	return dohResolver.Resolve(ctx, host)
+}
+
+const targetDialTimeout = 15 * time.Second
+
+func dialTarget(dialer proxy.Dialer, network, host string, port uint16) (net.Conn, error) {
+	addr := net.JoinHostPort(host, strconv.Itoa(int(port)))
+	ctx, cancel := context.WithTimeout(context.Background(), targetDialTimeout)
+	defer cancel()
+	dial := func(a string) (net.Conn, error) {
+		if cd, ok := dialer.(proxy.ContextDialer); ok {
+			return cd.DialContext(ctx, network, a)
+		}
+		return dialer.Dial(network, a)
+	}
+	if dialer != proxy.Direct || net.ParseIP(host) != nil {
+		return dial(addr)
+	}
+	ips, err := lookupIPCached(host)
+	if err != nil || len(ips) == 0 {
+		return dial(addr)
+	}
+	var lastErr error
+	for _, ip := range ips {
+		conn, derr := dial(net.JoinHostPort(ip.String(), strconv.Itoa(int(port))))
+		if derr == nil {
+			return conn, nil
+		}
+		lastErr = derr
+	}
+	return nil, lastErr
+}
+
 type Server struct {
 	*base.Module
-	config           *Config
-	streamManager    *StreamManager
-	proxyDialer      proxy.Dialer
-	router           interfaces.Router
-	routerMu         sync.RWMutex
-	sendFrame        func(data []byte, addr net.Addr) error
-	rawPacketHandler func(data []byte) error
-	sessionWriters   map[uint32]ResponseWriter
-	sessionWritersMu sync.RWMutex
-	rawPackets       map[uint32]ResponseWriter
-	rawPacketsMu     sync.RWMutex
-
-	framesIn       uint64
-	framesOut      uint64
-	bytesRelayed   uint64
-	activeStreams  uint64
-	connectSuccess uint64
-	connectFailed  uint64
+	config      *Config
+	proxyDialer proxy.Dialer
+	router      interfaces.Router
+	routerMu    sync.RWMutex
 
 	outboundDial func(ctx context.Context, tag, network, addr string) (net.Conn, error)
 
@@ -135,12 +160,10 @@ func New(cfg *Config) (*Server, error) {
 		limit = 1024
 	}
 	s := &Server{
-		Module:         base.NewModule(ModuleName, ModuleVersion, []string{"transport.udp"}),
-		config:         cfg,
-		sessionWriters: make(map[uint32]ResponseWriter),
-		rawPackets:     make(map[uint32]ResponseWriter),
-		streamSem:      make(chan struct{}, limit),
-		log:            logger.Module("relay"),
+		Module:    base.NewModule(ModuleName, ModuleVersion, nil),
+		config:    cfg,
+		streamSem: make(chan struct{}, limit),
+		log:       logger.Module("relay"),
 	}
 
 	s.proxyDialer = proxy.Direct
@@ -157,8 +180,6 @@ func New(cfg *Config) (*Server, error) {
 		}
 		s.proxyDialer = dialer
 	}
-
-	s.streamManager = NewStreamManager(s.proxyDialer)
 
 	return s, nil
 }
@@ -179,15 +200,7 @@ func (s *Server) Start() error {
 }
 
 func (s *Server) Stop() error {
-	s.streamManager.CloseAll()
 	return s.Module.Stop()
-}
-
-func (s *Server) SetTransport(sendFrame func(data []byte, addr net.Addr) error) {
-	s.sendFrame = sendFrame
-}
-func (s *Server) SetRawPacketHandler(handler func(data []byte) error) {
-	s.rawPacketHandler = handler
 }
 
 func (s *Server) SetRouter(r interfaces.Router) {
@@ -208,139 +221,8 @@ func (s *Server) SetProxyDialer(d proxy.Dialer) {
 	s.mu.Unlock()
 }
 
-func (s *Server) RegisterSessionWriter(sessionID uint32, writer ResponseWriter) {
-	s.sessionWritersMu.Lock()
-	defer s.sessionWritersMu.Unlock()
-	s.sessionWriters[sessionID] = writer
-}
-
-func (s *Server) GetSessionWriter(sessionID uint32) ResponseWriter {
-	s.sessionWritersMu.RLock()
-	defer s.sessionWritersMu.RUnlock()
-	return s.sessionWriters[sessionID]
-}
-
-func (s *Server) ProcessFrame(data []byte, session interfaces.Session, writer ResponseWriter) error {
-	atomic.AddUint64(&s.framesIn, 1)
-
-	if session != nil {
-		s.RegisterSessionWriter(session.ID(), writer)
-	}
-
-	frame, err := Decode(data)
-	if err != nil {
-		if s.config.Debug {
-		}
-		return err
-	}
-
-	if s.config.Debug {
-	}
-
-	switch frame.Type {
-	case FrameConnect:
-		return s.handleConnect(frame, writer)
-	case FrameData:
-		return s.handleData(frame)
-	case FrameClose:
-		s.handleClose(frame)
-		return nil
-	case FramePing:
-		return s.handlePing(writer)
-	case FrameUDPData:
-		return s.handleUDPData(frame, writer)
-	case FrameRawPacket:
-		return s.handleRawPacket(frame, writer)
-	default:
-		if s.config.Debug {
-		}
-		return nil
-	}
-}
-
-func (s *Server) handleConnect(frame *Frame, writer ResponseWriter) error {
-	payload, err := DecodeConnectPayload(frame.Payload)
-	if err != nil {
-		atomic.AddUint64(&s.connectFailed, 1)
-		s.sendFrameToWriter(NewConnectFailFrame(frame.StreamID, "connection refused"), writer)
-		return err
-	}
-
-	if s.config.Debug {
-	}
-
-	if payload.Protocol == ProtoUDP && !s.config.EnableUDP {
-		s.sendFrameToWriter(NewConnectFailFrame(frame.StreamID, "UDP relay disabled"), writer)
-		return nil
-	}
-	if payload.Protocol == ProtoTCP && !s.config.EnableTCP {
-		s.sendFrameToWriter(NewConnectFailFrame(frame.StreamID, "TCP relay disabled"), writer)
-		return nil
-	}
-
-	if err := s.streamManager.HandleConnect(frame.StreamID, payload, writer); err != nil {
-		atomic.AddUint64(&s.connectFailed, 1)
-		if s.config.Debug {
-		}
-		return err
-	}
-
-	atomic.AddUint64(&s.connectSuccess, 1)
-	return nil
-}
-
-func (s *Server) handleData(frame *Frame) error {
-	return s.streamManager.HandleData(frame.StreamID, frame.Payload)
-}
-func (s *Server) handleClose(frame *Frame) {
-	s.streamManager.HandleClose(frame.StreamID)
-}
-
-func (s *Server) handlePing(writer ResponseWriter) error {
-	return s.sendFrameToWriter(NewPongFrame(), writer)
-}
-func (s *Server) handleUDPData(frame *Frame, _ ResponseWriter) error {
-	return s.streamManager.HandleUDPData(frame.StreamID, frame.Payload)
-}
-
-func (s *Server) handleRawPacket(frame *Frame, writer ResponseWriter) error {
-	_, rawPacket, err := ParseRawPacketFrame(frame)
-	if err != nil {
-		return err
-	}
-
-	if s.rawPacketHandler != nil {
-		return s.rawPacketHandler(rawPacket)
-	}
-
-	s.rawPacketsMu.Lock()
-	s.rawPackets[0] = writer
-	s.rawPacketsMu.Unlock()
-	if s.config.Debug {
-	}
-	return nil
-}
-
-func (s *Server) sendFrameToWriter(frame *Frame, writer ResponseWriter) error {
-	encoded, err := frame.Encode()
-	if err != nil {
-		return err
-	}
-	atomic.AddUint64(&s.framesOut, 1)
-	atomic.AddUint64(&s.bytesRelayed, uint64(len(encoded)))
-	return writer.Write(encoded)
-}
-
 func (s *Server) HealthCheck() interfaces.HealthStatus {
-	status := s.Module.HealthCheck()
-	status.Details["active_streams"] = atomic.LoadUint64(&s.activeStreams)
-	if s.streamManager != nil {
-		active, bin, bout := s.streamManager.Stats()
-		status.Details["streams"] = active
-		status.Details["bytes_in"] = bin
-		status.Details["bytes_out"] = bout
-	}
-	return status
+	return s.Module.HealthCheck()
 }
 
 var tunnelTraceSeq uint64
