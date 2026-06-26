@@ -626,9 +626,14 @@ func main() {
 		if e.cancel != nil {
 			e.cancel()
 		}
+		oldMgr := e.mgr
 		e.Status = connStatusConnecting
 		e.Error = ""
 		e.mu.Unlock()
+
+		if oldMgr != nil {
+			oldMgr.Disconnect()
+		}
 
 		newMgr, err := tunnel.New(tunnelCfg)
 		if err != nil {
