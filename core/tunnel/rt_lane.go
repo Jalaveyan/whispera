@@ -211,7 +211,11 @@ func (rl *rtLaneManager) session(ctx context.Context) (*mux.Session, error) {
 	if err != nil {
 		return nil, err
 	}
-	sess, err := mux.Client(conn, m.getMuxConfig())
+	padMax := m.config.PaddingMaxSize
+	if padMax <= 0 {
+		padMax = 128
+	}
+	sess, err := mux.Client(mux.NewPaddedConn(conn, padMax), m.getMuxConfig())
 	if err != nil {
 		conn.Close()
 		return nil, err
