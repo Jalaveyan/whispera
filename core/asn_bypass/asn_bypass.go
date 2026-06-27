@@ -196,21 +196,36 @@ func writeFragmentedTLSRecord(conn net.Conn, data []byte, fragSize int) error {
 	majorVer := data[1]
 	minorVer := data[2]
 	payload := data[5:]
+
+	// Randomize each record's size around fragSize so the split offsets differ
+	// every connection — a fixed 40-byte cadence is itself a signature.
+	base := fragSize
+	if base < 8 {
+		base = 8
+	}
+	lo, hi := base/2, base+base/2
+	if lo < 8 {
+		lo = 8
+	}
+
 	for len(payload) > 0 {
-		chunk := payload
-		if len(chunk) > fragSize {
-			chunk = payload[:fragSize]
+		chunk := lo + rand.Intn(hi-lo+1)
+		if chunk > len(payload) {
+			chunk = len(payload)
 		}
-		payload = payload[len(chunk):]
-		record := make([]byte, 5+len(chunk))
+		record := make([]byte, 5+chunk)
 		record[0] = contentType
 		record[1] = majorVer
 		record[2] = minorVer
-		record[3] = byte(len(chunk) >> 8)
-		record[4] = byte(len(chunk))
-		copy(record[5:], chunk)
+		record[3] = byte(chunk >> 8)
+		record[4] = byte(chunk)
+		copy(record[5:], payload[:chunk])
+		payload = payload[chunk:]
 		if _, err := conn.Write(record); err != nil {
 			return err
+		}
+		if len(payload) > 0 {
+			time.Sleep(time.Duration(rand.Intn(4)+1) * time.Millisecond)
 		}
 	}
 	return nil

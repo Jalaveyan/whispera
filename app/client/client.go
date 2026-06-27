@@ -477,6 +477,8 @@ func main() {
 	generateSocksAuth()
 	socksMod.SetAuthHandler(socksUser, socksPass)
 	stdlog.Printf("SOCKS5 auth enabled (user=%s)", socksUser)
+	// Persist harvested TLS fingerprints under the data dir so they survive restarts.
+	protocol.SetHarvestDir(filepath.Join(mlDefaultDataDir(), "fingerprints"))
 	socks5.HarvestHook = func(b []byte) { _ = protocol.HarvestRawClientHello(b) }
 
 	dnsMod, _ := dns.New(&dns.Config{

@@ -57,7 +57,10 @@ func Client(ctx context.Context, cfg *ClientConfig) (net.Conn, error) {
 	sni := pickSNI(cfg)
 	origin := "https://" + sni
 
-	helloID, helloSpec := pickFingerprint()
+	helloID, helloSpec, uaID := pickFingerprint()
+	// One coherent UA/header identity per session, derived from the same
+	// fingerprint the TLS handshake will use (uaID matches harvested specs too).
+	prof := newBrowserProfile(uaID)
 
 	dialFn := func(ctx context.Context, network, addr string, _ *tls.Config) (net.Conn, error) {
 		var rawConn net.Conn
@@ -139,7 +142,7 @@ func Client(ctx context.Context, cfg *ClientConfig) (net.Conn, error) {
 	req.Host = sni
 	req.Header.Set("Content-Type", contentType)
 	req.Header.Set(headerToken, "Bearer "+token)
-	applyBrowserHeaders(req, origin)
+	prof.apply(req, origin)
 	req.AddCookie(&http.Cookie{Name: sessionCookie, Value: encodeSession(sessionID, anchor)})
 
 	network := "tcp"
@@ -193,7 +196,7 @@ func Client(ctx context.Context, cfg *ClientConfig) (net.Conn, error) {
 
 	fc := NewFrameConn(pc)
 
-	go runDecoy(tunnelCtx, decoyClient, cfg.ServerAddr, sni, origin, bp, fc)
+	go runDecoy(tunnelCtx, decoyClient, cfg.ServerAddr, sni, origin, bp, fc, prof)
 
 	connected := make(chan error, 1)
 	go func() {

@@ -96,7 +96,7 @@ func serveDecoy(w http.ResponseWriter, r *http.Request, cfg *ServerConfig) {
 	}
 }
 
-func runDecoy(ctx context.Context, client *http.Client, serverAddr, sni, origin string, bp BehaviorParams, fc *FrameConn) {
+func runDecoy(ctx context.Context, client *http.Client, serverAddr, sni, origin string, bp BehaviorParams, fc *FrameConn, prof browserProfile) {
 	get := func(path string) {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet,
 			fmt.Sprintf("https://%s%s", serverAddr, path), nil)
@@ -104,7 +104,7 @@ func runDecoy(ctx context.Context, client *http.Client, serverAddr, sni, origin 
 			return
 		}
 		req.Host = sni
-		applyBrowserHeaders(req, origin)
+		prof.apply(req, origin)
 		if resp, err := client.Do(req); err == nil {
 			io.Copy(io.Discard, resp.Body)
 			resp.Body.Close()

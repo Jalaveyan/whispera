@@ -24,7 +24,8 @@ func FetchServerFingerprints(ctx context.Context, cfg *ClientConfig) (int, error
 	token := AuthToken(keys.Auth, anchor.Unix()/authWindowSeconds, sessionID)
 	sni := pickSNI(cfg)
 
-	helloID, helloSpec := pickFingerprint()
+	helloID, helloSpec, uaID := pickFingerprint()
+	prof := newBrowserProfile(uaID)
 
 	dialFn := func(ctx context.Context, network, addr string, _ *tls.Config) (net.Conn, error) {
 		var rawConn net.Conn
@@ -68,6 +69,7 @@ func FetchServerFingerprints(ctx context.Context, cfg *ClientConfig) (int, error
 	}
 	req.Host = sni
 	req.Header.Set(headerToken, "Bearer "+token)
+	prof.apply(req, "https://"+sni)
 	req.AddCookie(&http.Cookie{Name: sessionCookie, Value: encodeSession(sessionID, anchor)})
 
 	resp, err := client.Do(req)
