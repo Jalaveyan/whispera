@@ -36,6 +36,7 @@ func startControlServer(ctx context.Context) {
 	mux.HandleFunc("/regions", handleRegions)
 	mux.HandleFunc("/global-sni", handleGlobalSNI)
 	mux.HandleFunc("/logs", handleLogs)
+	mux.HandleFunc("/wake", handleWake)
 
 	limitBody := func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -63,6 +64,23 @@ func handleAuth(w http.ResponseWriter, r *http.Request) {
 		"username": socksUser,
 		"password": socksPass,
 	})
+}
+
+func handleWake(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	n := 0
+	if reconnectEntry != nil {
+		for _, e := range pool.List() {
+			e.mu.Lock()
+			enabled := e.Enabled
+			e.mu.Unlock()
+			if enabled {
+				go reconnectEntry(e)
+				n++
+			}
+		}
+	}
+	json.NewEncoder(w).Encode(map[string]int{"reconnecting": n})
 }
 
 func handleConnections(w http.ResponseWriter, r *http.Request) {
