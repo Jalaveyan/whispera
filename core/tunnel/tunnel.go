@@ -1315,17 +1315,12 @@ func (m *Manager) OpenStream(ctx context.Context, proto byte, addr string, port 
 		const openStreamProbeTimeout = 3 * time.Second
 		lastPong := atomic.LoadInt64(&m.lastPong)
 		if lastPong == 0 || time.Since(time.Unix(0, lastPong)) > openStreamFreshnessWindow {
-			alive := false
-			for attempt := 0; attempt < 2 && !alive; attempt++ {
-				alive = m.keepalive.probeNow(openStreamProbeTimeout)
-			}
-			if !alive {
-				if onClose != nil {
-					onClose()
+			probeMC := mc
+			safeGo("openStreamProbe", func() {
+				if !m.keepalive.probeNow(openStreamProbeTimeout) {
+					m.forceReconnectFromStreamFailure(probeMC, "liveness probe timed out")
 				}
-				m.forceReconnectFromStreamFailure(mc, "liveness probe timed out")
-				return nil, fmt.Errorf("tunnel unresponsive")
-			}
+			})
 		}
 	}
 
