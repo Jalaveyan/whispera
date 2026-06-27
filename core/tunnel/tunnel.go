@@ -347,14 +347,30 @@ func (m *Manager) getMuxConfig() *mux.Config {
 		})
 	}
 
+	recvBuf, streamBuf := muxBufferBudget()
 	return &mux.Config{
 		MaxFrameSize:         frameSize,
-		MaxReceiveBuffer:     1 << 28,
-		MaxStreamBuffer:      1 << 26,
+		MaxReceiveBuffer:     recvBuf,
+		MaxStreamBuffer:      streamBuf,
 		KeepAliveInterval:    time.Duration(base) * time.Second,
 		KeepAliveTimeout:     24 * time.Hour,
 		MaxConcurrentStreams: 256,
 	}
+}
+
+func muxBufferBudget() (recv, stream int) {
+	lim := debug.SetMemoryLimit(-1)
+	if lim <= 0 || lim >= math.MaxInt64/2 {
+		return 1 << 25, 1 << 23
+	}
+	recv = int(lim / 8)
+	if recv > 1<<26 {
+		recv = 1 << 26
+	}
+	if recv < 1<<22 {
+		recv = 1 << 22
+	}
+	return recv, recv / 4
 }
 
 func New(cfg *Config) (*Manager, error) {
