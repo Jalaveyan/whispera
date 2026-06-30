@@ -244,6 +244,10 @@ func handleRequest(w http.ResponseWriter, r *http.Request, cfg *ServerConfig) {
 	_, cookieErr := r.Cookie(sessionCookie)
 	hasSess := func() bool { return cookieErr == nil }
 
+	if r.Method == http.MethodPost || r.Method == http.MethodPut || r.Method == http.MethodPatch {
+		traceLog.Infow("debug_request_route", "method", r.Method, "content_length", r.ContentLength, "has_session", hasSess(), "remote", r.RemoteAddr, "proto", r.Proto)
+	}
+
 	switch r.Method {
 	case http.MethodOptions:
 		handleRESTOptions(w)
