@@ -118,7 +118,6 @@ func Client(ctx context.Context, cfg *ClientConfig) (net.Conn, error) {
 		return uConn, nil
 	}
 
-	h2Transport := newH2Transport(dialFn)
 	decoyTransport := newH2Transport(dialFn)
 
 	pr, pw := io.Pipe()
@@ -150,10 +149,13 @@ func Client(ctx context.Context, cfg *ClientConfig) (net.Conn, error) {
 	remote := staticAddr{network, tunnelAddr}
 
 	pc := newPipelinedConn(pr, bpw, tunnelCancel, local, remote)
+	fc := NewFrameConn(pc)
 
 	noRedirect := func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	decoyClient := &http.Client{Transport: decoyTransport, CheckRedirect: noRedirect}
 
-	var tunnelTransport http.RoundTripper
+	go runDecoy(tunnelCtx, decoyClient, cfg.ServerAddr, sni, origin, bp, fc, prof)
+
 	if cfg.EnableQUIC {
 		tlsCfgQUIC := &tls.Config{
 			ServerName:         sni,
@@ -162,7 +164,7 @@ func Client(ctx context.Context, cfg *ClientConfig) (net.Conn, error) {
 		if cfg.ServerCertPin != "" {
 			tlsCfgQUIC.VerifyPeerCertificate = pinVerifier(cfg.ServerCertPin)
 		}
-		tunnelTransport = &http3.Transport{
+		tunnelTransport := &http3.Transport{
 			TLSClientConfig:    tlsCfgQUIC,
 			QUICConfig:         chromeLikeQUICConfig(),
 			DisableCompression: true,
@@ -187,49 +189,80 @@ func Client(ctx context.Context, cfg *ClientConfig) (net.Conn, error) {
 				return qconn, derr
 			},
 		}
-	} else {
-		tunnelTransport = h2Transport
+		client := &http.Client{Transport: tunnelTransport, CheckRedirect: noRedirect}
+
+		connected := make(chan error, 1)
+		go func() {
+			resp, err := client.Do(req)
+			if err != nil {
+				pc.deliver(nil)
+				connected <- err
+				return
+			}
+			if resp.StatusCode != http.StatusOK {
+				resp.Body.Close()
+				pc.deliver(nil)
+				connected <- fmt.Errorf("whispera: server returned status %d", resp.StatusCode)
+				return
+			}
+			if !pc.deliver(resp.Body) {
+				resp.Body.Close()
+			}
+			connected <- nil
+		}()
+
+		select {
+		case err := <-connected:
+			if err != nil {
+				tunnelCancel()
+				pc.Close()
+				return nil, fmt.Errorf("whispera: tunnel POST not established: %w", err)
+			}
+		case <-ctx.Done():
+			tunnelCancel()
+			pc.Close()
+			return nil, ctx.Err()
+		}
+
+		return fc, nil
 	}
 
-	client := &http.Client{Transport: tunnelTransport, CheckRedirect: noRedirect}
-	decoyClient := &http.Client{Transport: decoyTransport, CheckRedirect: noRedirect}
+	rawConn, err := dialFn(ctx, network, tunnelAddr, nil)
+	if err != nil {
+		tunnelCancel()
+		pc.Close()
+		return nil, fmt.Errorf("whispera: utls handshake: %w", err)
+	}
 
-	fc := NewFrameConn(pc)
+	h2Transport := newH2Transport(dialFn)
+	cc, err := h2Transport.NewClientConn(rawConn)
+	if err != nil {
+		rawConn.Close()
+		tunnelCancel()
+		pc.Close()
+		return nil, fmt.Errorf("whispera: h2 client conn: %w", err)
+	}
 
-	go runDecoy(tunnelCtx, decoyClient, cfg.ServerAddr, sni, origin, bp, fc, prof)
-
-	connected := make(chan error, 1)
 	go func() {
-		resp, err := client.Do(req)
+		<-tunnelCtx.Done()
+		cc.Close()
+	}()
+
+	go func() {
+		resp, err := cc.RoundTrip(req)
 		if err != nil {
 			pc.deliver(nil)
-			connected <- err
 			return
 		}
 		if resp.StatusCode != http.StatusOK {
 			resp.Body.Close()
 			pc.deliver(nil)
-			connected <- fmt.Errorf("whispera: server returned status %d", resp.StatusCode)
 			return
 		}
 		if !pc.deliver(resp.Body) {
 			resp.Body.Close()
 		}
-		connected <- nil
 	}()
-
-	select {
-	case err := <-connected:
-		if err != nil {
-			tunnelCancel()
-			pc.Close()
-			return nil, fmt.Errorf("whispera: tunnel POST not established: %w", err)
-		}
-	case <-ctx.Done():
-		tunnelCancel()
-		pc.Close()
-		return nil, ctx.Err()
-	}
 
 	return fc, nil
 }

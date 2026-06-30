@@ -1121,7 +1121,7 @@ func main() {
 						stdlog.Printf("Transport watchdog: reconnecting primary %s...", transports[0])
 
 						targetCfg := buildBaseCfg(primaryEntry)
-						targetCfg.ConnectionTimeout = 2 * time.Second
+						targetCfg.ConnectionTimeout = 5 * time.Second
 
 						restartEntry(primaryEntry, targetCfg)
 						primaryEntry.mu.Lock()
