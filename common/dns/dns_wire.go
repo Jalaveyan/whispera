@@ -7,7 +7,23 @@ import (
 	"strings"
 )
 
-func buildDNSMsg(domain string) ([]byte, [2]byte) {
+const (
+	dnsTypeA    = 0x0001
+	dnsTypeAAAA = 0x001C
+)
+
+// mergeDualStack queries A and AAAA via the given single-type query func and
+// merges the results. It only fails if both queries fail.
+func mergeDualStack(query func(qtype uint16) ([]net.IP, error)) ([]net.IP, error) {
+	v4, errV4 := query(dnsTypeA)
+	v6, errV6 := query(dnsTypeAAAA)
+	if errV4 != nil && errV6 != nil {
+		return nil, errV4
+	}
+	return append(v4, v6...), nil
+}
+
+func buildDNSMsg(domain string, qtype uint16) ([]byte, [2]byte) {
 	var id [2]byte
 	if _, err := rand.Read(id[:]); err != nil {
 		id = [2]byte{0x12, 0x34}
@@ -25,7 +41,7 @@ func buildDNSMsg(domain string) ([]byte, [2]byte) {
 		buf = append(buf, label...)
 	}
 	buf = append(buf, 0x00)
-	buf = append(buf, 0x00, 0x01)
+	buf = append(buf, byte(qtype>>8), byte(qtype))
 	buf = append(buf, 0x00, 0x01)
 	return buf, id
 }
