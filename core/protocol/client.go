@@ -17,6 +17,8 @@ import (
 	"golang.org/x/net/http2"
 )
 
+const dialTimeout = 10 * time.Second
+
 func newH2Transport(dial func(context.Context, string, string, *tls.Config) (net.Conn, error)) *http2.Transport {
 	stub := &http.Transport{
 		HTTP2: &http.HTTP2Config{
@@ -68,7 +70,7 @@ func Client(ctx context.Context, cfg *ClientConfig) (net.Conn, error) {
 		if cfg.TCPDialer != nil {
 			rawConn, err = cfg.TCPDialer(ctx, network, addr)
 		} else {
-			d := &net.Dialer{Timeout: 10 * time.Second}
+			d := &net.Dialer{Timeout: dialTimeout}
 			rawConn, err = d.DialContext(ctx, network, addr)
 		}
 		if err != nil {
@@ -196,8 +198,6 @@ func Client(ctx context.Context, cfg *ClientConfig) (net.Conn, error) {
 
 	fc := NewFrameConn(pc)
 
-	go runDecoy(tunnelCtx, decoyClient, cfg.ServerAddr, sni, origin, bp, fc, prof)
-
 	connected := make(chan error, 1)
 	go func() {
 		resp, err := client.Do(req)
@@ -230,6 +230,8 @@ func Client(ctx context.Context, cfg *ClientConfig) (net.Conn, error) {
 		pc.Close()
 		return nil, ctx.Err()
 	}
+
+	go runDecoy(tunnelCtx, decoyClient, cfg.ServerAddr, sni, origin, bp, fc, prof, dialTimeout)
 
 	return fc, nil
 }

@@ -96,9 +96,11 @@ func serveDecoy(w http.ResponseWriter, r *http.Request, cfg *ServerConfig) {
 	}
 }
 
-func runDecoy(ctx context.Context, client *http.Client, serverAddr, sni, origin string, bp BehaviorParams, fc *FrameConn, prof browserProfile) {
+func runDecoy(ctx context.Context, client *http.Client, serverAddr, sni, origin string, bp BehaviorParams, fc *FrameConn, prof browserProfile, reqTimeout time.Duration) {
 	get := func(path string) {
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet,
+		reqCtx, cancel := context.WithTimeout(ctx, reqTimeout)
+		defer cancel()
+		req, err := http.NewRequestWithContext(reqCtx, http.MethodGet,
 			fmt.Sprintf("https://%s%s", serverAddr, path), nil)
 		if err != nil {
 			return

@@ -667,7 +667,15 @@ func main() {
 		}
 
 		newCtx, newCancel := context.WithCancel(ctx)
-		newMgr.Init(newCtx, nil)
+		if err := newMgr.Init(newCtx, nil); err != nil {
+			stdlog.Printf("restartEntry %s: init failed: %v", e.ID, err)
+			newCancel()
+			e.mu.Lock()
+			e.Status = connStatusFailed
+			e.Error = err.Error()
+			e.mu.Unlock()
+			return
+		}
 		e.mu.Lock()
 		e.mgr = newMgr
 		e.cancel = newCancel
@@ -890,7 +898,15 @@ func main() {
 		pool.Add(entry)
 
 		connCtx, connCancel := context.WithCancel(bridgeCtx)
-		m.Init(connCtx, nil)
+		if err := m.Init(connCtx, nil); err != nil {
+			stdlog.Printf("[multi-bridge] init %s (%s) failed: %v", bridgeID, bridgeAddr, err)
+			connCancel()
+			entry.mu.Lock()
+			entry.Status = connStatusFailed
+			entry.Error = err.Error()
+			entry.mu.Unlock()
+			return
+		}
 		entry.mu.Lock()
 		entry.cancel = connCancel
 		entry.mu.Unlock()
