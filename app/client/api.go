@@ -129,8 +129,6 @@ func handleConnectionAction(w http.ResponseWriter, r *http.Request) {
 		handleConnDuplicate(w, entry)
 	case "mux":
 		handleConnMux(w, r, entry)
-	case "encapsulate":
-		handleConnEncapsulate(w, r, entry, id)
 	case "tls_fragment":
 		handleConnTLSFragment(w, r, entry)
 	case "transport_secure":
@@ -306,42 +304,6 @@ func handleConnMux(w http.ResponseWriter, r *http.Request, entry *TransportEntry
 		go reconnectEntry(entry)
 	}
 	json.NewEncoder(w).Encode(map[string]bool{"ok": true})
-}
-
-func handleConnEncapsulate(w http.ResponseWriter, r *http.Request, entry *TransportEntry, id string) {
-	var body struct {
-		WrapIn string `json:"wrap_in"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		http.Error(w, "bad json", http.StatusBadRequest)
-		return
-	}
-
-	if body.WrapIn == id {
-		http.Error(w, "cannot encapsulate into itself", http.StatusBadRequest)
-		return
-	}
-
-	if body.WrapIn != "" {
-		if _, exists := pool.Get(body.WrapIn); !exists {
-			http.Error(w, "outer tunnel not found", http.StatusNotFound)
-			return
-		}
-	}
-
-	entry.mu.Lock()
-	entry.EncapsulatedIn = body.WrapIn
-	cb := entry.onEncapsulate
-	entry.mu.Unlock()
-
-	if cb != nil {
-		go cb(body.WrapIn)
-	}
-
-	json.NewEncoder(w).Encode(map[string]string{
-		"id":              id,
-		"encapsulated_in": body.WrapIn,
-	})
 }
 
 func handleConnTLSFragment(w http.ResponseWriter, r *http.Request, entry *TransportEntry) {

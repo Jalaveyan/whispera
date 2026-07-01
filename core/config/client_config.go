@@ -80,12 +80,6 @@ type ClientConfig struct {
 	SpeedtestEnabled bool   `yaml:"speedtest_enabled" json:"speedtest_enabled"`
 	SpeedtestServer  string `yaml:"speedtest_server" json:"speedtest_server"`
 
-	P2PEnabled      bool   `yaml:"p2p_enabled" json:"p2p_enabled"`
-	P2PBootstrapCSV string `yaml:"p2p_bootstrap_csv" json:"p2p_bootstrap_csv"`
-	P2PListen       string `yaml:"p2p_listen" json:"p2p_listen"`
-	P2PSendID       string `yaml:"p2p_send_id" json:"p2p_send_id"`
-	P2PSendMsg      string `yaml:"p2p_send_msg" json:"p2p_send_msg"`
-
 	TunstackLocalEgress    bool `yaml:"tunstack_local_egress" json:"tunstack_local_egress"`
 	TunstackMaxUDPSessions int  `yaml:"tunstack_max_udp_sessions" json:"tunstack_max_udp_sessions"`
 

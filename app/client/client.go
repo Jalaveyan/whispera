@@ -727,31 +727,6 @@ func main() {
 		}
 	}
 
-	wireEncapsulate := func(e *TransportEntry) {
-		e.onEncapsulate = func(outerID string) {
-			baseCfg := buildBaseCfg(e)
-			var finalCfg *tunnel.Config
-			if outerID == "" {
-				finalCfg = baseCfg
-			} else {
-				outer, ok := pool.Get(outerID)
-				if !ok {
-					stdlog.Printf("encapsulate %s: outer %s not found", e.ID, outerID)
-					return
-				}
-				outer.mu.Lock()
-				outerMgr := outer.mgr
-				outer.mu.Unlock()
-				if outerMgr == nil || !outerMgr.IsConnected() {
-					stdlog.Printf("encapsulate %s: outer %s manager not connected", e.ID, outerID)
-					return
-				}
-				finalCfg = tunnel.EncapsulatedConfig(baseCfg, outerMgr)
-			}
-			restartEntry(e, finalCfg)
-		}
-	}
-
 	if asnBypassEnabled {
 		stdlog.Printf("ASN bypass enabled (fingerprint: %s)", asnBypassFingerprint)
 	}
@@ -777,7 +752,6 @@ func main() {
 		mgr:              tunnelMod,
 	}
 	pool.Add(primaryEntry)
-	wireEncapsulate(primaryEntry)
 
 	extraTunnels := make([]*tunnel.Manager, 0, len(transports)-1)
 	for i := 1; i < len(transports); i++ {
@@ -798,7 +772,6 @@ func main() {
 			cancel:           connCancel,
 		}
 		pool.Add(entry)
-		wireEncapsulate(entry)
 		extraTunnels = append(extraTunnels, m)
 	}
 

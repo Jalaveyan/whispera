@@ -42,7 +42,6 @@ type entryView struct {
 	BytesDown         uint64     `json:"bytes_down"`
 	ConnectedAt       time.Time  `json:"connected_at,omitempty"`
 	Error             string     `json:"error,omitempty"`
-	EncapsulatedIn    string     `json:"encapsulated_in,omitempty"`
 	ForceObfuscation  bool       `json:"force_obfuscation"`
 	BehavioralProfile string     `json:"behavioral_profile,omitempty"`
 	NoSNI             bool       `json:"no_sni"`
@@ -65,8 +64,6 @@ type TransportEntry struct {
 	ConnectedAt time.Time  `json:"connected_at,omitempty"`
 	Error       string     `json:"error,omitempty"`
 
-	EncapsulatedIn string `json:"encapsulated_in,omitempty"`
-
 	ForceObfuscation bool `json:"force_obfuscation"`
 
 	BehavioralProfile string `json:"behavioral_profile,omitempty"`
@@ -78,8 +75,6 @@ type TransportEntry struct {
 	mu     sync.Mutex
 
 	restarting int32
-
-	onEncapsulate func(outerID string)
 }
 
 type TransportPool struct {
@@ -230,7 +225,6 @@ func toView(e *TransportEntry) entryView {
 		Mux: e.Mux, RateLimitKB: e.RateLimitKB, SNI: e.SNI,
 		BytesUp: e.BytesUp, BytesDown: e.BytesDown,
 		ConnectedAt: e.ConnectedAt, Error: e.Error,
-		EncapsulatedIn:    e.EncapsulatedIn,
 		ForceObfuscation:  e.ForceObfuscation,
 		BehavioralProfile: e.BehavioralProfile,
 		NoSNI:             e.NoSNI,
